@@ -106,6 +106,9 @@ def kept_flags(plan: dict, sents, words: list[dict]) -> list[bool]:
     """For every guest word: is it in the video the plan describes (an item plays it and no hand cut took it out)?"""
     by = {s.idx: s for s in sents}
     spans = [b for b in (item_bounds(it, by) for it in plan.get("items") or []) if b]
+    kc = plan.get("keep_cut")
+    if kc:                                                              # (a kept video plays its whole file: every word in that stretch is in it)
+        spans.append((float(kc.get("start") or 0.0), float(kc.get("end") or 1e9)))
     cuts = [(float(s), float(e)) for s, e in plan.get("te_cuts") or []]
     out = []
     for w in words:
@@ -353,6 +356,8 @@ def view(runner, pid: str) -> dict:
     d = diff(before, after, sents, words)
     out["staged"] = {"ops": ops, "summary": sentence_line(d) if ops else "", "diff": d, "queued": bool(staged.get("queued"))}
     out["state"] = "plan"
+    if plan.get("keep_cut"):
+        out["locked"] = "This video is kept exactly as it is, with B-roll added. To cut words from it, make it with “Edit my footage” instead."
     return out
 
 
@@ -363,6 +368,8 @@ def stage(runner, pid: str, op: str, first: int, last: int) -> dict:
         raise ValueError("op is cut or add")
     proj = runner.projects.get(pid)
     st = State(home_of(proj))
+    if (st.get("plan.json") or {}).get("keep_cut"):
+        raise ValueError("this video is kept as it is: its words can't be cut here")
     words, _ = load_words(st)
     plan = st.get("plan.json") or {}
     if not words or not plan.get("items") or plan.get("awaiting_approval"):

@@ -55,6 +55,10 @@ class StudioAPI:
         self.chatgpt = chatgpt_plan
         self.default_options, self.clean_options = default_options, clean_options
         self.root = SD.home()
+        from . import progress as PG                                      # stage timings: the bar and "time left" come from this Mac's own history
+        PG.configure(self.root)
+        if hasattr(store, "listeners") and PG.WATCH.on_update not in store.listeners:
+            store.listeners.append(PG.WATCH.on_update)
         self.settings = SD.Settings(self.root)
         self.styles = SD.Styles(self.root)
         self.setup = SD.Setup(self.root)
@@ -72,6 +76,33 @@ class StudioAPI:
         threading.Thread(target=self._watch, name="studio-watch", daemon=True).start()
 
     # ------------------------------------------------------------------ helpers
+    def storage(self):
+        """Storage manager (storage.py): remove the videos of old projects, keep the plans."""
+        from . import storage as ST
+        if getattr(self, "_storage", None) is None:
+            self._storage = ST.Storage(self.cfg, self.store, self.projects, self.runner, settings=self.settings.get)
+        return self._storage
+
+    def storage_tick(self) -> None:
+        """Every ~12 hours (the first one two minutes after the app opens): with a number of days chosen in Settings (the default is never),
+        remove the videos of what is older, when nothing is being made. A busy app tries again in ten minutes."""
+        now = time.time()
+        due = getattr(self, "_storage_at", None)
+        if due is None:
+            due = self._storage_at = now - 43200 + 120
+        if now - due < 43200:
+            return
+        st = self.storage()
+        if not st.options()[0]:
+            self._storage_at = now
+            return
+        res = st.auto_pass(self.busy)
+        self._storage_at = now - 43200 + 600 if res.get("skipped") == "busy" else now
+        if res.get("removed"):
+            for k in [k for k in self._cache if k.startswith("storage")]:
+                self._cache.pop(k, None)
+            log.info(f"storage: {res['removed']} old video(s) removed, {res['freed'] / 1e9:.1f} GB freed")
+
     def cached(self, key: str, secs: float, fn):
         hit = self._cache.get(key)
         if hit and time.time() - hit[0] < secs:
@@ -106,6 +137,10 @@ class StudioAPI:
                     self.save_clips(j)
             except Exception:  # noqa: BLE001
                 log.exception("saving clips failed")
+            try:
+                self.storage_tick()
+            except Exception:  # noqa: BLE001
+                log.exception("the storage clean-up failed")
             cat = self.runner.catalog if self.runner else None
             if cat is not None and not getattr(cat, "looping", False) and time.time() - getattr(self, "_ticked", 0) > 300:
                 self._ticked = time.time()
@@ -193,6 +228,7 @@ class StudioAPI:
             "library": lib, "projects": self.projects.list(), "shorts": [self.short_view(j) for j in self.short_jobs()],
             "sizes": self.cached("sizes", 300, lambda: self.sizes(s)), "moving": self.moving, "restarting": self.restart_wanted,
             "music": self.cached("music", 3, lambda: (self.musiclib().stats() if self.musiclib() else None)),
+            "music_find": self.musicfind_summary(),                       # Music › Find my downloads / Import new (musicfind.py)
             "keys": self.cached("keys", 30, self.keys_state),
             "stock_folder": str(self.stock_folder()),                    # (Find footage tells it apart from your own folders)
             "transcripts": self.transcripts.list()[:30],                 # Long form › Get the transcript
@@ -261,6 +297,145 @@ class StudioAPI:
             self.sync_long_style()
         return self.style_view(kind)
 
+    # ------------------------------------------------------------------ dropped files (the composer's tray)
+    DROP_VIDEO = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".mts", ".m2ts", ".avi", ".mxf", ".3gp"}
+    DROP_AUDIO = {".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".aif", ".aiff"}
+    DROP_IMAGE = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".tif", ".tiff", ".bmp", ".dng", ".cr2", ".cr3", ".arw", ".nef"}
+
+    def _drop_key(self, path: str) -> Path:
+        p = Path(str(path or "")).expanduser()
+        if not p.is_absolute():
+            raise ValueError("that isn't a full path on this Mac")
+        return p.resolve()
+
+    def drop_probe(self, path: str) -> dict:
+        """What a dropped (or chosen) path is: {kind: video | audio | image | folder | other, name, path, duration, w, h, rotation, audio,
+        size}. A folder says only that it is one (nothing about what is inside). A file the page will later ask for (thumb, localfile) is
+        remembered here: only paths that were dropped or chosen are ever served back."""
+        p = self._drop_key(path)
+        if p.is_dir():
+            return {"kind": "folder", "name": p.name, "path": str(p)}
+        if not p.is_file():
+            raise ValueError("that isn't a file on this Mac")
+        ext = p.suffix.lower()
+        kind = "video" if ext in self.DROP_VIDEO else "audio" if ext in self.DROP_AUDIO else "image" if ext in self.DROP_IMAGE else ""
+        info = {"kind": kind or "other", "name": p.name, "path": str(p), "size": p.stat().st_size, "duration": None, "w": None, "h": None,
+                "rotation": 0, "audio": False}
+        if kind in ("", "video"):                                         # (an unknown or missing extension: ask ffprobe what it is)
+            from ..core import ffmpeg as FF
+            try:
+                pr = FF.probe(p)
+            except Exception:  # noqa: BLE001 - not media (or unreadable): say so below
+                pr = {}
+            vs, au = FF.video_stream(pr), FF.audio_stream(pr)
+            fmt = str((pr.get("format") or {}).get("format_name") or "")
+            try:
+                dur = float((pr.get("format") or {}).get("duration") or (vs or au or {}).get("duration") or 0)
+            except (TypeError, ValueError):
+                dur = 0.0
+            if vs:
+                rot = 0
+                try:
+                    rot = int(float((vs.get("tags") or {}).get("rotate") or 0))
+                    for sd in vs.get("side_data_list") or []:
+                        if "rotation" in sd:
+                            rot = int(float(sd["rotation"]))
+                except (TypeError, ValueError):
+                    rot = 0
+                rot = rot % 360
+                w, h = int(vs.get("width") or 0), int(vs.get("height") or 0)
+                if rot in (90, 270):
+                    w, h = h, w
+                is_pic = "image2" in fmt or fmt.endswith("_pipe") or (dur <= 0.05 and (vs.get("codec_name") in ("mjpeg", "png", "bmp", "tiff", "webp", "gif", "heic", "hevc")
+                                                                                         and not au))
+                if is_pic and kind != "video":
+                    info.update(kind="image", w=w, h=h)
+                else:
+                    info.update(kind="video", duration=round(dur, 2), w=w, h=h, rotation=rot, audio=bool(au))
+            elif au:
+                info.update(kind="audio", duration=round(dur, 2), audio=True)
+            elif kind == "video":
+                info.update(kind="video")                                 # (a known video type ffprobe couldn't read: let the engine say why)
+        with self.lock:
+            reg = self.__dict__.setdefault("_dropped", {})
+            reg.pop(str(p), None)
+            reg[str(p)] = info
+            while len(reg) > 400:
+                reg.pop(next(iter(reg)))
+        return info
+
+    def _dropped_info(self, path: str) -> dict | None:
+        try:
+            return (self.__dict__.get("_dropped") or {}).get(str(self._drop_key(path)))
+        except (ValueError, OSError):
+            return None
+
+    def drop_file(self, path: str) -> Path:
+        """A file that was dropped or chosen, for the preview player (never any other path)."""
+        info = self._dropped_info(path)
+        if not info or info["kind"] not in ("video", "audio", "image"):
+            raise KeyError("not a dropped file")
+        p = Path(info["path"])
+        if not p.is_file():
+            raise KeyError("the file isn't there any more")
+        return p
+
+    def drop_thumb(self, path: str, t: float = 1.0) -> Path:
+        """A 320 px still of a dropped video (the right way up; log footage in normal colour) or photo, kept under the app's cache."""
+        import hashlib
+        info = self._dropped_info(path)
+        if not info or info["kind"] not in ("video", "image"):
+            raise KeyError("not a dropped video or photo")
+        p = Path(info["path"])
+        if not p.is_file():
+            raise KeyError("the file isn't there any more")
+        st = p.stat()
+        dur = float(info.get("duration") or 0)
+        t = max(0.0, min(float(t), max(0.0, dur - 0.1) if dur else float(t)))
+        key = hashlib.sha1(f"{p}|{st.st_size}|{int(st.st_mtime)}|{t:.1f}|thumb-v1".encode()).hexdigest()[:20]
+        out = self.root / "Cache" / "dropped" / f"{key}.jpg"
+        if out.exists():
+            return out
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(".part.jpg")
+        if info["kind"] == "image":
+            from PIL import Image, ImageOps
+            ok = False
+            if p.suffix.lower() not in (".heic", ".heif", ".dng", ".cr2", ".cr3", ".arw", ".nef"):
+                try:
+                    with Image.open(p) as im:
+                        im = ImageOps.exif_transpose(im).convert("RGB")
+                        im.thumbnail((320, 640))
+                        im.save(tmp, "JPEG", quality=80)
+                        ok = True
+                except Exception:  # noqa: BLE001 - sips below
+                    ok = False
+            if not ok and shutil.which("sips"):
+                subprocess.run(["sips", "-s", "format", "jpeg", "-Z", "320", str(p), "--out", str(tmp)], capture_output=True, timeout=60)
+            if not tmp.exists():
+                raise KeyError("no picture could be made of that")
+        else:
+            from ..core import ffmpeg as FF
+            from . import logcolor
+            lut = logcolor.vf(p, self.cfg)
+            vf = "scale=320:-2" + ("," + lut if lut else "") + ",format=yuvj420p"
+            subprocess.run([FF.bin_path("ffmpeg"), "-v", "error", "-y", "-ss", f"{t:.2f}", "-i", str(p), "-frames:v", "1", "-an", "-vf", vf,
+                            "-q:v", "4", str(tmp)], capture_output=True, timeout=90)
+            if not tmp.exists() or tmp.stat().st_size < 100:
+                tmp.unlink(missing_ok=True)
+                if t > 0:                                                  # (a very short clip, or the end: the first frame)
+                    return self.drop_thumb(path, 0.0)
+                raise KeyError("no picture could be made of that")
+        tmp.replace(out)
+        return out
+
+    def _video_ok(self, p: Path) -> bool:
+        """A file the engine may treat as a video: a known video type, or one the person dropped that ffprobe says is a video."""
+        if p.suffix.lower() in self.DROP_VIDEO:
+            return True
+        info = self._dropped_info(str(p))
+        return bool(info and info["kind"] == "video")
+
     # ------------------------------------------------------------------ long videos
     def picked_folder(self, clips) -> str:
         """Shots picked in Find footage, as a footage folder of links to the original files (nothing copied; the links stay with the
@@ -271,7 +446,7 @@ class StudioAPI:
         files = []
         for c in clips[:400]:
             f = Path(str(c or "")).expanduser()
-            if not f.is_absolute() or not f.is_file() or f.suffix.lower() not in VX:
+            if not f.is_absolute() or not f.is_file() or (f.suffix.lower() not in VX and not self._video_ok(f)):
                 raise ValueError(f"{f.name or c} isn't a video on this Mac (is its drive plugged in?)")
             files.append(f)
         d = self.root / "Picked" / time.strftime("%Y%m%d-%H%M%S")
@@ -283,6 +458,8 @@ class StudioAPI:
         used = set()
         for f in dict.fromkeys(files):
             name = f.name if f.name.lower() not in used else f"{f.parent.name} - {f.name}"
+            if f.suffix.lower() not in VX:                                 # (a dropped video with no usual extension: the link says what it is)
+                name += ".mov"
             used.add(name.lower())
             os.symlink(f, d / name)
         return str(d)
@@ -327,6 +504,7 @@ class StudioAPI:
         self.check_drive(s["places"]["videos"], "the folder where finished videos go")
         body = {"notes": str(b.get("notes") or ""), "music": str(o.get("music") or ""), "caption_style": str(o.get("caption_style") or "none"),
                 "pace": SD.ENGINE_PACE["long"].get(str(o.get("pace") or "auto"), "natural"), "long_minutes": minutes, "graphics": str(o.get("graphics") or ""), "gfx_style": str(o.get("gfx_style") or "auto"),
+                "transitions": "none" if str(o.get("transitions") or "auto") == "none" else "auto",
                 **({"keep_cut": True, "aroll": str(b["aroll"])} if b.get("keep_cut") else {}),
                 "transcriber": "parakeet", "kind": "auto", "fcp": True, "library": bool(o.get("library", True)), "stock": bool(o.get("stock"))}
         proj = self.projects.create_local(src, str(b.get("title") or ""), str(b.get("notes") or ""), {}, self.default_options(self.cfg.get("clipper", {}) or {}),
@@ -343,8 +521,10 @@ class StudioAPI:
 
     def short_view(self, j: dict) -> dict:
         clips = [{k: c.get(k) for k in ("index", "file", "thumb", "duration", "title", "rendered_at", "keep", "srt", "score")} for c in j.get("clips") or []]
+        from . import progress as PG
         return {"id": j["id"], "title": j.get("title"), "status": j.get("status"), "stage": j.get("stage"), "progress": j.get("progress", 0.0),
-                "error": j.get("error"), "created": j.get("created"), "updated": j.get("updated"), "home": j.get("app_home"), "clips": clips,
+                **PG.WATCH.view(j), "error": j.get("error"), "created": j.get("created"), "updated": j.get("updated"), "home": j.get("app_home"), "clips": clips,
+                "archived": j.get("archived"), "keep": bool(j.get("keep")),
                 "options": {k: (j.get("options") or {}).get(k) for k in ("min_len", "max_len", "caption_style", "layout", "music", "song")}}
 
     def short_options(self, s: dict, given: dict, notes: str) -> dict:
@@ -364,10 +544,23 @@ class StudioAPI:
         return opts
 
     def make_short(self, b: dict) -> dict:
+        many = b.get("sources")
+        if isinstance(many, list) and many:                               # several videos and/or links: one set of clips for each
+            if len(many) > 40:
+                raise ValueError("that is a lot of videos at once: make them 40 at a time")
+            ids, errors = [], []
+            for s in dict.fromkeys(str(x or "").strip() for x in many):
+                try:
+                    ids.append(self.make_short({**b, "sources": None, "source": s})["id"])
+                except ValueError as e:
+                    errors.append(f"{Path(s).name or s}: {e}" if not re.match(r"^https?://", s) else f"{s}: {e}")
+            if not ids:
+                raise ValueError(errors[0] if errors else "choose a video on this Mac, or paste a link")
+            return {"id": ids[0], "ids": ids, **({"errors": errors} if errors else {})}
         src = str(b.get("source") or "").strip()
         is_url = bool(re.match(r"^https?://\S+$", src))
         p = Path(src).expanduser().resolve() if src and not is_url else Path(src)   # (the links point at the real file)
-        if not is_url and not (p.is_file() and p.suffix.lower() in VIDEO_EXT):
+        if not is_url and not (p.is_file() and (p.suffix.lower() in VIDEO_EXT or self._video_ok(p))):
             raise ValueError("choose a video on this Mac, or paste a link")
         if not is_url:
             from ..core import ffmpeg as FF
@@ -390,7 +583,7 @@ class StudioAPI:
         source.update({"url": src} if is_url else {"filename": p.name, "path": str(p)})        # ("local" would mean a long-form project)
         job = self.store.create(source, opts, status="draft")
         if not is_url:
-            os.symlink(p, self.store.dir(job["id"]) / ("source" + p.suffix.lower()))         # read where it is: nothing is copied
+            os.symlink(p, self.store.dir(job["id"]) / ("source" + (p.suffix.lower() if p.suffix.lower() in VIDEO_EXT else ".mov")))   # read where it is: nothing is copied
             SD.link_raw(home, [p])
         self.store.update(job["id"], title=title, app_home=str(home), status="queued")
         if is_url:                                                        # the video's own title, in a second or two (the sidebar shows it)
@@ -640,6 +833,20 @@ class StudioAPI:
             subprocess.run(["open", "-R", str(xml[-1])], capture_output=True, timeout=30)
             return {"ok": True, "note": f"{ed['name']} is opening. Choose File › Import › Timeline… and pick the file that is selected in Finder: "
                                         f"{xml[-1].name}"}
+        if what == "restore":                                              # a project whose video was removed to save space: render it again from the saved plan
+            if busy:
+                raise ValueError("it is being made right now")
+            why = self.storage().missing_footage(kind, iid)
+            if why:
+                raise ValueError(why)
+            if kind == "long":
+                self.runner.start(iid, "rerender")
+            else:
+                self.worker.engine.rerender_saved(iid)
+                self.worker.wake.set()
+            for k in [k for k in self._cache if k.startswith("storage")]:
+                self._cache.pop(k, None)
+            return {"ok": True, "note": "Downloading the video again from its link first." if kind == "short" and (job.get("source") or {}).get("url") else ""}
         if what == "song":                                                 # a new song for a finished video / batch ("" = no music)
             if busy:
                 raise ValueError("it is still being made: wait for it to finish")
@@ -1005,7 +1212,116 @@ class StudioAPI:
                 raise ValueError("add a music folder first")
             ml.start()
             return {"ok": True}
+        if what in ("find", "import", "import_new", "decline", "undecline"):     # Find my music downloads (musicfind.py)
+            return getattr(self, "musicfind_" + ("start" if what == "find" else what))(b)
         raise KeyError(what)
+
+    # -- Find my music downloads: songs you downloaded from Artlist, Soundstripe... found in Downloads, copied into the library ----------
+    def _mf(self):
+        from . import musicfind as MF
+        f = self.__dict__.get("_musicfinder")
+        if f is None:
+            def roots():
+                return [r for r in ((self.settings.get().get("music") or {}).get("folders") or []) if r]
+            f = self._musicfinder = MF.Finder(self.root / "Music finder", roots)
+        return f
+
+    def _mf_allow(self, r: dict) -> None:
+        """Songs of a scan may be played from where they are (GET /api/app/localfile serves only paths that were found or dropped)."""
+        d = self.__dict__.setdefault("_dropped", {})
+        for it in r["found"] + r["maybe"]:
+            if it.get("member"):
+                continue
+            try:
+                d[str(self._drop_key(it["path"]))] = {"kind": "audio", "name": it["name"], "path": it["path"], "size": it.get("size")}
+            except (ValueError, OSError):
+                pass
+
+    def musicfind_start(self, b: dict) -> dict:
+        """Start a scan: {folders?: [paths], import_new?: true}. It runs in the background: the page polls GET music/find."""
+        from . import musicfind as MF
+        f = self._mf()
+        folders = [str(Path(str(x)).expanduser()) for x in (b.get("folders") or []) if x] or None
+        after = (lambda r: self._mf_import_new(r)) if b.get("import_new") else self._mf_allow_and_none
+        started = f.start(folders, after=after)
+        return {"started": started, **f.state(items=False)}
+
+    def _mf_allow_and_none(self, r: dict):
+        self._mf_allow(r)
+        return None
+
+    def _mf_dest(self) -> Path:
+        """Where songs are copied: the first of your music folders that exists, else ~/Music/FirstCut Library (made, and added as a folder)."""
+        from . import musicfind as MF
+        for r in (self.settings.get().get("music") or {}).get("folders") or []:
+            if r and Path(r).is_dir():
+                return Path(r)
+        dest = MF.DEFAULT_LIBRARY
+        dest.mkdir(parents=True, exist_ok=True)
+        self.music_action("add", {"path": str(dest)})
+        return dest
+
+    def _mf_after_import(self) -> None:
+        self._cache.pop("music", None)
+        ml = self.musiclib()
+        if ml:
+            ml.start()
+
+    def _mf_import_new(self, r: dict) -> dict:
+        from . import musicfind as MF
+        self._mf_allow(r)
+        res = MF.import_new(r, self._mf_dest(), self.root / "Music finder")
+        if res["imported"]:
+            self._mf_after_import()
+            self._mf().drop([i.get("id") for i in res["imported"]])
+        return res
+
+    def musicfind_state(self, b: dict | None = None) -> dict:
+        return self._mf().state()
+
+    def musicfind_import(self, b: dict) -> dict:
+        """Copy the chosen songs of the last scan in: {ids: [...], decline: [ids to never offer again]}. Only ids of the last scan are accepted."""
+        from . import musicfind as MF
+        f = self._mf()
+        items = [f.items[i] for i in (b.get("ids") or []) if i in f.items]
+        no = [f.items[i] for i in (b.get("decline") or []) if i in f.items]
+        if no:
+            MF.decline(no, self.root / "Music finder")
+        res = MF.import_items(items, self._mf_dest(), self.root / "Music finder") if items else {"imported": [], "failed": [], "already": []}
+        if res["imported"]:
+            self._mf_after_import()
+        f.drop([i.get("id") for i in res["imported"]] + [i["id"] for i in no])
+        res["declined"] = len(no)
+        return res
+
+    def musicfind_import_new(self, b: dict) -> dict:
+        """One click: scan (quick: tags are remembered) and copy in every sure song that is new and not declined. Same background scan: poll
+        GET music/find; its `after` is the result."""
+        return self.musicfind_start({**b, "import_new": True})
+
+    def musicfind_decline(self, b: dict) -> dict:
+        from . import musicfind as MF
+        f = self._mf()
+        ids = [i for i in (b.get("ids") or []) if i in f.items]
+        n = MF.decline([f.items[i] for i in ids], self.root / "Music finder")
+        f.drop(ids)
+        return {"declined_total": n}
+
+    def musicfind_undecline(self, b: dict) -> dict:                       # (Settings: "Offer the songs I said no to again")
+        from . import musicfind as MF
+        MF.undecline(self.root / "Music finder")
+        return {"ok": True}
+
+    def musicfind_summary(self) -> dict:
+        """In the page's state: the count for the Import new button and the Music nav dot. With 'Look for new music downloads' on, a quiet scan
+        runs when FirstCut opens and once a day; it never imports by itself."""
+        f = self._mf()
+        s = (self.settings.get().get("music") or {})
+        now = time.time()
+        if s.get("watch_downloads") and not f.running() and now - self.__dict__.get("_mf_auto", 0.0) >= 86400:
+            self._mf_auto = now
+            f.start(after=self._mf_allow_and_none, budget_s=60.0)
+        return {**f.new_summary(), "watch": bool(s.get("watch_downloads"))}
 
     def music_search(self, q: str, n: int = 60) -> dict:
         ml = self.musiclib()
@@ -1047,6 +1363,7 @@ class StudioAPI:
             self.runner.catalog = cat
         cat.roots = [Path(f) for f in folders]
         cat.window = {"open": "always", "night": ["19:00", "07:00"]}.get(s["library"].get("when", "open"))   # (studio.overlay's rule)
+        cat.load_mode = s["library"].get("load") or "adapt"                # (studio.overlay's rule: how many files at once, loadgov.py; read by the next pass)
         want = "account" if s["ai"]["use"] != "local" and s["library"].get("describe_with") == "account" else "local"
         if getattr(cat, "describe_with", "local") != want:               # who describes changed: a run that is going starts again with
             cat.describe_with, cat._vision = want, None                  # the new describer (after the file in hand), not half-and-half
@@ -1196,6 +1513,8 @@ class StudioAPI:
             return 200, {"ok": True}
         if rest == ["busy"]:
             return 200, {"what": self.busy()}
+        if rest == ["storage"]:                                           # Settings › Storage: what the videos use, by project, and what is due
+            return 200, self.cached("storage:%s:%s" % self.storage().options(), 20, lambda: self.storage().usage())
         if len(rest) in (2, 3) and rest[0] == "live" and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", rest[1]):   # the live view (live.py)
             from . import live
             if not self.store.dir(rest[1]).is_dir():
@@ -1251,6 +1570,8 @@ class StudioAPI:
                     return 200, self.runner.shots(rest[1])
                 if rest[4] == "choices" and rest[3].isdigit():
                     return 200, self.runner.shot_choices(rest[1], int(rest[3]))
+                if rest[4] == "edit" and rest[3].isdigit():                  # the trim editor: the shot's source, in/out, frame rate and a strip of stills
+                    return 200, self.runner.shot_edit_info(rest[1], int(rest[3]))
             except ValueError as e:
                 return 409, {"error": str(e)}
             except KeyError:
@@ -1265,6 +1586,32 @@ class StudioAPI:
         return 404, {"error": "not found"}
 
     def post(self, rest: list[str], b: dict) -> tuple[int, dict]:
+        if len(rest) == 2 and rest[0] == "storage":                        # Settings › Storage (storage.py): pin, remove one video, free what is due
+            st = self.storage()
+            kind = str(b.get("kind") or "")
+            if rest[1] in ("pin", "remove") and (kind not in ("long", "short") or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(b.get("id") or ""))):
+                return 400, {"error": "say which project"}
+            try:
+                if rest[1] == "pin":
+                    out = st.pin(kind, str(b["id"]), bool(b.get("keep")))
+                elif rest[1] == "remove":
+                    out = st.archive(kind, str(b["id"]))
+                elif rest[1] == "free":
+                    days = st.options()[0]
+                    if not days:
+                        return 400, {"error": "choose how many days first (7, 14, 30 or 60)"}
+                    out = st.auto_pass(self.busy, days)
+                    if out.get("skipped") == "busy":
+                        return 409, {"error": f"{self.busy()}: try again when it is done"}
+                else:
+                    return 404, {"error": "not found"}
+            except (KeyError, OSError) as e:
+                return 404, {"error": f"it isn't there ({e})"}
+            except ValueError as e:
+                return 409, {"error": str(e)}
+            for k in [k for k in self._cache if k.startswith("storage")]:
+                self._cache.pop(k, None)
+            return 200, out
         if rest == ["settings"]:
             before = self.settings.get()
             after = self.settings.update(b)
@@ -1316,12 +1663,25 @@ class StudioAPI:
             # (choice: a pool number, "speaker", or "lib:<id>:<start>:<end>" from the search box: that library shot joins the project)
             if not self.runner:
                 return 404, {"error": "not found"}
-            if self.runner.running:
-                raise ValueError("a video is being made right now - swap the shot when it's done")
             pid, k, choice = rest[1], int(rest[3]), b.get("choice")
+            if self.runner.running == pid:
+                raise ValueError("this video is being made right now - swap the shot when it's done")
             self.runner.check_replace(pid, k, choice)                       # (a wrong choice is said at once, not as a failed render)
-            self.runner.start(pid, "replace_shot", k=k, choice=choice)
-            return 200, {"ok": True}
+            return 200, self.runner.stage_replace_shot(pid, k, choice)      # (changes the plan only: the video is marked out of date, Re-render is the person's)
+        if len(rest) == 5 and rest[0] == "long" and rest[2] == "shots" and rest[3].isdigit() and rest[4] == "trim" and self.runner:
+            try:                                                           # the Edit button's Save: {in, out} seconds into the shot's source file
+                return 200, self.runner.trim_shot(rest[1], int(rest[3]), b.get("in"), b.get("out"))
+            except ValueError as e:
+                return 409, {"error": str(e)}
+            except KeyError:
+                return 404, {"error": "no such video"}
+        if len(rest) == 4 and rest[0] == "long" and rest[2] == "pending" and rest[3] == "discard" and self.runner:    # back to the last render's B-roll
+            try:
+                return 200, self.runner.discard_pending(rest[1])
+            except ValueError as e:
+                return 409, {"error": str(e)}
+            except KeyError:
+                return 404, {"error": "no such video"}
         if rest == ["transcripts"]:                                       # Get the transcript: {src: a path or a link}
             return 200, {"id": self.transcripts.start(str(b.get("src") or ""))}
         if len(rest) == 3 and rest[0] == "transcripts" and rest[2] == "remove":
@@ -1329,6 +1689,12 @@ class StudioAPI:
             return 200, {"ok": True}
         if len(rest) == 2 and rest[0] == "music":
             return 200, self.music_action(rest[1], b)
+        if rest == ["activity"]:                                           # the page says a shot is playing or being scrubbed: the catalogue backs off a while
+            cat = self.runner.catalog if self.runner else None
+            gov = getattr(cat, "governor", None)
+            if gov is not None:
+                gov.touch()
+            return 200, {"ok": True}
         if rest == ["keys"]:                                               # a key for Pixabay / Pexels / Epidemic Sound (into the Keychain)
             name = str(b.get("name") or "")
             SD.key_set(name, str(b.get("value") or ""))

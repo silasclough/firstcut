@@ -1295,6 +1295,51 @@ class Engine:
         threading.Thread(target=run, name=f"resong-{job_id}", daemon=True).start()
         return {"ok": True, "clips": len(job["clips"])}
 
+    def rerender_saved(self, job_id: str) -> dict:
+        """Render a finished batch's clips again from what was saved (storage.py took the videos off the disk to free space): the same cuts,
+        captions, framing and song, nothing re-cut and no AI. A link's video is downloaded again first. Returns at once; the job shows
+        progress and is done again when every clip is back."""
+        job = self.store.get(job_id)
+        if job.get("status") in ("queued", "downloading", "transcribing", "finding", "rendering", "joining"):
+            raise ValueError("these clips are still being made")
+        if not job.get("clips"):
+            raise ValueError("there are no saved clips to render again")
+        self.store.update(job_id, status="rendering", progress=0.0, error=None, stage="Rendering the clips again")
+
+        def run():
+            made = 0
+            clips = sorted(self.store.get(job_id)["clips"], key=lambda c: c["index"])
+            d = self.store.dir(job_id)
+            try:
+                words = json.loads((d / "transcript.json").read_text())["words"]
+                src = self._ingest(job_id, d)                            # (a download that was removed comes down again)
+                for k, clip in enumerate(clips):
+                    self._progress(job_id, "rendering", f"Rendering clip {k + 1} of {len(clips)} again", 0.05 + 0.9 * k / len(clips))
+                    m = M.Moment(**clip["moment"])
+                    m.title = clip.get("title") or m.title
+                    segs = [tuple(x) for x in ((clip.get("edit") or {}).get("intervals") or [])] if clip.get("edited") else None
+                    profile = clip.get("profile") or (self.store.get(job_id).get("info") or {}).get("profile", "standard")
+                    music = (clip.get("music") or {}).get("mood", "") if clip.get("music") else ""
+                    song = (self.store.get(job_id).get("options") or {}).get("song") or ""
+                    self.render_clip(job_id, clip["index"], m, words, src, clip.get("layout", "auto"), clip.get("caption_style", "bold"),
+                                     clip.get("pace", "tight"), bool(clip.get("hook_title", True)), profile=profile,
+                                     music="your song" if song else music, segments=segs, commentary=bool(clip.get("commentary")),
+                                     edit_style=clip.get("edit_style", "standard"), song=song or None)
+                    with self.store._lock:                           # (render_clip writes a fresh clip: keep what happened to it so far)
+                        cur = next(c for c in self.store.get(job_id)["clips"] if c["index"] == clip["index"])
+                        keep = {k2: clip[k2] for k2 in ("orig", "edit_ranges", "edited", "keep", "post_next", "app_saved") if k2 in clip}
+                        self.store.set_clip(job_id, {**cur, **keep})
+                    made += 1
+                self.store.update(job_id, status="done", progress=1.0, stage=f"{len(clips)} clips", archived=None)
+            except Cancelled:
+                self.store.update(job_id, status="done" if made else "cancelled", stage="Stopped")
+            except Exception as e:  # noqa: BLE001 - the clips that came back stay; the page says what went wrong
+                log.exception(f"rendering {job_id} again failed")
+                self.store.update(job_id, status="done" if made else "failed", progress=1.0, error=None if made else str(e)[:400],
+                                  stage=(f"{made} of {len(clips)} clips are back: {e}"[:200] if made else "Rendering again failed"))
+        threading.Thread(target=run, name=f"rerender-{job_id}", daemon=True).start()
+        return {"ok": True, "clips": len(job["clips"])}
+
     def _archive(self, job_id: str, index: int | None = None) -> None:
         """Copy finished clips to the archive drive (clipper.library_dir) in a titled folder."""
         from . import library

@@ -95,6 +95,7 @@ def defaults() -> dict:
     return {
         "appearance": "system",                                       # system | light | dark
         "updates": "auto",                                            # auto (download, restart when idle) | ask | off (updates.swift)
+        "storage": {"auto_days": 0, "also_finalcut": False},          # storage.py: remove the videos of projects older than 7|14|30|60 days (0 = never); the plans stay
         "ai": {"use": "chatgpt", "fallback": True, "local_model": None, "claude_edit": "sonnet", "claude_quick": "haiku", "chatgpt_model": "",
                "backup": "auto",                                     # when `use` runs out of usage: "claude" | "chatgpt" | "local" | "" (wait)
                                                                      # | "auto" (the other account if connected, else this Mac)
@@ -103,11 +104,12 @@ def defaults() -> dict:
                    "catalog": str(h / "Catalog"), "work": str(Path.home() / "Library" / "Caches" / APP_NAME)},
         "defaults": {"short": {"min_len": 20, "max_len": 35, "caption_style": "bold", "layout": "auto", "music": "", "clips": 8, "pace": "auto", "voices": "auto"},
                      "long": {"long_minutes": 0, "caption_style": "none", "library": True, "music": "", "graphics": "", "gfx_style": "auto", "stock": False,
-                              "pace": "auto", "log": "convert", "voices": "auto"}},   # voices: "auto" | "always" | "never" (voiceclean)  # pace: "auto" | "fast" | "slow"; log: "convert" (log footage -> normal
+                              "pace": "auto", "transitions": "auto", "log": "convert", "voices": "auto"}},   # voices: "auto" | "always" | "never" (voiceclean)  # pace: "auto" | "fast" | "slow"; log: "convert" (log footage -> normal
                                                                         # colour in what FirstCut renders, never in Final Cut) | "leave"
-        "library": {"folders": [], "when": "open", "recent": {}, "look": "", "picked": [],    # when: "open" | "night" | "off"
+        "library": {"folders": [], "when": "open", "recent": {}, "look": "", "picked": [], "load": "adapt",    # when: "open" | "night" | "off"; load: "adapt" | "gentle" | "full" (loadgov.py)
                     "describe_with": "account"},                     # who describes the catalogue's shots: "account" (default) | "local"
-        "music": {"folders": [], "favorites": []},                    # your music (e.g. downloaded from Artlist / Soundstripe); hearted songs
+        "music": {"folders": [], "favorites": [], "watch_downloads": False},   # your music (e.g. downloaded from Artlist / Soundstripe); hearted songs;
+                                                                              # watch_downloads: look for new music in Downloads (musicfind.py; never imports by itself)
         "setup": {"done": False},
         "mcp": {"enabled": False},                                      # Settings › Connect an AI: let AI apps use FirstCut (mcp_server.py)
         "glossary": [],                                               # names and words spelled the person's way (glossary.py)
@@ -229,6 +231,22 @@ def clean(ch: dict) -> dict:
         out["appearance"] = ch["appearance"]
     if ch.get("updates") in ("auto", "ask", "off"):
         out["updates"] = ch["updates"]
+    sto = _section(ch, "storage")
+    if sto:
+        out["storage"] = {}
+        if "auto_days" in sto:
+            try:
+                days = int(sto["auto_days"])
+            except (TypeError, ValueError):
+                raise ValueError("choose how many days: never, 7, 14, 30 or 60") from None
+            if days not in (0, 7, 14, 30, 60):
+                raise ValueError("choose how many days: never, 7, 14, 30 or 60")
+            out["storage"]["auto_days"] = days
+        if "also_finalcut" in sto:
+            v = sto["also_finalcut"]
+            if not isinstance(v, bool):
+                raise ValueError("also_finalcut is true or false")
+            out["storage"]["also_finalcut"] = v
     ai = _section(ch, "ai")
     if ai:
         out["ai"] = {}
@@ -287,6 +305,8 @@ def clean(ch: dict) -> dict:
                 o["gfx_style"] = o["gfx_style"] if o["gfx_style"] in THEMES else "auto"
             if "pace" in d:
                 o["pace"] = d["pace"] if d["pace"] in PACE_CHOICES else "auto"
+            if "transitions" in d:                                       # fades and dissolves where the cut calls for one (transitions.py)
+                o["transitions"] = "none" if d["transitions"] == "none" else "auto"
             if "library" in d:
                 o["library"] = bool(d["library"])
             if "stock" in d:
@@ -297,6 +317,8 @@ def clean(ch: dict) -> dict:
         out["music"] = {"folders": library_folders(mus.get("folders"))}
     if mus and "favorites" in mus:
         out.setdefault("music", {})["favorites"] = music_favorites(mus.get("favorites"))
+    if mus and "watch_downloads" in mus:
+        out.setdefault("music", {})["watch_downloads"] = bool(mus.get("watch_downloads"))
     lib = _section(ch, "library")
     if lib:
         out["library"] = {}
@@ -304,6 +326,8 @@ def clean(ch: dict) -> dict:
             out["library"]["folders"] = library_folders(lib["folders"])
         if lib.get("describe_with") in ("local", "account"):
             out["library"]["describe_with"] = lib["describe_with"]
+        if lib.get("load") in ("adapt", "gentle", "full"):               # how much of the Mac it may use: what you leave free (default), one file at a time, all
+            out["library"]["load"] = lib["load"]
         if lib.get("when") in ("open", "night", "off"):                   # when it catalogues by itself: whenever the app is open,
             out["library"]["when"] = lib["when"]                           # 7 pm to 7 am, or only when asked
         if isinstance(lib.get("picked"), list):                       # shots picked lately in Find footage (shown on Home), newest first
@@ -402,6 +426,7 @@ def overlay(s: dict, root: Path) -> dict:
         "catalog": {"roots": folders, "dir": str(pl["catalog"]),
                     "window": {"open": "always", "night": ["19:00", "07:00"]}.get(s["library"].get("when", "open")),
                     "describe_with": "account" if use != "local" and s["library"].get("describe_with") == "account" else "local",
+                    "load": s["library"].get("load") or "adapt",
                     "vision_model": m["vision"], "ollama_url": url},
         "paths": {"work": str(pl["work"] / "work"), "logs": str(root / "logs")},
     }

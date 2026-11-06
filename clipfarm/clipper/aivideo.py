@@ -228,6 +228,8 @@ class Projects:
         for k in ("caption_style", "pace", "transcriber"):
             if body.get(k):
                 opts[k] = str(body[k])
+        if body.get("transitions"):                                      # fades and dissolves where the cut calls for one: "auto" | "none"
+            opts["transitions"] = "none" if str(body["transitions"]) == "none" else "auto"
         if "library" in body:                                            # B-roll from the footage catalog (when this Mac has one)
             opts["library"] = bool(body["library"])
         if "stock" in body:                                              # stock B-roll (Pixabay / Pexels) for what your own footage doesn't show
@@ -295,7 +297,7 @@ class Projects:
             out["job_state"] = None
             return out
         clip = (job.get("clips") or [None])[0]
-        out["options"] = {k: job["options"].get(k) for k in ("music", "caption_style", "pace", "long_minutes", "graphics", "gfx_style", "kind", "transcriber", "library", "keep_cut", "aroll", "song")}
+        out["options"] = {k: job["options"].get(k) for k in ("music", "caption_style", "pace", "transitions", "long_minutes", "graphics", "gfx_style", "kind", "transcriber", "library", "keep_cut", "aroll", "song")}
         if proj.get("mode") == "local":                                   # what the page can offer: back to the first cut / render the saved edit again
             out["saved_to"] = proj.get("home") or proj["folder"]
             work = Path(out["saved_to"]) / ".aivideo"
@@ -303,6 +305,7 @@ class Projects:
             try:
                 plan = json.loads((work / "plan.json").read_text())
                 out["pending_render"] = bool(plan.get("pending_render"))
+                out["pending_changes"] = [c for c in (plan.get("pending_changes") or []) if isinstance(c, dict)][:50]     # (B-roll changes waiting for Re-render)
                 out["awaiting_approval"] = bool(plan.get("awaiting_approval"))
                 out["script_map"] = plan.get("script_map") if out["awaiting_approval"] else None
                 if out["script_map"]:                                      # how long it will be, from the lines on the review screen
@@ -311,8 +314,10 @@ class Projects:
             except (OSError, ValueError, KeyError, TypeError):             # (a plan saved before the lines carried their times)
                 out["pending_render"] = False
                 out["awaiting_approval"], out["script_map"] = False, None
+        from . import progress as PG
         out["job_state"] = {"status": job["status"], "stage": job.get("stage"), "progress": job.get("progress", 0.0), "detail": job.get("detail") or "",
-                            "error": job.get("error"), "title": job.get("title"), "started": (job.get("run") or {}).get("at")}
+                            "error": job.get("error"), "title": job.get("title"), "started": (job.get("run") or {}).get("at"),
+                            **PG.WATCH.view(job)}
         if clip:
             out["clip"] = {k: v for k, v in clip.items() if k not in ("edit", "moment", "transcript")}
         return out

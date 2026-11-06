@@ -1,5 +1,5 @@
 """Studio-sound voice cleanup on this Mac (Descript calls it Studio Sound): DeepFilterNet takes the room noise, hum and echo out of
-speech, so a weak recording can be used instead of only avoided (Weekend Workshop's opening came from C0018's own camera mic across
+speech, so a weak recording can be used instead of only avoided (the workshop shoot's opening came from C0018's own camera mic across
 the room: graded "bad" by soundcheck.py).
 
     available() -> bool                      the DeepFilterNet program is installed (Setup's "Voice cleanup" step)
@@ -182,7 +182,7 @@ def cleaned_range(src: str | Path, a: float, b: float, cache_dir: Path, strength
             t0 = time.monotonic()
             tmp_dst = dst.with_name(dst.name + ".part")
             clean(raw, tmp_dst, strength, cfg, run=run)
-            # Kept only when it really helped. Measured on Weekend Workshop C0018 (a camera mic across a hall): the voice went down with
+            # Kept only when it really helped. Measured on a workshop shoot C0018 (a camera mic across a hall): the voice went down with
             # the noise (speech over room 15.7 -> 16.1 dB): far-away speech can't be pulled out of its own echo, so it stays as it was.
             gain = _gain(raw, tmp_dst)
             if gain is not None and gain < MIN_GAIN_DB:

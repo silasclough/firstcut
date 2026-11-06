@@ -306,7 +306,7 @@ def look(frames: list[np.ndarray]) -> bool:
         p2, p98 = np.percentile(y, 2), np.percentile(y, 98)
         sat = float(np.mean(f.max(axis=-1) - f.min(axis=-1)))
         # Calibrated 2026-11-06: real FX30 S-Log3 has p2 ~0.30, p98 ~0.75, saturation ~0.05; the flattest normal clip seen (a camera
-        # mic across a room, Weekend Workshop C0018) p2 0.04, p98 0.80, saturation 0.10. Well apart on blacks and colour.
+        # mic across a room, a workshop shoot C0018) p2 0.04, p98 0.80, saturation 0.10. Well apart on blacks and colour.
         if p2 > 0.12 and p98 < 0.82 and (p98 - p2) < 0.6 and sat < 0.08:
             votes += 1
     return votes == len(frames) and len(frames) >= 2

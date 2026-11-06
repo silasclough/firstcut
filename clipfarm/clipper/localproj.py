@@ -62,7 +62,9 @@ from . import music as MU
 from . import story
 from . import photos as PH
 from . import tighten as TI
+from . import transitions as TR
 from . import transcript_edit as TE
+from . import storage as ST
 from . import avoid as AV
 from .engine import PACES, Cancelled, Engine, remap_words, repace
 from .library import safe
@@ -70,6 +72,7 @@ from .localai import LocalAI, estimate_cost
 
 log = get_logger("clipper.localproj")
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+NOTES_MIN_S = 30.0                                       # a video shorter than this gets no chapters (notes.chapters)
 # What a project folder holds that is NOT footage: Final Cut's own media and library, old exports, caches, our own results, songs and sound effects
 SKIP_DIRS = {"output", "final cut", "notes", ".aivideo", "rejected", "music", "exports", "export", "renders", "render files", "transcoded media",
              "proxy media", "optimized media", "cache", "backup", "backups", "trash", "sfx", "sound effects", "sound fx", "soundfx", "sounds", "test shots", "tests", "test", "outtakes"}
@@ -82,7 +85,7 @@ def skipped(rel_parts) -> bool:
     return any(p.lower() in SKIP_DIRS or SKIP_PATTERN.search(p) for p in rel_parts)
 
 
-# An earlier edit of the project sitting next to its footage ("Draft 1.mov", "Weekend Workshop Video V2.mov"): the same shots again, so
+# An earlier edit of the project sitting next to its footage ("Draft 1.mov", "Workshop Video V2.mov"): the same shots again, so
 # using it as footage brings in repeats. Told apart by its name, unless it sits in a folder of camera files.
 EDIT_NAME = re.compile(r"(?<![a-z0-9])(drafts?|v\d{1,2}|ver(?:sion)?[ -]*\d+|final|export(?:ed)?|rough[ -]*cut|first[ -]*cut|fine[ -]*cut|master|rendered|"
                        r"bounce|for (?:youtube|instagram|web))(?![a-z])", re.I)
@@ -453,10 +456,17 @@ class LocalRunner:
 
     def start(self, pid: str, kind: str, **kw) -> None:
         if not self.lock.acquire(blocking=False):
-            raise ValueError("another local video is being made right now - wait for it to finish")
+            if self.running == pid:
+                raise ValueError("this video is being made right now")
+            job = self.projects.get(pid)["job"]                      # another one is being made: this one waits its turn (resume() starts it,
+            self.store.update(job, status="queued", stage="Waiting for the video being made now", error=None, cancel=False,   # oldest first, when
+                              run={"kind": kind, "kw": kw, "at": time.time()})                                                 # the one in hand is done)
+            return
         self.running = pid
+        self._tok = tok = getattr(self, "_tok", 0) + 1               # (which run this is: a run that was stopped for good must not touch anything afterwards)
+        self.cancel_notes(pid)
         job = self.projects.get(pid)["job"]
-        self.store.update(job, run={"kind": kind, "kw": kw, "at": time.time()})   # what it is doing (a quit app carries on with it) and since when
+        self.store.update(job, run={"kind": kind, "kw": kw, "at": time.time(), "units": self._units_of(pid)})   # what it is doing (a quit app carries on with it) and since when
 
         def run():
             stop = threading.Event()
@@ -468,12 +478,18 @@ class LocalRunner:
                 self.store.update(job, run=None)
                 ok = True
             except Cancelled:
-                self.store.update(job, status="cancelled", stage="Stopped", run=None)
+                if tok == self._tok:
+                    self.store.update(job, status="cancelled", stage="Stopped", run=None)
             except Exception as e:  # noqa: BLE001 - shown on the page; finished steps are cached for the next try
-                log.exception(f"local project {pid} failed")
-                self.store.update(job, status="failed", stage="Failed", error=f"{type(e).__name__}: {e}"[:800], run=None)
+                if tok == self._tok:
+                    log.exception(f"local project {pid} failed")
+                    self.store.update(job, status="failed", stage="Failed", error=f"{type(e).__name__}: {e}"[:800], run=None)
+                else:
+                    log.info(f"local project {pid}: the run that was stopped ended with {type(e).__name__}")
             finally:
                 stop.set()
+                if tok != self._tok:                                  # stopped for good: it was already given up on (hard_stop), nothing is left to do
+                    return
                 try:
                     self.store.update(job, detail="")
                 except Exception:  # noqa: BLE001
@@ -481,8 +497,125 @@ class LocalRunner:
                 self.cur_ai = None
                 self.running = None
                 self.lock.release()
+                ST.after_run(self, pid, kind, ok)               # (a video rendered again is no longer marked as removed to save space)
                 TE.after_run(self, pid, kind, ok)               # (a transcript edit queued while this was being made starts now)
         threading.Thread(target=run, daemon=True, name=f"local-{pid}").start()
+
+    # -- Stop: asks the run to stop at its next step, and if it is stuck (an AI call, an encode that never ends) ends it for good --------------
+    @staticmethod
+    def _render_children() -> list[int]:
+        """Processes this engine started for a render (ffmpeg, the AI command lines), not the catalogue's background ones (nice 15) or the speech worker."""
+        import os as _os
+        try:
+            out = subprocess.run(["ps", "-axo", "pid=,ppid=,ni=,comm="], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+        rows = []
+        for line in out.splitlines():
+            parts = line.split(None, 3)
+            if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit():
+                rows.append((int(parts[0]), int(parts[1]), parts[2], parts[3]))
+        kids, frontier = set(), {_os.getpid()}
+        while frontier:
+            nxt = {pid for pid, ppid, _, _ in rows if ppid in frontier and pid not in kids}
+            kids |= nxt
+            frontier = nxt
+        names = ("ffmpeg", "ffprobe", "claude", "codex", "sips")
+        return [pid for pid, _, ni, comm in rows if pid in kids and ni != "15" and any(comm.rsplit("/", 1)[-1].startswith(n) for n in names)]
+
+    def hard_stop(self, pid: str, grace: float = 3.0) -> dict:
+        """The Stop button. The run is asked to stop at its next step; one that is still going after `grace` seconds (waiting on an AI answer,
+        an encode, something frozen) has its ffmpeg / AI processes killed, and one that is STILL there is given up on: the project is marked
+        stopped, and the run, when it ever ends, changes nothing."""
+        import os as _os
+        import signal as _signal
+        job = self.projects.get(pid)["job"]
+        self.store.update(job, cancel=True)
+        self.cancel_notes(pid)
+        if self.running != pid:
+            if self.store.get(job).get("status") == "queued":
+                self.store.update(job, status="cancelled", stage="Stopped", run=None, detail="")
+            return {"stopping": False}
+
+        def reaper():
+            time.sleep(grace)
+            if self.running != pid:
+                return
+            for sig in (_signal.SIGTERM, _signal.SIGKILL):
+                for kid in self._render_children():
+                    try:
+                        _os.kill(kid, sig)
+                    except OSError:
+                        pass
+                time.sleep(2.0)
+                if self.running != pid:
+                    return
+            log.warning(f"local project {pid}: Stop gave up on a run that would not end")
+            self._tok = getattr(self, "_tok", 0) + 1                  # (the old run changes nothing from here on)
+            self.store.update(job, status="cancelled", stage="Stopped", run=None, detail="", error=None, progress=0.0)
+            self.cur_ai = None
+            self.running = None
+            try:
+                self.lock.release()
+            except RuntimeError:
+                pass
+        threading.Thread(target=reaper, daemon=True, name=f"local-stop-{pid}").start()
+        return {"stopping": True}
+
+    # -- the AI-written notes (YouTube chapters + description): after the video is done, one at a time, never able to change its status ----
+    def _notes_state(self):
+        if not hasattr(self, "_notes"):
+            self._notes, self._notes_gate = {}, threading.Lock()
+        return self._notes
+
+    def start_notes(self, pid: str, out_words: list, dur: float, notes: Path, credit_lines: list, brief: str) -> None:
+        ents = self._notes_state()
+        self.cancel_notes(pid)
+        cancel = threading.Event()
+
+        def work():
+            with self._notes_gate:                                           # one at a time: a slow account call must not pile up
+                if cancel.is_set():
+                    return
+                state, chapters_text = "failed", ""
+                try:
+                    gl = self.cfg.get("clipper.glossary") or self.cfg.get("glossary") or []
+                    gl = [x.strip() for x in (gl.splitlines() if isinstance(gl, str) else gl) if str(x).strip()] if isinstance(gl, (str, list)) else []
+                    chs, summary = NT.chapters(LocalAI(self.cfg), out_words, dur, gl, brief)
+                    if cancel.is_set():                                      # a newer render of this project took over: this answer is stale
+                        return
+                    chapters_text = NT.chapters_txt(chs)
+                    if chapters_text:
+                        (notes / "Chapters.txt").write_text(chapters_text)
+                    (notes / "Description.txt").write_text("\n\n".join(x for x in (summary, ("Chapters\n" + chapters_text.strip()) if chapters_text else "",
+                                                                                 "\n\n".join(credit_lines)) if x) + "\n")
+                    state = "done"
+                except Exception as e:  # noqa: BLE001 - chapters are a bonus, never a reason to touch the video's status
+                    log.warning(f"chapters failed: {e}")
+                if cancel.is_set():
+                    return
+                try:
+                    cur = self.projects.get(pid).get("notes_info") or {}
+                    self.projects.update(pid, notes_info={**cur, "chapters": chapters_text, "notes_state": state})
+                except Exception:  # noqa: BLE001
+                    log.warning("could not save the chapters note")
+                finally:
+                    ents.pop(pid, None)
+        t = threading.Thread(target=work, daemon=True, name=f"notes-{pid}")
+        ents[pid] = (t, cancel)
+        t.start()
+
+    def cancel_notes(self, pid: str, wait: float = 0.0) -> None:
+        """A new run of this project: the notes thread still writing for the old video is told its answer is stale (it drops it)."""
+        ent = self._notes_state().pop(pid, None)
+        if ent:
+            ent[1].set()
+            if wait:
+                ent[0].join(wait)
+
+    def notes_alive(self, pid: str) -> bool:
+        ent = self._notes_state().get(pid)
+        return bool(ent and ent[0].is_alive())
 
     def transcript_edit(self, pid: str) -> None:
         """Runner action: the edits staged in the transcript panel are applied to the plan and the video renders again (transcript_edit.py)."""
@@ -496,7 +629,7 @@ class LocalRunner:
 
     def _tick(self, job: str, stop: threading.Event) -> None:
         """While a video is made: the job's `detail` says which AI call it waits on (LocalAI.now(), or that it is offline), and during a long
-        step the bar creeps on (asymptotically, a few percent at most) so it never sits still for 20 minutes (Weekend Workshop, 59%)."""
+        step the bar creeps on (asymptotically, a few percent at most) so it never sits still for 20 minutes (a workshop shoot, 59%)."""
         last = None
         while not stop.wait(self.TICK_S):
             try:
@@ -520,9 +653,29 @@ class LocalRunner:
             except Exception:  # noqa: BLE001 - a progress line never stops a render
                 pass
 
+    def _units_of(self, pid: str):
+        """Footage minutes of a project (from its scan, when it has been scanned): what the stage times are scaled by (progress.py)."""
+        try:
+            files = State(home_of(self.projects.get(pid))).get("files.json") or []
+            m = sum(float(f.get("dur") or 0) for f in files if not f.get("photo")) / 60.0
+            return round(m, 2) or None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _sweep_notes(self) -> None:
+        """A project whose notes say 'writing' but no thread is writing (the app quit meanwhile) is shown as failed, not 'writing' for ever."""
+        try:
+            for p in self.projects.list():
+                ni = p.get("notes_info") or {}
+                if ni.get("notes_state") == "writing" and not self.notes_alive(p["id"]):
+                    self.projects.update(p["id"], notes_info={**ni, "notes_state": "failed"})
+        except Exception:  # noqa: BLE001
+            pass
+
     def resume(self) -> str | None:
         """A long video that was being made when the app quit (requeue_interrupted put it back as queued, with what it was doing) starts
         again, one at a time. Its finished steps are cached; an edit already decided is rendered as it was, not planned again."""
+        self._sweep_notes()
         if self.running:
             return None
         for p in reversed(self.projects.list()):                        # (oldest first)
@@ -1114,13 +1267,15 @@ class LocalRunner:
         """The finished video's B-roll in time order: [{k, at, length, what, photo, thumb}] (k = its place in render_cache)."""
         s = self._shot_state(pid)
         out = []
+        pend = [p for p in (s["plan"].get("pending_changes") or []) if isinstance(p, dict) and p.get("at") is not None]
         for k, c in enumerate(s["placed"]):
             sc = s["pool"][c["scene"]] if isinstance(c.get("scene"), int) and 0 <= c["scene"] < len(s["pool"]) else {}
             if not sc or float(c.get("length") or 0) <= 0:
                 continue
             out.append({"k": k, "at": float(c["at"]), "length": float(c["length"]), "what": str(c.get("what") or sc.get("what") or ""),
-                        "photo": bool(sc.get("photo")), "thumb": self._shot_thumb(s["job"], self._shot_source(s, sc, c.get("src"), float(c["length"])))})
-        return {"job": s["job"], "shots": sorted(out, key=lambda x: x["at"])}
+                        "photo": bool(sc.get("photo")), "thumb": self._shot_thumb(s["job"], self._shot_source(s, sc, c.get("src"), float(c["length"]))),
+                        "changed": any(abs(float(p["at"]) - float(c["at"])) < 0.06 and p.get("kind") != "removed" for p in pend)})   # (not rendered yet)
+        return {"job": s["job"], "shots": sorted(out, key=lambda x: x["at"]), "pending": len(s["plan"].get("pending_changes") or [])}
 
     def _spoken_near(self, s: dict, a: float, b: float) -> str:
         """The words heard in the finished video between a and b seconds (the cut's intervals map the shoot's words onto it)."""
@@ -1297,10 +1452,14 @@ class LocalRunner:
             return
         self._swap(s, k, choice)
 
-    def replace_shot(self, pid: str, k: int, choice) -> None:
+    def replace_shot(self, pid: str, k: int, choice, stage: bool = False):
         """Runner action: shot k becomes pool shot `choice` (or the speaker again: "speaker"), and the video renders again with every other
-        cut, shot, song and graphic as it was."""
+        cut, shot, song and graphic as it was. With stage=True (the page's Replace) nothing renders: the plan is only marked out of date
+        (stage_replace_shot), and the person presses Re-render when they have made all their changes."""
         s = self._shot_state(pid)
+        if stage:
+            self._stage_begin(s)
+        at0 = float(s["placed"][k]["at"]) if 0 <= k < len(s["placed"]) else None
         if isinstance(choice, str) and choice.startswith("lib:"):          # a shot from the footage library: it joins this project first
             sc, new = self._lib_choice(s, choice)
             same = next((i for i, x in enumerate(s["pool"]) if x.get("file") == sc.get("file") and abs(float(x["start"]) - sc["start"]) < 0.5), None)
@@ -1322,8 +1481,206 @@ class LocalRunner:
         rc = s["rc"]
         s["st"].put("render_cache.json", {**rc, "final": {**rc["final"], "cutaways": placed}, "pinned": True})   # (an ad keeps it too)
         s["st"].put("plan.json", {**s["plan"], "pending_note": note})
+        if stage:
+            n = self._stage_end(s["st"], "removed" if choice == "speaker" else "replaced", note, at0)
+            return {"ok": True, "staged": True, "pending": n, "message": note}
         live.stage(self.store, s["job"], note + (f": {placed[k]['what'][:80]}" if choice != "speaker" and k < len(placed) else ""))
         self.rerender(pid)
+
+    def stage_replace_shot(self, pid: str, k: int, choice) -> dict:
+        """Replace without rendering: the video stays as it was, marked out of date (pending_changes) until Re-render."""
+        return self.replace_shot(pid, k, choice, stage=True)
+
+    # -- changes made on the strip wait for "Re-render" ---------------------------------------------------------------------------------
+    # 2026-11-06: "the second I clicked the B-roll shot, it started re-rendering. But I don't want it to do that if I've got more changes
+    # to make." Replace, Edit (trim/slide) and "Don't use this" only change the saved placement and plan; plan.json gets pending_render and
+    # a pending_changes list ({kind, note, at}); the finished video and its job are untouched (status stays done). Nothing starts a
+    # render by itself: resume() only restarts jobs that were queued. A render of any kind (Re-render, a typed change, a transcript edit)
+    # uses the placement as saved and clears the flags (render() pops them).
+    def _stage_begin(self, s: dict) -> None:
+        """Before the first waiting change: what "Discard changes" goes back to."""
+        if s["plan"].get("pending_changes"):
+            return
+        s["st"].put("shots_baseline.json", {"plan": {k: v for k, v in s["plan"].items() if k not in ("pending_render", "pending_note", "pending_changes")},
+                                            "render_cache": s["rc"], "files": s["files"]})
+
+    def _stage_end(self, st: State, kind: str, note: str, at: float | None) -> int:
+        """Mark the plan out of date and list the change (one entry per shot: the latest) -> how many changes are waiting."""
+        plan = dict(st.get("plan.json") or {})
+        ch = [c for c in (plan.get("pending_changes") or []) if isinstance(c, dict)]
+        if at is not None:
+            ch = [c for c in ch if c.get("at") is None or abs(float(c["at"]) - float(at)) >= 0.06]
+        ch.append({"kind": kind, "note": note, "at": None if at is None else round(float(at), 2)})
+        plan["pending_changes"] = ch
+        plan["pending_render"] = True
+        plan["pending_note"] = "; ".join(dict.fromkeys(str(c.get("note") or "") for c in ch if c.get("note")))[:300] or "B-roll changed"
+        st.put("plan.json", plan)
+        return len(ch)
+
+    def discard_pending(self, pid: str) -> dict:
+        """Back to the B-roll as it was in the last render: the placement, the pool and the files saved before the first waiting change."""
+        if self.running == pid:
+            raise ValueError("this video is being made right now")
+        proj = self.projects.get(pid)
+        st = State(home_of(proj))
+        base = st.get("shots_baseline.json")
+        plan = st.get("plan.json") or {}
+        if not base or not plan.get("pending_changes"):
+            raise ValueError("there are no waiting changes to discard")
+        st.put("render_cache.json", base["render_cache"])
+        st.put("files.json", base["files"])
+        st.put("plan.json", base["plan"])
+        return {"ok": True, "pending": 0}
+
+    # -- trim / slide one B-roll shot (the Edit button on the strip) ---------------------------------------------------------------------
+    MIN_SHOT_S = 0.5
+
+    def _shot_file(self, s: dict, c: dict):
+        """(pool scene, the project's file entry) of placed shot c, or raises for a photo / a file that is gone."""
+        sc = s["pool"][c["scene"]] if isinstance(c.get("scene"), int) and 0 <= c["scene"] < len(s["pool"]) else None
+        if not sc:
+            raise ValueError("that B-roll shot isn't in the video any more")
+        if sc.get("photo") or c.get("photo"):
+            raise ValueError("a photo has no film to trim: use Replace to pick another picture")
+        f = next((f for f in s["files"] if f.get("name") == sc.get("file") and f.get("path")), None)
+        if f is None or not Path(f["path"]).is_file():
+            raise ValueError("that shot's file isn't there any more (is its drive plugged in?)")
+        return sc, f
+
+    def _shot_limits(self, s: dict, k: int, c: dict) -> float:
+        """How long shot k may be on the timeline: until the next shot starts, and not past the end of the finished video."""
+        later = sorted(float(x["at"]) for j, x in enumerate(s["placed"]) if j != k and float(x["at"]) > float(c["at"]) + 1e-6)
+        room = (later[0] if later else 1e9) - float(c["at"])
+        try:
+            clip = (self.store.get(s["job"]).get("clips") or [None])[0] or {}
+            end = float(clip.get("duration") or 0)
+        except (KeyError, OSError, TypeError, ValueError):
+            end = 0.0
+        if end > 0:
+            room = min(room, end - float(c["at"]))
+        return max(self.MIN_SHOT_S, room)
+
+    def shot_edit_info(self, pid: str, k: int) -> dict:
+        """What the trim editor needs for shot k: the source file, its in/out (seconds into that file), its frame rate, how long it may get
+        on the timeline, and a strip of stills around it (made once into the job folder)."""
+        s = self._shot_state(pid)
+        if not 0 <= k < len(s["placed"]):
+            raise ValueError("that B-roll shot isn't in the video any more")
+        c = s["placed"][k]
+        sc, f = self._shot_file(s, c)
+        fps = float(f.get("fps") or 30.0) or 30.0
+        fdur = float(f.get("dur") or (float(f["end"]) - float(f["start"])))
+        a = max(0.0, float(c["src"]) - float(f["start"]))
+        b = min(fdur, a + float(c["length"]))
+        # the strip: the shot with room on both sides (3 s or 40% of it), at most 60 stills
+        pad = max(3.0, 0.4 * (b - a))
+        t0, t1 = max(0.0, a - pad), min(fdur, b + pad)
+        step = max(1.0 / fps, (t1 - t0) / 60.0)
+        stills = self._edit_stills(s["job"], f, t0, t1, step)
+        room = self._shot_limits(s, k, c)
+        return {"k": k, "job": s["job"], "what": str(c.get("what") or sc.get("what") or ""), "at": float(c["at"]), "length": float(c["length"]),
+                "in": round(a, 3), "out": round(b, 3), "dur": round(fdur, 3), "fps": round(fps, 3), "max_length": round(room, 2),
+                "min_length": self.MIN_SHOT_S, "t0": round(t0, 3), "t1": round(t1, 3), "step": round(step, 4), "stills": stills, "name": f.get("name")}
+
+    def _edit_stills(self, job: str, f: dict, t0: float, t1: float, step: float) -> list[str]:
+        """The stills of file f between t0 and t1 every `step` seconds, as names in the job folder (/media/<job>/<name>), made once."""
+        try:
+            stt = Path(f["path"]).stat()
+        except OSError:
+            return []
+        key = hashlib.sha1(f"{f['path']}:{stt.st_size}:{int(stt.st_mtime)}:{t0:.3f}:{t1:.3f}:{step:.4f}".encode()).hexdigest()[:10]
+        n = max(1, int((t1 - t0) / step) + 1)
+        names = [f"se_{key}_{i:03d}.jpg" for i in range(n)]
+        d = self.store.dir(job)
+        if not all((d / x).exists() for x in names):
+            try:
+                subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "error", "-y", "-ss", f"{t0:.3f}", "-t", f"{max(step, t1 - t0):.3f}", "-i", str(f["path"]),
+                                "-an", "-vf", f"fps=1/{step:.4f}{self._lut_vf(f['path'])},scale=240:-2", "-q:v", "6", "-frames:v", str(n), "-start_number", "0", str(d / f"se_{key}_%03d.jpg")],
+                               capture_output=True, timeout=240)
+            except Exception as e:  # noqa: BLE001 - no stills is a quiet editor, not an error
+                log.warning(f"no stills for the shot editor: {e}")
+        return [x for x in names if (d / x).exists()]
+
+    def _lut_vf(self, path) -> str:
+        """The log-footage colour change as ",lut3d=..." for the end of a filter chain ("" for normal footage)."""
+        try:
+            from . import logcolor
+            f = logcolor.vf(path, self.cfg)
+            return ("," + f) if f else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def shot_source_path(self, pid: str, k: int) -> Path:
+        """The original file of placed shot k (the trim editor plays it as it is, the way Quick Look does)."""
+        s = self._shot_state(pid)
+        if not 0 <= k < len(s["placed"]):
+            raise ValueError("that B-roll shot isn't in the video any more")
+        return Path(self._shot_file(s, s["placed"][k])[1]["path"])
+
+    def shot_preview(self, pid: str, k: int, a: float, b: float) -> Path | None:
+        """A small playable copy (540p) of seconds a..b of shot k's source file, made once into the job folder - only for a file this page
+        can't play as it is (the editor asks for it when the original fails to play)."""
+        s = self._shot_state(pid)
+        path = self.shot_source_path(pid, k)
+        f = self._shot_file(s, s["placed"][k])[1]
+        a = max(0.0, float(a))
+        b = min(float(f.get("dur") or 1e9), max(a + 0.5, float(b)), a + 60.0)
+        name = "sp_" + hashlib.sha1(f"{path}:{a:.2f}:{b:.2f}".encode()).hexdigest()[:12] + ".mp4"
+        out = self.store.dir(s["job"]) / name
+        if out.exists():
+            return out
+        tmp = out.with_suffix(".part.mp4")
+        r = subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "error", "-y", "-ss", f"{a:.3f}", "-i", str(path), "-t", f"{b - a:.3f}", "-an",
+                            "-vf", "scale=-2:540" + self._lut_vf(path) + ",format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                            "-movflags", "+faststart", str(tmp)], capture_output=True, timeout=600)
+        if r.returncode or not tmp.exists():
+            tmp.unlink(missing_ok=True)
+            return None
+        tmp.replace(out)
+        return out
+
+    def trim_shot(self, pid: str, k: int, src_in: float, src_out: float) -> dict:
+        """The Edit button's Save: shot k shows `src_in`..`src_out` (seconds into its source file) from the same moment of the video. Nothing
+        renders: the placement is changed and the video is marked out of date. A shot may be made longer only until the next one starts or
+        the video ends; it never goes past either end of its file, and never under half a second. -> {in, out, length, clamped, pending}"""
+        if self.running == pid:
+            raise ValueError("this video is being made right now")
+        s = self._shot_state(pid)
+        if not 0 <= k < len(s["placed"]):
+            raise ValueError("that B-roll shot isn't in the video any more")
+        c = s["placed"][k]
+        sc, f = self._shot_file(s, c)
+        fps = float(f.get("fps") or 30.0) or 30.0
+        fdur = float(f.get("dur") or (float(f["end"]) - float(f["start"])))
+        try:
+            a, b = float(src_in), float(src_out)
+        except (TypeError, ValueError):
+            raise ValueError("give the start and the end of the shot in seconds") from None
+        if not (a == a and b == b):
+            raise ValueError("give the start and the end of the shot in seconds")
+        fr = lambda t: round(round(t * fps) / fps, 4)                      # noqa: E731 - whole frames
+        clamped = min(a, b) < -1e-6 or max(a, b) > fdur + 1e-6               # (asked for film the file doesn't have)
+        a, b = fr(max(0.0, min(a, fdur))), fr(max(0.0, min(b, fdur)))
+        if b < a:
+            a, b = b, a
+        room = self._shot_limits(s, k, c)
+        if b - a > room + 1e-6:                                              # the shot would run into the next one (or past the end)
+            b, clamped = fr(a + room), True
+        if b > fdur:
+            b, clamped = fr(fdur), True
+        if b - a < self.MIN_SHOT_S - 1e-6:                                    # never a flash: grow it to the minimum where the file has the film
+            b, clamped = fr(min(fdur, a + self.MIN_SHOT_S)), True
+            if b - a < self.MIN_SHOT_S - 1e-6:
+                a, clamped = fr(max(0.0, b - self.MIN_SHOT_S)), True
+        if b - a < self.MIN_SHOT_S - 1e-6:
+            raise ValueError("that file is too short to show for half a second")
+        self._stage_begin(s)
+        placed = [dict(x) for x in s["placed"]]
+        placed[k] = {**c, "src": round(float(f["start"]) + a, 3), "length": round(b - a, 3), "why": "trimmed by you"}
+        rc = s["rc"]
+        s["st"].put("render_cache.json", {**rc, "final": {**rc["final"], "cutaways": placed}, "pinned": True})
+        n = self._stage_end(s["st"], "edited", "B-roll shot trimmed", float(c["at"]))
+        return {"ok": True, "in": a, "out": b, "length": round(b - a, 3), "clamped": clamped, "pending": n}
 
     # -- "Don't use this" on a B-roll shot in the live view (avoid.py) ---------------------------------------------------------------
     def avoided(self, pid: str) -> list[dict]:
@@ -1352,17 +1709,25 @@ class LocalRunner:
         except ValueError:
             return {"result": "noted", "message": "It won't be used when this video is made."}
         bad = AV.bad_pool(avoid, s["pool"], s["files"])
-        _, did = AV.swap(s["placed"], s["pool"], bad)
+        new, did = AV.swap(s["placed"], s["pool"], bad)
         if not (did["swapped"] or did["removed"]):
             return {"result": "noted", "message": "It isn't in the video, and it won't be offered again."}
-        try:
-            self.start(pid, "rerender")
-        except ValueError:
-            return {"result": "next", "message": "Another video is being made right now, so this one isn't rendered again yet. "
-                                                  "The shot is left out the next time it renders."}
+        # Not rendered: the placement is changed (so the strip shows the new shot) and the video is marked out of date; Re-render is the person's.
+        self._stage_begin(s)
+        rc = s["rc"]
+        s["st"].put("render_cache.json", {**rc, "final": {**rc["final"], "cutaways": new}})
+        n = 0
+        for c in s["placed"]:
+            after = next((x for x in new if abs(float(x["at"]) - float(c["at"])) < 1e-6), None)
+            if after is None:
+                n = self._stage_end(s["st"], "removed", "B-roll shot ruled out and taken out", float(c["at"]))
+            elif after.get("scene") != c.get("scene") or after.get("src") != c.get("src"):
+                n = self._stage_end(s["st"], "avoided", "B-roll shot ruled out and swapped", float(c["at"]))
+        n = n or self._stage_end(s["st"], "avoided", "B-roll shot ruled out", None)
+        more = f" {n} change{'s' if n != 1 else ''} waiting: press Re-render when you're done."
         if did["removed"] and not did["swapped"]:
-            return {"result": "removed", "message": "Taken out of the video (no other shot fitted there). Rendering again."}
-        return {"result": "swapped", "message": "Swapped for the next best shot. Rendering again."}
+            return {"result": "removed", "message": "Taken out of the video (no other shot fitted there)." + more, "pending": n}
+        return {"result": "swapped", "message": "Swapped for the next best shot." + more, "pending": n}
 
     def _review_state(self, pid: str):
         """(project, state, ai, sentences, plan) of a plan that is waiting for the creator's approval."""
@@ -2178,7 +2543,9 @@ class LocalRunner:
                                                 lambda f: P("rendering", f"Cutting the kept stretches ({f:.0%})", 0.6 + 0.12 * f), outro=outro,
                                                 punch=not keep and bool(PROFILES.get(plan.get("style"), PROFILES["story"])["punch_ins"]),   # (a kept video is never zoomed)
                                                 even=not keep,                    # (...nor re-levelled: it stays exactly as it is)
-                                                style=None if keep else plan.get("style") or "story")   # (layouts: never in a kept video)
+                                                style=None if keep else plan.get("style") or "story",   # (layouts: never in a kept video)
+                                                tmode="none" if keep else TR.mode_of(opts.get("transitions")),     # (a kept video stays exactly as it is)
+                                                hook_at_start=bool(plan.get("hook_text")))
         if getattr(self, "live_job", None):                                  # the live view: frames of the cut as it now stands
             live.filmstrip(self.store, self.live_job, rough, rough_len, of="the cut", n=8, what="the cut")
         endcard = None
@@ -2188,7 +2555,8 @@ class LocalRunner:
                        "business": end["business"], "tagline": end["tagline"], "logo": end.get("logo")}
         # Final Cut gets a real timeline built from the ORIGINAL files for every project - a multicam clip when there is a shoot, plain
         # clips otherwise - so each cut can be extended, each B-roll shot moved; the sound is the same recording the video uses
-        mc = {"group": group, "items": fcp_items(parts), "cutaways": cutaways_of_parts(parts, files)}
+        mc = {"group": group, "items": fcp_items(parts), "cutaways": cutaways_of_parts(parts, files),
+              "transitions": list(getattr(self, "last_transitions", None) or [])}          # (what assemble decided: Final Cut gets the same ones)
         words_rough = remap_words(words, intervals, 1.0)
         jobd = self.store.dir(job)
         for f in jobd.glob("clip_*"):
@@ -2243,6 +2611,9 @@ class LocalRunner:
                                 "why": (plan.get("music") or {}).get("why", "chosen"), "by": "ai"},
                  "gfx_cards": scene_gfx, "graphics": gmode if (plan.get("hook_text") or scene_gfx) else "", "loudness_lufs": loud,
                  "folder_gfx": folder_gfx, "folder_title": bool(placed["title"]), "logo_bug": bug}
+        if placed["title"]:                                                        # your own title graphic opens the video: no fade in from black under it
+            mc["transitions"] = [e for e in mc["transitions"] if e["kind"] != "fade_in"]
+        jopts["fades"] = TR.fade_list(mc["transitions"])                           # (the fades at the ends, made in the final picture by polish.run)
         self.store.update(job, options=jopts, title=plan["title"], info={})
         from . import polish
         P("rendering", "Captions, music and the title card", 0.74)
@@ -2281,6 +2652,7 @@ class LocalRunner:
         plan["history"] = [*plan.get("history", []), {"n": version, "note": note, "at": int(time.time()), "beat": beat_note}]
         plan.pop("pending_render", None)
         plan.pop("pending_note", None)
+        plan.pop("pending_changes", None)                                   # (the B-roll changes waiting on the strip are in this render)
         previous_plan = st.get("plan.json")
         if previous_plan:
             st.snapshot("plan.json", previous_plan, "before-render-result")
@@ -2366,7 +2738,7 @@ class LocalRunner:
 
     def mark_sound(self, cands: list[dict], files: list[dict], st: State) -> list[dict]:
         """Candidate moments whose sound is poor say so in what the assembler reads ("[poor sound: muffled]"), and score lower (bad -3,
-        weak -1): good lines are kept first, a badly recorded one only when it matters (Weekend Workshop opened on C0018's camera mic)."""
+        weak -1): good lines are kept first, a badly recorded one only when it matters (a workshop shoot opened on C0018's camera mic)."""
         group = (st.get("multicam.json") or {}).get("group")
         out = []
         for c in cands:
@@ -2469,8 +2841,11 @@ class LocalRunner:
             raise RuntimeError("the finished video failed its check, so it was NOT saved into your folder: " + "; ".join(problems))
 
     def assemble(self, files: list[dict], intervals, cutaways, group, cuts, st: State, progress, outro: dict | None = None,
-                 punch: bool = False, even: bool = True, style: str | None = None) -> tuple[Path, float, list[dict]]:
+                 punch: bool = False, even: bool = True, style: str | None = None, tmode: str = "none",
+                 hook_at_start: bool = False) -> tuple[Path, float, list[dict]]:
         """Cut ONLY the kept stretches out of the original files and join them: a small rough cut, however big the footage is.
+        tmode "auto": transitions where the cut calls for one (transitions.py): dissolves are made here, the fades at the ends in polish.run;
+        what was decided is kept in self.last_transitions for the Final Cut project.
         Picture and sound are chosen separately for every piece: the speaker's sound runs through, the picture can come from another
         camera angle (multicam) or from B-roll (a cutaway). Returns (rough cut, its length, the pieces)."""
         talk = [f for f in files if not f["broll"] and not f.get("multicam")] or files
@@ -2511,6 +2886,15 @@ class LocalRunner:
             prv, nxt = (parts[k - 1] if k else None), (parts[k + 1] if k + 1 < len(parts) else None)
             p["fade_in"] = not (prv and joined(prv, p))
             p["fade_out"] = not (nxt and joined(p, nxt))
+        try:                                                                  # where a transition belongs (never a reason to fail a render)
+            events = TR.plan(parts, rate, style=style or "story", mode=tmode, hook_at_start=hook_at_start, durs=durs, outro=bool(outro))
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"transitions left out: {e}")
+            events = []
+        self.last_transitions = events
+        cut_parts = TR.render_parts(parts, events, rate) if any(e["kind"] in ("dissolve", "broll") for e in events) else parts
+        if events:
+            log.info("transitions: " + ", ".join(f"{e['kind']} at {e['at']:.1f}s" for e in events))
         seg_dir = st.dir / "seg"
         shutil.rmtree(seg_dir, ignore_errors=True)
         seg_dir.mkdir()
@@ -2526,7 +2910,9 @@ class LocalRunner:
             """One piece, EXACTLY its frame count of picture and the matching count of sound samples, so the joined rough cut has no
             holes (a piece one frame short used to leave a one-frame hitch at the cut) and never drifts out of sync."""
             i, p = i_p
-            out = seg_dir / f"{i:05d}.mov"
+            if p.get("xf"):                                                 # a transition: two pieces carried past their edges, blended
+                return blend(i, p)
+            out = seg_dir / (f"{i:05d}.mov" if isinstance(i, int) else f"{i}.mov")
             n = int(p["n"])
             d = float(Fraction(n) / rate)
             samples = int(round(Fraction(n * 48000) / rate))
@@ -2571,7 +2957,7 @@ class LocalRunner:
                                 "-filter_complex", f"{g};{af}", *enc], timeout=3600, what=f"cutting a stretch ({lay})")
                     with lock:
                         done[0] += 1
-                        progress(done[0] / len(parts))
+                        progress(min(1.0, done[0] / ncut))
                     return out
                 except Exception as e:  # noqa: BLE001 - the plain B-roll shot is always there to fall back on
                     log.warning(f"a {v.get('layout')} layout failed ({str(e)[:160]}); showing the B-roll full screen there")
@@ -2592,10 +2978,31 @@ class LocalRunner:
                                timeout=3600, what="cutting a stretch (speaker)")
             with lock:
                 done[0] += 1
-                progress(done[0] / len(parts))
+                progress(min(1.0, done[0] / ncut))
             return out
+
+        def blend(i, p):
+            """A transition (transitions.py): two pieces of 2h frames, each carried past its own edge, cross-dissolved over their whole length;
+            the sound crossfades (a different place) or just carries on (the same recording under a B-roll shot). Same frame count as the two
+            halves it replaces, so nothing after it moves."""
+            x = p["xf"]
+            fa, fb = cut((f"{i:05d}a", x["a"])), cut((f"{i:05d}b", x["b"]))
+            out = seg_dir / f"{i:05d}.mov"
+            n = int(p["n"])
+            dur = float(Fraction(n) / rate)
+            samples = int(round(Fraction(n * 48000) / rate))
+            audio = (f"[0:a][1:a]acrossfade=d={dur:.6f}:c1=qsin:c2=qsin" if x.get("audio") == "crossfade" else "[0:a]anull")
+            g = (f"[0:v][1:v]xfade=transition=fade:duration={dur:.6f}:offset=0,fps={rs},trim=end_frame={n},setpts=PTS-STARTPTS,format=yuv420p[v];"
+                 f"{audio},apad,atrim=end_sample={samples},asetpts=PTS-STARTPTS[a]")
+            ffmpeg.run(["nice", "-n", "15", ffb, "-y", "-v", "error", "-i", str(fa), "-i", str(fb), "-filter_complex", g, "-map", "[v]", "-map", "[a]",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(out)],
+                       timeout=3600, what="a transition")
+            fa.unlink(missing_ok=True)
+            fb.unlink(missing_ok=True)
+            return out
+        ncut = len(cut_parts) + 2 * sum(1 for q in cut_parts if q.get("xf"))
         with ThreadPoolExecutor(max_workers=2) as ex:                       # two at a time: your Mac stays usable while it works
-            outs = list(ex.map(cut, enumerate(parts)))
+            outs = list(ex.map(cut, enumerate(cut_parts)))
         for o in outs:
             try:
                 has_pic = ffmpeg.video_stream(ffmpeg.probe(o)) is not None
@@ -2747,26 +3154,27 @@ class LocalRunner:
         credit_lines = ([clip["caption"].strip()] if (clip.get("caption") or "").strip() else []) + (
             ["Pictures: " + "; ".join(plan["gfx_credits"])] if plan.get("gfx_credits") else []) + (            # CC BY needs the credit in the video's description
             ["Stock footage (Pixabay / Pexels: no credit required, given anyway):\n" + "\n".join(plan["stock_credits"])] if plan.get("stock_credits") else [])
+        try:                                                                 # a song that came in through Music › Find my downloads: where it is licensed from
+            from .musicfind import credit_line_for
+            lic = credit_line_for((plan.get("music") or {}).get("file"))
+            if lic:
+                credit_lines.append("Music (from your licensed library): " + lic)
+        except Exception:  # noqa: BLE001 - a credit line is a bonus
+            pass
         if credit_lines:
             (notes / "credits.txt").write_text("\n\n".join(credit_lines) + "\n")
-        chapters_text = ""
+        out_words, dur = [], 0.0
         try:                                                                 # YouTube chapters and a description, from the finished video's words
             iv = [tuple(x) for x in (json.loads((d / "plan.json").read_text()).get("intervals") or [])] if (d / "plan.json").exists() else []
             out_words = remap_words(words, iv, 1.0) if iv else []
             dur = float(clip.get("duration") or 0) or sum(b - a for a, b in iv)
-            if out_words and dur >= 30:
-                gl = self.cfg.get("clipper.glossary") or self.cfg.get("glossary") or []
-                gl = [x.strip() for x in (gl.splitlines() if isinstance(gl, str) else gl) if str(x).strip()] if isinstance(gl, (str, list)) else []
-                chs, summary = NT.chapters(LocalAI(self.cfg), out_words, dur, gl, (proj.get("notes") or "")[:400])
-                chapters_text = NT.chapters_txt(chs)
-                if chapters_text:
-                    (notes / "Chapters.txt").write_text(chapters_text)
-                (notes / "Description.txt").write_text("\n\n".join(x for x in (summary, ("Chapters\n" + chapters_text.strip()) if chapters_text else "",
-                                                                             "\n\n".join(credit_lines)) if x) + "\n")
-        except Exception as e:  # noqa: BLE001 - chapters are a bonus, never a reason to fail a render
-            log.warning(f"chapters failed: {e}")
-        self.projects.update(pid, notes_info={"chapters": chapters_text, "qa": qa_counts, "issues": qa_rows,
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"chapters input failed: {e}")
+        writing = bool(out_words and dur >= NOTES_MIN_S)
+        self.projects.update(pid, notes_info={"chapters": "", "qa": qa_counts, "issues": qa_rows, "notes_state": "writing" if writing else "done",
                                               "report": str(notes / "Quality check.md"), "folder": str(notes)})
+        if writing:                                                          # the AI writing runs AFTER the video is marked done (it can take minutes)
+            self.start_notes(pid, out_words, dur, notes, credit_lines, (proj.get("notes") or "")[:400])
 
     def _log_note(self, folder: Path) -> list[dict]:
         """Which clips were shot in a log profile (converted in the MP4; Final Cut has them as shot)."""
@@ -3153,7 +3561,7 @@ def level_gains(levels: list[float], weights: list[float], most_up: float = 12.0
 
 def no_picture_spans(files: list[dict], group: dict | None, intervals) -> list[tuple[float, float]]:
     """Kept stretches (program time) of a multicam shoot that no camera filmed - only a recorder heard them. Shown as they are, the voice
-    plays over whichever camera happens to be there (Weekend Workshop, 2026-11-05: a man on screen, someone else's voice, -ss -938)."""
+    plays over whichever camera happens to be there (a workshop shoot, 2026-11-05: a man on screen, someone else's voice, -ss -938)."""
     if not group:
         return []
     cov: list[list[float]] = []
@@ -3280,13 +3688,15 @@ def cover_spans(cutaways: list[dict], spans_out: list[tuple[float, float]], pool
 
 PACE_BROLL = {"fast": 0.6, "tight": 0.85, "natural": 1.0, "slow": 1.6}
 JUMP_SHARE = {"fast": 0.75, "tight": 0.65, "natural": 0.6, "slow": 0.45}      # at most this share of the video under B-roll from jump covers      # pace -> how often B-roll cuts in (x the kind's cut_per_s)
-PROTECTED = ("cover", "never the same picture", "nobody was filmed")          # cutaways that are there for a reason, not taste
+PROTECTED = ("cover", "never the same picture", "nobody was filmed", "trimmed by you")          # cutaways that are there for a reason, not taste
 
 
 def _room(c: dict, pool: list[dict]) -> tuple[float, float]:
     """How much a cutaway's shot could grow: (seconds before its start, seconds after its end) still inside the shot. A photo: any."""
     if c.get("photo"):
         return 1e9, 1e9
+    if str(c.get("why", "")).startswith("trimmed by you"):                  # (trimmed by hand: the automatic gap closing must not undo it)
+        return 0.0, 0.0
     sc = pool[c["scene"]] if isinstance(c.get("scene"), int) and 0 <= c["scene"] < len(pool) else None
     if not sc:
         return 0.0, 0.0
@@ -3309,7 +3719,7 @@ def thin_cutaways(cutaways: list[dict], pace: str = "natural", min_between: floa
 
 
 def no_flash_gaps(cutaways: list[dict], pool: list[dict], out_len: float, min_gap: float = 1.5, min_show: float = 1.2) -> list[dict]:
-    """Never a flash of the speaker between two B-roll shots (Weekend Workshop: photos at 60, 63, 66 s, each 2.5 s, left 0.5 s of the man
+    """Never a flash of the speaker between two B-roll shots (a workshop shoot: photos at 60, 63, 66 s, each 2.5 s, left 0.5 s of the man
     in green each time): a gap under `min_gap` is closed - the first shot runs on, or the next starts earlier from earlier in its shot, or
     both share it. A gap that can't be closed and is under `min_show` loses the later (unprotected) shot. The same at the two ends."""
     cs = sorted((dict(c) for c in cutaways), key=lambda c: c["at"])

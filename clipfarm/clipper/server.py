@@ -449,6 +449,8 @@ def make_handler(engine: Engine, store: Store, worker: Worker, feed: Feed, max_u
                         if parts[3] == "search":
                             q = parse_qs(u.query)
                             return self._json(studio_api.music_search((q.get("q") or [""])[0], int((q.get("n") or ["60"])[0])))
+                        if parts[3] == "find":                            # Find my music downloads: the scan's progress and result (musicfind.py)
+                            return self._json(studio_api.musicfind_state())
                         if parts[3] == "online":                          # Openverse / Epidemic Sound
                             q = parse_qs(u.query)
                             return self._json(studio_api.music_online((q.get("source") or ["openverse"])[0], (q.get("q") or [""])[0],
@@ -465,6 +467,23 @@ def make_handler(engine: Engine, store: Store, worker: Worker, feed: Feed, max_u
                         return self._err(404, str(e))
                     except Exception as e:  # noqa: BLE001 - the online source didn't answer: say so, plainly
                         return self._err(502, f"the music service didn't answer: {str(e)[:160]}")
+                if parts in (["api", "app", "probe"], ["api", "app", "thumb"], ["api", "app", "localfile"]) and studio_api:   # what was dropped or chosen
+                    q = parse_qs(u.query)                                  # (thumb and localfile serve only paths that probe has seen: dropped or chosen, never any other)
+                    path = (q.get("path") or [""])[0]
+                    try:
+                        if parts[2] == "probe":
+                            return self._json(studio_api.drop_probe(path))
+                        if parts[2] == "thumb":
+                            try:
+                                at = float((q.get("t") or ["1"])[0])
+                            except ValueError:
+                                at = 1.0
+                            return self._file(studio_api.drop_thumb(path, at))
+                        return self._file(studio_api.drop_file(path))
+                    except ValueError as e:
+                        return self._err(400, str(e))
+                    except KeyError as e:
+                        return self._err(404, str(e).strip("'\""))
                 if parts == ["api", "app", "stock", "search"] and studio_api:      # stock videos and photos (Find footage › Stock)
                     q = parse_qs(u.query)
                     try:
@@ -482,6 +501,18 @@ def make_handler(engine: Engine, store: Store, worker: Worker, feed: Feed, max_u
                     try:
                         return self._json(studio_api.shot_search(parts[3], int(parts[5]), (parse_qs(u.query).get("q") or [""])[0]))
                     except ValueError as e:
+                        return self._err(409, str(e))
+                    except KeyError:
+                        return self._err(404, "no such video")
+                if studio_api and len(parts) == 7 and parts[:3] == ["api", "app", "long"] and parts[4] == "shots" and parts[6] in ("media", "preview") \
+                        and parts[5].isdigit() and getattr(studio_api, "runner", None):          # the trim editor: the shot's original file, or a small copy of a range
+                    try:
+                        if parts[6] == "media":
+                            return self._file(studio_api.runner.shot_source_path(parts[3], int(parts[5])))
+                        qq = parse_qs(u.query)
+                        pv = studio_api.runner.shot_preview(parts[3], int(parts[5]), float((qq.get("s") or ["0"])[0]), float((qq.get("e") or ["6"])[0]))
+                        return self._file(pv, cache=True) if pv else self._err(404, "no preview for that")
+                    except (ValueError, TypeError) as e:
                         return self._err(409, str(e))
                     except KeyError:
                         return self._err(404, "no such video")
@@ -709,6 +740,12 @@ def make_handler(engine: Engine, store: Store, worker: Worker, feed: Feed, max_u
                 else:
                     start = max(0, size - int(m.group(2)))
                 end = min(end, size - 1)
+                if start >= size or start > end:                  # (a range that starts past the end, or backwards: not satisfiable)
+                    self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 self.send_response(HTTPStatus.PARTIAL_CONTENT)
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             else:
@@ -1042,6 +1079,8 @@ def make_handler(engine: Engine, store: Store, worker: Worker, feed: Feed, max_u
                     worker._last_ai_try = 0.0
                     return self._json({"result": projects.archive(pid)})
                 if what == "cancel":
+                    if proj.get("mode") == "local" and runner is not None and hasattr(runner, "hard_stop"):
+                        return self._json({"ok": True, **runner.hard_stop(pid)})     # (asks, then kills what is stuck, then gives up on it)
                     store.update(proj["job"], cancel=True)
                     return self._json({"ok": True})
                 if what in ("reveal", "open-fcp") and proj.get("mode") == "local":   # this Mac's Finder / Final Cut (the app's buttons)

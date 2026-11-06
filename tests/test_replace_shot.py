@@ -156,6 +156,7 @@ def test_the_page_routes(made, monkeypatch):
     started = []
     monkeypatch.setattr(made["runner"], "start", lambda p, kind, **kw: started.append((p, kind, kw)))
     code, body = api.post(["long", pid, "shots", "0"], {"choice": "speaker"})
-    assert code == 200 and started == [(pid, "replace_shot", {"k": 0, "choice": "speaker"})]
+    # (2026-11-06) Replace only changes the plan: nothing renders until Re-render
+    assert code == 200 and body["staged"] and body["pending"] == 1 and started == []
     with pytest.raises(ValueError):
         api.post(["long", pid, "shots", "0"], {"choice": 999})

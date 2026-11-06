@@ -195,6 +195,19 @@ def _fmt(n: float) -> str:
     return f"{n:.4f}".rstrip("0").rstrip(".")
 
 
+# Transitions (transitions.py): Final Cut's own stock Cross Dissolve and Audio Crossfade (the effect uids are the ones Final Cut Pro writes itself;
+# the video one is in Final Cut's TransitionOrder.plist as the first transition, "CrossDissolve" in its Filters bundle).
+CROSS_DISSOLVE_UID = "FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265"
+AUDIO_CROSSFADE_UID = "FFAudioTransition"
+
+
+def _blend_lines(points: list[tuple[str, float]], indent: str) -> list[str]:
+    """An opacity ramp (adjust-blend with keyframes): points = [(time as FCPXML time in the clip's own time, opacity 0..1)]."""
+    return ([f'{indent}<adjust-blend amount="{_fmt(points[0][1])}">', f'{indent}  <param name="amount">', f'{indent}    <keyframeAnimation>']
+            + [f'{indent}      <keyframe time="{t}" value="{_fmt(v)}" interp="linear" curve="linear"/>' for t, v in points]
+            + [f'{indent}    </keyframeAnimation>', f'{indent}  </param>', f'{indent}</adjust-blend>'])
+
+
 CAPTION_ROLE = "iTT?captionFormat=ITT.en"     # Final Cut's own caption role (the captions lane; View › Captions turns them on)
 
 
@@ -428,7 +441,8 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
                    captions: list[tuple[float, float, str]] | None = None, music: MusicBed | None = None,
                    hook: tuple[str, float] | None = None, style: CaptionStyle | None = None,
                    cutaways: list[dict] | None = None, source_colorspace: str = "1-1-1 (Rec. 709)", titles: list[dict] | None = None,
-                   overlays: list[dict] | None = None, subs: list[tuple[float, float, str]] | None = None) -> str:
+                   overlays: list[dict] | None = None, subs: list[tuple[float, float, str]] | None = None,
+                   transitions: list[dict] | None = None) -> str:
     """A Final Cut project built from the ORIGINAL files. With a multicam shoot (`group`) the main timeline is a REAL multicam clip:
     every camera is an angle of one multicam media, synced where the sound lined up, and each angle switch is an ordinary cut of that
     clip - so any switch can be changed afterwards with the angle viewer. Without one (group None), it is plain clips of the original
@@ -442,10 +456,19 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
     cutaways: [{"at", "len", "path", "start", "w", "h", "fps", "layout"?}] picture-only B-roll over the program (lane 1; titles move up).
       layout "pip": the speaker's own picture comes back small, top right, over the B-roll (a connected clip of the same source, lane 2);
       "split" (vertical): the speaker on the top half, the B-roll on the bottom half. Both stay ordinary, editable clips.
-    subs: the words as REAL captions (always; Final Cut shows them when View › Captions is on)."""
+    subs: the words as REAL captions (always; Final Cut shows them when View › Captions is on).
+    transitions (transitions.py): "dissolve" = a stock Cross Dissolve (with Audio Crossfade) on the spine, centred on the cut; "broll" = that B-roll
+      clip runs half a transition longer each side and its opacity ramps in and out; "fade_in" / "fade_out" = opacity ramps over black on the
+      first / last clip. Nothing moves: the sequence is exactly as long as without them."""
+    from . import transitions as TR
     clk = Clock(fps)
     style = style or CaptionStyle()
     captions = captions or []
+    transitions = list(transitions or [])
+    dissolves = {clk.frames(e["at"]): e for e in transitions if e["kind"] == "dissolve"}
+    brolls = [e for e in transitions if e["kind"] == "broll"]
+    fade_in = next((e for e in transitions if e["kind"] == "fade_in"), None)
+    fade_out = next((e for e in transitions if e["kind"] == "fade_out"), None)
     cutaways = sorted(cutaways or [], key=lambda c: c["at"])
     safe = []
     for c in cutaways:                                           # a B-roll shot must lie INSIDE its file, or Final Cut refuses it ("no respective media")
@@ -569,6 +592,9 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
         A("    </asset>")
     if captions or hook or titles:
         A(f'    <effect id="rt" name="Basic Title" uid="{BASIC_TITLE_UID}"/>')
+    if dissolves:
+        A(f'    <effect id="rxd" name="Cross Dissolve" uid="{CROSS_DISSOLVE_UID}"/>')
+        A(f'    <effect id="rxa" name="Audio Crossfade" uid="{AUDIO_CROSSFADE_UID}"/>')
     A("  </resources>")
     A("  <library>")
     A(f'    <event name="{escape(event_name(name))}">')
@@ -581,6 +607,20 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
         d_f = max(1, clk.frames(it["dur"]))
         off_f = pos
         pos += d_f
+        ev = dissolves.get(off_f) if idx else None
+        if ev and it["kind"] == "clip" and it.get("start", 0) - (ev["n"] // 2) * float(clk.frame) < 0:
+            ev = None                                           # (no media before this clip to dissolve from: Final Cut would have no handle)
+        if ev:                                                  # a stock Cross Dissolve, centred on the cut, with Final Cut's own Audio Crossfade
+            A(f'            <transition name="Cross Dissolve" offset="{clk.at(off_f - ev["n"] // 2)}" duration="{clk.at(ev["n"])}">')
+            A('              <filter-video ref="rxd" name="Cross Dissolve"/>')
+            A('              <filter-audio ref="rxa" name="Audio Crossfade"/>')
+            A("            </transition>")
+        # (the fades at the ends: opacity ramps over black on the first / last clip, in the clip's own time)
+        ramp: list[tuple[int, float]] = []
+        if idx == 0 and fade_in and d_f > fade_in["n"]:
+            ramp += [(0, 0.0), (fade_in["n"], 1.0)]
+        if idx == len(items) - 1 and fade_out and d_f > fade_out["n"]:
+            ramp += [(d_f - fade_out["n"], 1.0), (d_f, 0.0)]
         if it["kind"] == "mc" and angles:
             t_f = clk.frames(it["t"])
             A(f'            <mc-clip ref="mc1" offset="{clk.at(off_f)}" name="{escape(name)}" start="{clk.at(t_f)}" duration="{clk.at(d_f)}">')
@@ -595,6 +635,8 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
                     A('                <adjust-conform type="fill"/>')
                 if it.get("zoom"):                                  # a punch-in that hides a jump cut (the picture's own transform lives in the angle's source)
                     A(f'                <adjust-transform scale="{_fmt(it["zoom"])} {_fmt(it["zoom"])}"/>')
+                if ramp:
+                    out.extend(_blend_lines([(clk.at(t_f + a), v) for a, v in ramp], "                "))
                 A("              </mc-source>")
             if it["audio"] == vid:
                 video_source("all")
@@ -611,6 +653,8 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
                 A('              <adjust-conform type="fill"/>')
             if it.get("zoom"):
                 A(f'              <adjust-transform scale="{_fmt(it["zoom"])} {_fmt(it["zoom"])}"/>')
+            if ramp:
+                out.extend(_blend_lines([(clk.at(st_f + a), v) for a, v in ramp], "              "))
             if it.get("aud") and it.get("audio", True):
                 A('              <adjust-volume amount="-96dB"/>')                 # the synced recording below is the sound
             start_inner = st_f
@@ -634,10 +678,35 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
             c_f = clk.frames(c["at"])
             if off_f <= c_f < off_f + d_f:
                 g = layout_geometry(c.get("layout") or "", seq_w, seq_h)
-                A(f'              <asset-clip ref="{assets[c["path"]]}" lane="1" offset="{clk.at(start_inner + (c_f - off_f))}" name="B-roll" '
-                  f'start="{clk.at(clk.frames(c["start"] + tcs.get(c["path"], 0.0)))}" duration="{clk.at(max(1, clk.frames(c["len"])))}" '
+                c_start_f = clk.frames(c["start"] + tcs.get(c["path"], 0.0))
+                c_len_f = max(1, clk.frames(c["len"]))
+                c_off_f = start_inner + (c_f - off_f)
+                bev = next((e for e in brolls if abs(e["at"] - c["at"]) < 0.06 and abs(e["shot_len"] - c["len"]) < 0.15), None) if not c.get("layout") else None
+                bh = (bev["n"] // 2) if bev else 0
+                if bh and (c_f - off_f < bh or c_start_f < bh or (c.get("file_dur") and c["start"] + c["len"] + bh * float(clk.frame) > c["file_dur"] - 0.05)):
+                    bh = 0                                          # (no media / no room around it: this shot keeps its hard cuts)
+                if bh:                                              # a dissolve in and out over the speaker: half a transition earlier and later
+                    c_off_f, c_start_f, c_len_f = c_off_f - bh, c_start_f - bh, c_len_f + 2 * bh
+                A(f'              <asset-clip ref="{assets[c["path"]]}" lane="1" offset="{clk.at(c_off_f)}" name="B-roll" '
+                  f'start="{clk.at(c_start_f)}" duration="{clk.at(c_len_f)}" '
                   f'format="{fmt(c["w"], c["h"], c["fps"])}" tcFormat="{tcf(c["path"])}">')
                 out.extend(_adjust_lines(g["broll"], c["w"] != seq_w or c["h"] != seq_h, "                "))
+                tl0 = c_off_f - start_inner + off_f                 # (the clip's first frame on the sequence's timeline)
+                marks = {0, c_len_f}
+                if bh:
+                    marks |= {2 * bh, c_len_f - 2 * bh}
+                for fe in (fade_in, fade_out):                      # a shot under a fade at the ends fades with the picture
+                    if fe:
+                        a0, a1 = clk.frames(fe["at"]), clk.frames(fe["at"]) + fe["n"]
+                        if a0 < tl0 + c_len_f and a1 > tl0:
+                            marks |= {max(0, min(c_len_f, a0 - tl0)), max(0, min(c_len_f, a1 - tl0))}
+                if bh or len(marks) > 2:
+                    def env(m):                                     # the dissolve ramp (if any) times the fade at the ends
+                        v = 1.0
+                        if bh:
+                            v = min(1.0, m / (2 * bh), (c_len_f - m) / (2 * bh))
+                        return v * TR.opacity_at(transitions, (tl0 + m) * float(clk.frame))
+                    out.extend(_blend_lines([(clk.at(c_start_f + m), max(0.0, min(1.0, env(m)))) for m in sorted(marks)], "                "))
                 A('                <adjust-volume amount="-96dB"/>')
                 A("              </asset-clip>")
         for c in cutaways:                                      # a layout: the speaker's own picture over the B-roll, for the part of

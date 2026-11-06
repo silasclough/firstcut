@@ -379,6 +379,10 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
         bi = inputs.count("-i") - 1
         g.append(f"[{bi}:v]format=rgba[bug];[{cur}][bug]overlay=0:0:format=auto:enable='between(t,{b0:.3f},{b1:.3f})',format=yuv420p[wb]")
         cur = "wb"
+    for fk, fe in enumerate(opts.get("fades") or []):          # fade in from black / out to black over the whole picture (transitions.py; Final Cut gets the same ramps)
+        if fe.get("kind") in ("fade_in", "fade_out") and float(fe.get("dur") or 0) > 0:
+            g.append(f"[{cur}]fade=t={'in' if fe['kind'] == 'fade_in' else 'out'}:st={float(fe['at']):.4f}:d={float(fe['dur']):.4f},format=yuv420p[fd{fk}]")
+            cur = f"fd{fk}"
     lufs = float(opts.get("loudness_lufs") or cfg.get("video.loudness_lufs", -14))     # (an ad / promo asks for louder)
     (work / "graph_v.txt").write_text(";\n".join(g))
     out, part = d / "clip_01.mp4", d / "clip_01.part.mp4"
@@ -747,7 +751,7 @@ def write_fcpxml(bundle: Path, name: str, lives_at: Path, info: dict, fps: Fract
     overlays = [{"at": o["at"], "len": o["len"], "path": str(lives_at / "Graphics" / o["name"]), "w": W, "h": H, "fps": float(fps)} for o in (ovs or [])]
     if mc:
         xml = FX.build_multicam(name, W, H, fps, mc["group"], mc["items"], captions=groups, music=bed, style=style, cutaways=mc.get("cutaways"),
-                                titles=titles, overlays=overlays, subs=subs)
+                                titles=titles, overlays=overlays, subs=subs, transitions=mc.get("transitions"))
         n_clips = len(mc["items"])
     else:
         xml = FX.build(name, src_media, intervals, W, H, fps, captions=groups, music=bed, style=style,

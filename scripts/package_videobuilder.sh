@@ -38,7 +38,15 @@ swiftc -O -swift-version 5 -target arm64-apple-macos13 -o "$APP/Contents/MacOS/F
   -F "$SPK" -framework Sparkle -framework AppKit -framework WebKit -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 
 echo "== the engine"
-COPYFILE_DISABLE=1 tar -cf - --exclude "__pycache__" --exclude "*.pyc" --exclude ".DS_Store" clipfarm | tar -xf - -C "$RES/app"
+# The engine is exactly the public source: the exporter (the maintainer's checkout only) leaves out everything that isn't FirstCut's
+# (posting, news reels, personal pipelines), swaps sample names for neutral ones and stops if anything personal is left. A checkout
+# without the exporter (the public repo) IS that tree already.
+ENGINE_SRC="$ROOT"
+if [ -f "$ROOT/scripts/export_opensource.py" ]; then
+  ENGINE_SRC="$OUT/.engine-export"; rm -rf "$ENGINE_SRC"
+  "$PY" "$ROOT/scripts/export_opensource.py" "$ENGINE_SRC" > "$OUT/.engine-export.log" 2>&1 || { echo "the engine export found personal details:"; tail -30 "$OUT/.engine-export.log"; exit 1; }
+fi
+(cd "$ENGINE_SRC" && COPYFILE_DISABLE=1 tar -cf - --exclude "__pycache__" --exclude "*.pyc" --exclude ".DS_Store" clipfarm) | tar -xf - -C "$RES/app"
 "$PY" app/VideoBuilder/make_config.py config/config.yaml "$RES/app/config/app.yaml"
 cp app/VideoBuilder/bootstrap.sh app/VideoBuilder/requirements-app.txt "$RES/app/"
 chmod +x "$RES/app/bootstrap.sh"

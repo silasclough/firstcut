@@ -27,6 +27,7 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._cache: dict[str, tuple[int, int, dict]] = {}     # job.json path -> (mtime_ns, size, parsed)
+        self.listeners: list = []                              # called as f(job_id, job, fields) after every update (progress.py times the stages)
 
     def dir(self, job_id: str) -> Path:
         if not job_id or "/" in job_id or ".." in job_id:
@@ -78,6 +79,11 @@ class Store:
             job.update(fields)
             job["updated"] = time.time()
             self._write(job)
+            for f in self.listeners:
+                try:
+                    f(job_id, job, fields)
+                except Exception:  # noqa: BLE001 - a listener never breaks an update
+                    pass
             return job
 
     def set_clip(self, job_id: str, clip: dict) -> dict:

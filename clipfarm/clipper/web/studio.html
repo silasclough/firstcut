@@ -22,13 +22,13 @@
   :root {
     --win: #ffffff; --side: rgba(240,242,246,.86); --panel: #ffffff; --field: #f1f3f6; --chip: #e5e9ee; --line: #dde2e8; --thumb: #d3dbe4;
     --text: #16202c; --muted: #5b6776; --accent: #5aa9e6; --on-accent: #0b1b2b; --link: #1d6aa8; --sel: rgba(22,32,44,.07); --seg: #ffffff;
-    --good: #2f7a4b; --warn: #8a5a00; --bad: #b3322b; --scrim: rgba(22,32,44,.30); --radius: 12px;
+    --viol: #6d4fc2; --good: #2f7a4b; --warn: #8a5a00; --bad: #b3322b; --scrim: rgba(22,32,44,.30); --radius: 12px;
     font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; color-scheme: light;
   }
   :root[data-theme="dark"] {
     --win: #0a0b0d; --side: rgba(8,9,11,.9); --panel: #15171a; --field: #1e2125; --chip: #2a2e34; --line: #2a2e34; --thumb: #23272d;
     --text: #f3f4f6; --muted: #9ba4b0; --accent: #7dbdf0; --link: #8fc8f3; --sel: rgba(255,255,255,.08); --seg: #3a3f47;
-    --good: #8fc79a; --warn: #e0b45c; --bad: #ef8c84; --scrim: rgba(0,0,0,.5); color-scheme: dark;
+    --viol: #b3a4f2; --good: #8fc79a; --warn: #e0b45c; --bad: #ef8c84; --scrim: rgba(0,0,0,.5); color-scheme: dark;
   }
   :root.native { --side: rgba(255,255,255,.18); }
   :root.native[data-theme="dark"] { --side: rgba(0,0,0,.42); }
@@ -52,6 +52,26 @@
   .shot-pic .badge.l { left: 4px; right: auto; }
   .shot-t.on .shot-pic { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .shot-rep { height: 26px; font-size: 12px; justify-content: center; }
+  .shot-acts { display: flex; gap: 4px; }
+  .shot-acts .btn { flex: 1; padding: 0 4px; }
+  .shot-changed { position: absolute; left: 4px; top: 4px; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 3px; background: var(--accent); color: #fff; }
+  .stale { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 14px; border: 1px solid var(--accent); border-radius: 6px; background: color-mix(in srgb, var(--accent) 9%, transparent); }
+  .stale b { font-weight: 600; }
+  /* the shot trim editor (shotEdit*): a strip of stills with two handles; the lit part is what the shot shows */
+  .se-video { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16 / 9; margin: 0 20px; max-height: 300px; display: flex; align-items: center; justify-content: center; }
+  .se-video video, .se-video img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .se-strip { position: relative; display: flex; height: 62px; margin: 14px 28px 4px; user-select: none; -webkit-user-select: none; touch-action: none; }
+  .se-strip img.se-still { flex: 1 1 0; min-width: 0; height: 100%; object-fit: cover; pointer-events: none; background: var(--sel); }
+  .se-dim { position: absolute; top: 0; bottom: 0; background: rgba(0,0,0,.55); pointer-events: none; }
+  .se-win { position: absolute; top: -2px; bottom: -2px; border: 2px solid var(--accent); border-radius: 3px; cursor: grab; box-sizing: border-box; }
+  .se-win:active { cursor: grabbing; }
+  .se-h { position: absolute; top: -6px; bottom: -6px; width: 14px; margin-left: -7px; background: var(--accent); border-radius: 4px; cursor: ew-resize; display: flex; align-items: center; justify-content: center; outline-offset: 2px; }
+  .se-h::after { content: ""; width: 2px; height: 20px; background: #fff; border-radius: 1px; }
+  .se-head { position: absolute; top: -4px; bottom: -4px; width: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.5); pointer-events: none; }
+  .se-read { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 8px 28px 0; font-variant-numeric: tabular-nums; }
+  .se-nudge { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 28px 4px; align-items: center; }
+  .se-nudge .grp { display: inline-flex; align-items: center; gap: 4px; }
+  .se-nudge .btn { height: 28px; padding: 0 8px; font-size: 12px; }
   .rp-list { flex: 1; overflow-y: auto; padding: 0 20px 12px; display: flex; flex-direction: column; gap: 8px; }
   .rp-row { display: flex; align-items: center; gap: 12px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
   .rp-row:hover { background: var(--sel); }
@@ -248,6 +268,26 @@
   .source { display: inline-flex; align-items: center; gap: 10px; padding: 8px 10px 8px 8px; border-radius: 12px; background: var(--field); max-width: 100%; }
   .source .ic { width: 36px; height: 36px; flex: none; border-radius: 8px; background: var(--thumb); display: flex; align-items: center; justify-content: center; }
   .x { width: 22px; height: 22px; border: 0; border-radius: 50%; background: var(--chip); color: var(--muted); line-height: 1; padding: 0; }
+  /* What was dropped: little thumbnails you can click to see it play, and take out. Hint while files are dragged over the window. */
+  .tray { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 6px; }
+  .dtile { position: relative; flex: none; width: 124px; display: flex; flex-direction: column; gap: 4px; }
+  .dtile-open { all: unset; box-sizing: border-box; position: relative; display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 16 / 10; border-radius: 8px;
+                overflow: hidden; background: #000; cursor: pointer; border: 1px solid var(--line); }
+  .dtile-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .dtile-open[disabled] { cursor: default; }
+  .dtile-open img { width: 100%; height: 100%; object-fit: contain; }
+  .dtile-link { padding: 6px; font-size: 12px; text-align: center; color: var(--muted); background: var(--field); width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  .dtile-dur { position: absolute; right: 4px; bottom: 4px; padding: 1px 5px; border-radius: 4px; font-size: 11px; font-variant-numeric: tabular-nums; color: #fff; background: rgba(0,0,0,.62); }
+  .dtile-x { position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,.62); color: #fff; }
+  .dtile-name { max-width: 100%; }
+  .dtile-wait .dtile-open { cursor: default; }
+  body.dropping #composer { outline: 2px dashed var(--accent); outline-offset: 4px; }
+  .drop-hint { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 80; padding: 8px 16px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 600; pointer-events: none; }
+  .drop-hint[hidden] { display: none !important; }
+  .dprev { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+  .dprev-box { width: min(880px, 92vw); max-height: 88vh; display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+  .dprev-box video, .dprev-still { width: 100%; max-height: 66vh; object-fit: contain; background: #000; border-radius: 8px; }
+  .dprev-bar { display: flex; align-items: center; gap: 10px; }
   .composer textarea { border: 0; outline: 0; resize: none; background: transparent; font-size: 15px; line-height: 1.5; padding: 2px 4px; min-height: 66px; }
   .notes-wrap { position: relative; display: flex; }
   .notes-wrap textarea { flex: 1; padding-right: 44px; }
@@ -274,8 +314,23 @@
               margin: 0 auto; background: #000; border-radius: 12px; object-fit: contain; }    /* fits the column and the window, centred */
   .clips { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px; }
   .clip { display: flex; flex-direction: column; gap: 7px; }
+  .clips.archived .clip .v { opacity: .5; cursor: default; filter: grayscale(.6); }
+  .arch { display: flex; gap: 14px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  .arch-pic { flex: none; width: 160px; aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; background: var(--thumb); }
+  .arch-pic img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: .5; filter: grayscale(.6); }
+  .arch-t { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .st-list { display: flex; flex-direction: column; }
+  .st-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); min-width: 0; }
+  .st-row:last-child { border-bottom: 0; }
+  .st-row.gone { opacity: .65; }
+  .st-kind { width: 38px; flex: none; }
+  .st-n { width: 62px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+  .st-age { width: 88px; flex: none; }
+  .st-row .btn[aria-pressed="true"] { color: var(--accent); }
   .clip .v { position: relative; aspect-ratio: 9 / 16; border-radius: 12px; overflow: hidden; background: var(--thumb); cursor: pointer; }
   .clip .v img, .clip .v video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  video:fullscreen { object-fit: contain !important; background: #000; }
+  video:-webkit-full-screen { object-fit: contain !important; background: #000; }
   .clip.off { opacity: .45; }
   .clip.sel .v { outline: 2px solid var(--accent); outline-offset: 2px; }
   .badge { position: absolute; right: 8px; bottom: 8px; font-size: 11px; padding: 1px 6px; border-radius: 6px; background: rgba(0,0,0,.65); color: #fff; }
@@ -318,7 +373,10 @@
   .te-box p { margin: 0 0 12px; }
   .te-box p:last-child { margin-bottom: 0; }
   .te-w { padding: 1px 0; border-bottom: 2px solid transparent; border-radius: 2px; }
-  .te-w.f0 { color: var(--muted); }
+  .te-w.f0 { color: var(--text); background: color-mix(in srgb, var(--viol) 14%, transparent); border-bottom: 2px dotted var(--viol); }
+  .te-legend button.te-w { font: inherit; cursor: pointer; color: var(--text); padding: 2px 8px; border-radius: 4px; border-top: 0; border-left: 0; border-right: 0; }
+  .te-legend button.te-w[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .te-box.focus-in .te-w.f0, .te-box.focus-out .te-w.f1 { opacity: .28; }
   .te-w.f1 { color: var(--text); background: color-mix(in srgb, var(--good) 15%, transparent); border-bottom-color: var(--good); }
   .te-w.f2 { color: var(--muted); text-decoration: line-through; background: color-mix(in srgb, var(--bad) 15%, transparent); border-bottom-color: var(--bad); }
   .te-w.f3 { color: var(--text); background: color-mix(in srgb, var(--accent) 18%, transparent); border-bottom: 2px dashed var(--accent); }
@@ -326,6 +384,22 @@
   .te-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .te-bar .grow { flex: 1; min-width: 120px; }
   .te-staged { padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+  .mf-row { gap: 10px; flex-wrap: wrap; align-items: center; min-height: 34px; }
+  .mf-msg a { margin-left: 4px; }
+  .mf-body { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+  .mf-pad { padding: 8px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .mf-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 20px 8px; }
+  .mf-g { padding: 12px 0 4px; }
+  .mf-song { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .mf-song input { flex: none; accent-color: var(--accent); }
+  .mf-noplay { width: 28px; display: flex; justify-content: center; opacity: .3; flex: none; }
+  .mf-maybe { margin-top: 14px; } .mf-maybe summary { cursor: pointer; padding: 6px 0; }
+  .mf-left { padding: 10px 0 0; }
+  .mf-foot { border-top: 1px solid var(--line); padding: 12px 20px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .mf-chips { display: flex; flex-wrap: wrap; gap: 6px; } .mf-chip { border: 1px solid var(--line); border-radius: 4px; padding: 2px 8px; font-size: 13px; }
+  .nav a .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: middle; }
+  .prog-line { margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .prog-slow { margin-top: 4px; color: var(--warn); font-weight: 600; }
   .qa-card { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; margin: 6px 0 2px; }
   .qa-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .qa-row { display: flex; gap: 10px; align-items: baseline; font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
@@ -633,6 +707,9 @@ function pick(kind, prompt, start) {
 }
 const showFolder = path => post("/api/app/open", {path, nearest: true});      // (the closest folder that exists: clips still being made)
 const reveal = path => native("reveal", {path}) || post("/api/app/open", {path, reveal: true});
+setInterval(() => {                                                     // (loadgov.py: while a shot plays the catalogue uses a little, not the whole Mac)
+  try { if ([...document.querySelectorAll("video")].some(v => !v.paused && !v.ended && v.readyState > 2)) post("/api/app/activity", {kind: "playing"}).catch(() => {}); } catch (e) { /* none */ }
+}, 4000);
 const openPath = path => native("open", {path}) || post("/api/app/open", {path});
 
 // ---- state
@@ -695,15 +772,15 @@ function items() {
   const out = [];
   for (const p of PROJECTS) {
     const js = p.job_state || {}, st = js.status || "draft";
-    out.push({kind: "long", id: p.id, title: p.title, status: st, stage: js.stage, detail: js.detail, progress: js.progress || 0, when: p.updated || p.created, href: "#long/" + p.id, started: js.started,
+    out.push({kind: "long", id: p.id, title: p.title, status: st, stage: js.stage, detail: js.detail, progress: js.progress || 0, when: p.updated || p.created, href: "#long/" + p.id, started: js.started, prog: js,
               thumbs: p.clip && p.clip.thumb ? [`/media/${p.job}/${p.clip.thumb}?v=${p.clip.rendered_at || 0}`] : [], folder: p.saved_to || p.folder,
-              meta: st === "done" ? `Long form · ${ago(p.updated)}` : st === "failed" ? "Didn't finish" : "Long form"});
+              meta: st === "done" ? (p.archived ? "Video removed · Re-render" : `Long form · ${ago(p.updated)}`) : st === "failed" ? "Didn't finish" : "Long form"});
   }
   for (const j of SHORTS) {
     const n = (j.clips || []).length;
-    out.push({kind: "short", id: j.id, title: j.title || "Clips", status: j.status, stage: j.stage, detail: j.detail, progress: j.progress || 0, when: j.updated || j.created, href: "#short/" + j.id,
+    out.push({kind: "short", id: j.id, title: j.title || "Clips", status: j.status, stage: j.stage, detail: j.detail, progress: j.progress || 0, when: j.updated || j.created, href: "#short/" + j.id, prog: j,
               thumbs: (j.clips || []).filter(c => c.thumb && c.keep !== false).slice(0, 3).map(c => `/media/${j.id}/${c.thumb}?v=${c.rendered_at || 0}`), folder: j.home,
-              meta: j.status === "done" ? `${n} clip${n === 1 ? "" : "s"} · ${ago(j.updated || j.created)}` : j.status === "failed" ? "Didn't finish" : "Short clips"});
+              meta: j.status === "done" ? (j.archived ? "Video removed · Re-render" : `${n} clip${n === 1 ? "" : "s"} · ${ago(j.updated || j.created)}`) : j.status === "failed" ? "Didn't finish" : "Short clips"});
   }
   return out.sort((a, b) => (b.when || 0) - (a.when || 0));
 }
@@ -730,7 +807,13 @@ function paintDock() {
   if (DOCK.was && all.some(i => i.status === "done" && BUSY.includes(DOCK.was[i.href] || ""))) native("dock", {done: true});
   DOCK.was = now;
 }
-function etaText(id, p) {
+function etaText(id, p) {                                                  // from this Mac's own history of how long each step takes (progress.py); no history, no guess
+  const it = items().find(i => i.id === id), pg = it && it.prog;
+  if (pg && pg.long) return "taking longer than usual";
+  if (pg && pg.eta_s != null) { const left = pg.eta_s; return left < 60 ? "under a minute left" : left < 3600 ? `about ${Math.max(1, Math.round(left / 60))} min left` : `about ${(left / 3600).toFixed(1)} h left`; }
+  return "";
+}
+function etaTextOld(id, p) {
   const h = ETA[id]; if (!h || h.length < 2 || p >= 0.99) return "";
   const [t0, p0] = h[Math.max(0, h.length - 12)], [t1, p1] = h[h.length - 1];
   if (t1 - t0 < 25 || p1 - p0 < 0.005) return "";
@@ -756,6 +839,10 @@ function paintSide() {
     <a href="#settings/places" class="btn" style="display:inline-flex;align-items:center;text-decoration:none;color:var(--text)">Where things go</a>`;
   paintSetupSide();
   paintAI();
+  const mf = A.music_find || {}, nm = $("#nav-music");                  // a dot on Music when "Look for new music downloads" found songs (it never imports by itself)
+  if (nm) { let d = nm.querySelector(".dot"); const on = !!(mf.watch && mf.n > 0);
+    if (on && !d) { d = document.createElement("span"); d.className = "dot"; d.setAttribute("aria-label", `${mf.n} new songs in Downloads`); nm.appendChild(d); }
+    else if (!on && d) d.remove(); }
 }
 function paintAI() {                                                      // bottom left: who decides the edit, and how much of the plan is used
   const ai = A.ai || {}, u = ai.usage;
@@ -770,8 +857,11 @@ function paintAI() {                                                      // bot
   const switched = ai.out && ai.primary && ai.use !== ai.primary;                // the primary ran out: the backup is answering
   const pname = {claude: "Claude", chatgpt: "ChatGPT", local: "This Mac"}[ai.primary] || "";
   const at = t => new Date(t * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+  const ahead = w => w && !w.reset && w.resets && w.resets * 1000 > Date.now();          // a reset time we can still trust
+  const nextReset = u && ai.use !== "local" ? (() => { const ws = [u.five_hour, u.week].filter(ahead).sort((a, b) => b.used - a.used); return ws[0] || null; })() : null;
+  const resetTxt = nextReset ? (nextReset.resets - Date.now() / 1000 < 86400 ? at(nextReset.resets) : new Date(nextReset.resets * 1000).toLocaleDateString([], {weekday: "short"}) + " " + at(nextReset.resets)) : "";
   $("#ai-label").innerHTML = switched ? `<b>${esc(ai.name || "AI")}</b> <span class="muted">· ${esc(pname)} ran out, back at ${esc(at(ai.out.until))}</span>`
-    : ai.ready ? `<b>${esc(ai.name || "AI")}</b>${ai.model ? ` <span class="muted">· ${esc(ai.model)}</span>` : ""}` : esc(ai.label || "AI");
+    : ai.ready ? `<b>${esc(ai.name || "AI")}</b>${ai.model ? ` <span class="muted">· ${esc(ai.model)}</span>` : ""}${resetTxt ? ` <span class="muted">· resets ${esc(resetTxt)}</span>` : ""}` : esc(ai.label || "AI");
   $("#ai-label").title = switched ? `${pname} is out of usage until ${at(ai.out.until)}. ${ai.name} makes the decisions until then, and it switches back by itself.` : "";
   $("#ai-dot").style.background = ai.ready ? "var(--good)" : "var(--warn)";
   const when = t => { if (!t) return "a new window has started"; const d = new Date(t * 1000), soon = t - Date.now() / 1000 < 86400;
@@ -810,7 +900,7 @@ function paintUsePop() {
   let pop = $("#use-pop");
   if (!pop) { pop = document.createElement("div"); pop.id = "use-pop"; pop.className = "use-pop"; pop.setAttribute("role", "tooltip"); document.body.appendChild(pop); }
   const ai = (A && A.ai) || {}, u = ai.usage, sp = ai.local_speed;
-  const reset = (w) => { if (!w || w.reset || !w.resets) return "a new window has started"; const d = new Date(w.resets * 1000), soon = w.resets - Date.now() / 1000 < 86400;
+  const reset = (w) => { if (!w || w.reset || !w.resets || w.resets * 1000 <= Date.now()) return ""; const d = new Date(w.resets * 1000), soon = w.resets - Date.now() / 1000 < 86400;
                          return "resets " + (soon ? d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}) : d.toLocaleDateString([], {weekday: "short"}) + " " + d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})); };
   let body;
   if (ai.use === "local") {
@@ -1199,6 +1289,7 @@ const OPT = {
   long: [
     {k: "long_minutes", label: "Length", when: (v, scope) => !(scope === "new" && COMPOSE.longMode === "broll"), choices: [[0, "AI decides"], [1, "1 min"], [2, "2 min"], [3, "3 min"], [5, "5 min"], [10, "10 min"]]},
     {k: "pace", label: "Pace", choices: [["auto", "Automatic"], ["fast", "Fast-paced cuts"], ["slow", "Take it slow"]], when: (v, scope) => !(scope === "new" && COMPOSE.longMode === "broll")},
+    {k: "transitions", label: "Transitions", choices: [["auto", "Automatic"], ["none", "None"]], when: (v, scope) => !(scope === "new" && COMPOSE.longMode === "broll")},
     {k: "caption_style", label: "Captions", choices: [["none", "Off"], ["clean", "Clean"], ["bold", "Bold yellow"], ["pop", "Pop green"], ["sky", "Sky blue"]]},
     {k: "library", label: "B-roll", choices: [[true, "Folder + library"], [false, "Folder only"]], when: () => A.library},
     {k: "music", label: "Music", choices: [["", "None"], ["auto", "Match the content"], ["chill", "Chill"], ["upbeat", "Upbeat"], ["emotional", "Emotional"]], when: (v, scope) => !(scope === "new" && COMPOSE.song)},
@@ -1272,8 +1363,11 @@ function paintCompose() {
   $("#top-left").innerHTML = ""; $("#top-right").innerHTML = "";
   if (COMPOSE.mode === "long" && COMPOSE.longMode === "transcript") return paintTranscriptCompose();
   const m = COMPOSE.mode, long = m === "long";
-  const src = COMPOSE.source, clips = long ? (COMPOSE.clips || []) : [];
+  const src = COMPOSE.source, clips = long ? (COMPOSE.clips || []) : [], shorts = long ? [] : (COMPOSE.shorts || []);
   const vids = [...new Set(clips.map(c => c.path))];
+  const dropped = long && clips.length > 0 && clips.every(c => c.dropped);                // (whole videos dropped in: shown as thumbnails)
+  const tray = shorts.length ? trayHTML(shorts, "short") : dropped ? trayHTML([...new Map(clips.map(c => [c.path, {path: c.path, kind: "video", name: c.name || c.path.split("/").pop(), dur: c.dur, w: c.w, h: c.h}])).values()], "long")
+             : COMPOSE.busy ? trayHTML([], "") : "";
   const broll = long && COMPOSE.longMode === "broll";
   const noEdit = OFFLINE() && A.ai.use !== "local" && !A.online.local_editing;
   const linkOff = OFFLINE() ? ` disabled` : "";
@@ -1288,14 +1382,15 @@ function paintCompose() {
     <h1 style="margin-bottom:${long ? 16 : 22}px">${long ? "Make a long video" : "Make short clips"}</h1>
     ${long ? longModesHTML() : ""}
     <div class="composer card" id="composer">
-      ${broll ? brollRows : `<div class="row">
-        ${clips.length ? `<div class="source"><span class="ic"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1.5" y="3.5" width="9" height="7" rx="1.5"/><path d="M4.5 12.5h9v-7"/></svg></span>
+      ${broll ? brollRows : `${tray}<div class="row">
+        ${clips.length && !dropped ? `<div class="source"><span class="ic"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1.5" y="3.5" width="9" height="7" rx="1.5"/><path d="M4.5 12.5h9v-7"/></svg></span>
             <span class="ell"><b class="ell" style="display:block">${clips.every(c => c.dropped) ? `${vids.length} video${vids.length === 1 ? "" : "s"} you dropped in` : `${clips.length} shot${clips.length === 1 ? "" : "s"} from Find footage`}</b><span class="small muted ell" style="display:block" title="${esc(vids.join("\n"))}">Uses the ${vids.length === 1 ? "video" : vids.length + " videos"} they're from: ${esc(vids.map(v => v.split("/").pop()).join(", "))}</span></span>
             <button class="x" id="src-x" aria-label="Remove">×</button></div>`
         : src ? `<div class="source"><span class="ic">${long || !/^https?:/.test(src) ? `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">${long ? `<path d="M1.5 4.5v8h13v-6.5H7.5L6 4.5z"/>` : `<rect x="4.5" y="1.5" width="7" height="13" rx="2"/>`}</svg>` : `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M6.5 9.5 9.5 6.5M7 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1M9 11.5l-1 1A2.5 2.5 0 0 1 4.5 9l1-1"/></svg>`}</span>
             <span class="ell"><b class="ell" style="display:block">${esc(/^https?:/.test(src) ? src.replace(/^https?:\/\/(www\.)?/, "") : src.split("/").filter(Boolean).pop())}</b><span class="small muted ell" style="display:block">${esc(COMPOSE.sourceInfo || (long ? "read where it is, nothing copied" : ""))}</span></span>
             <button class="x" id="src-x" aria-label="Remove">×</button></div>`
-          : `<button class="btn" id="src-pick">${long ? "Choose a footage folder…" : "Choose a video…"}</button>${long ? "" : `<input class="link-in" id="src-link" placeholder="${OFFLINE() ? "Links need the internet" : "or paste a link (YouTube, a podcast…)"}" aria-label="Video link"${linkOff}>`}<span class="small muted">${long ? "or drop a folder anywhere in this window" : "or drop a video"}</span>`}
+          : dropped ? `<span class="small muted">Drop more videos to add them. They are read where they are: nothing is copied.</span>`
+          : `<button class="btn" id="src-pick">${long ? "Choose a footage folder…" : shorts.length ? "Add another video…" : "Choose a video…"}</button>${long ? "" : `<input class="link-in" id="src-link" placeholder="${OFFLINE() ? "Links need the internet" : shorts.length ? "or paste another link" : "or paste a link (YouTube, a podcast…)"}" aria-label="Video link"${linkOff}>`}<span class="small muted">${long ? "or drop a folder anywhere in this window, or videos to use them as the footage" : shorts.length ? "or drop more, from the Finder or Photos" : "or drop videos (from the Finder or Photos)"}</span>`}
       </div>`}
       ${long && !broll && src && (COMPOSE.leftOut || []).length ? `<div class="small muted" style="margin:-4px 4px 0" title="${esc(COMPOSE.leftOut.join("\n"))}">Leaving out ${COMPOSE.leftOut.length === 1 ? "an earlier edit" : COMPOSE.leftOut.length + " earlier edits"}, not footage: ${esc(COMPOSE.leftOut.map(x => x.split("/").pop()).join(", "))}</div>` : ""}
       <div class="row">${COMPOSE.song ? pill(`<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M6 12.5V3.5l7-1.5v9"/><circle cx="4.5" cy="12.5" r="1.8"/><circle cx="11.5" cy="11" r="1.8"/></svg>`, COMPOSE.song.name, long ? "the music for this video" : "the music for every clip", "song-x")
@@ -1305,7 +1400,7 @@ function paintCompose() {
       <div class="row">
         ${chipsHTML(m, "new")}
         <span class="grow"></span>
-        <button class="btn primary" id="make" ${(broll ? COMPOSE.video : src || clips.length) && !noEdit ? "" : "disabled"}>${broll ? "Add the B-roll" : long ? "Make the video" : "Make clips"}</button>
+        <button class="btn primary" id="make" ${(broll ? COMPOSE.video : src || clips.length || shorts.length) && !noEdit && !COMPOSE.busy ? "" : "disabled"}>${broll ? "Add the B-roll" : long ? (dropped ? `Make a long video from ${vids.length} clip${vids.length === 1 ? "" : "s"}` : "Make the video") : shorts.length > 1 ? `Make clips from ${shorts.length} videos` : "Make clips"}</button>
       </div>
       ${noEdit ? `<div class="small muted">You're offline, and this Mac has no editing model to use instead. Connect to the internet to make it, or download this Mac's model in Settings › AI when you're back online. Getting a transcript works offline.</div>` : ""}
       <div class="err small" id="make-err"></div>
@@ -1318,6 +1413,7 @@ function paintCompose() {
   $("#notes").oninput = e => { COMPOSE.notes = e.target.value; };
   bindMic($("#mic"), $("#notes"), t => { COMPOSE.notes = t; });
   if ($("#src-x")) $("#src-x").onclick = () => { COMPOSE.source = ""; COMPOSE.sourceInfo = null; COMPOSE.clips = []; LAST = ""; route(); };
+  bindTray();
   document.querySelectorAll("[data-lmode]").forEach(b => b.onclick = () => { COMPOSE.longMode = b.dataset.lmode; LAST = ""; route(); });
   if ($("#song-pick")) $("#song-pick").onclick = () => openSongs(song => { COMPOSE.song = song.name ? song : null; LAST = ""; route(); });
   if ($("#song-x")) $("#song-x").onclick = () => { COMPOSE.song = null; LAST = ""; route(); };
@@ -1402,6 +1498,7 @@ function bindChips() {
   });
 }
 async function setSource(p) {
+  if (COMPOSE.mode === "short") { const info = await dropInfo(p); return info && addShort(info); }     // a chosen video or a pasted link: one more in the tray
   COMPOSE.source = p; COMPOSE.sourceInfo = "Looking…"; COMPOSE.leftOut = []; COMPOSE.clips = []; LAST = ""; route();
   if (COMPOSE.mode === "long" && !/^https?:/.test(p)) {
     try { const r = await api("/api/ai/estimate?path=" + encodeURIComponent(p) + "&transcriber=parakeet");
@@ -1411,33 +1508,138 @@ async function setSource(p) {
   } else COMPOSE.sourceInfo = /^https?:/.test(p) ? "a link: downloaded when you press Make" : "a video on this Mac";
   LAST = ""; route();
 }
-window.vbDrop = p => {
-  if (/^#new\/long/.test(location.hash) && COMPOSE.longMode === "transcript") {    // Get the transcript: a video or a recording
-    COMPOSE.txSrc = p; LAST = ""; return route();
+// ---- what is dropped into the window (or chosen, or pasted). THE TAB YOU ARE ON DECIDES where it goes; the file's shape never does (a
+// vertical clip from Photos can be footage for a long video too). Each drop is ADDED to the tray under the composer's source row.
+const IMAGE_RE = /\.(jpe?g|png|heic|heif|webp|gif|tiff?|bmp|dng|cr2|cr3|arw|nef)$/i;
+// Where a drop goes, as a pure function of where you are and what it is: c = {page, arg, mode (the composer's last mode), longMode, kind}.
+//   kind: video | audio | image | folder | link | other.  -> {act, mode?, toast?}
+function dropPlan(c) {
+  const onNew = c.page === "new", pageMode = onNew ? (c.arg === "short" ? "short" : "long") : (c.page === "short" || c.page === "long") ? c.page : null;
+  const mode = pageMode || (c.mode === "short" ? "short" : "long");                // (no composer here: open it in the mode you used last)
+  if (onNew && mode === "long" && c.longMode === "transcript")
+    return c.kind === "video" || c.kind === "audio" ? {act: "transcript"} : {act: "toast", toast: "Drop a video or a recording to get its transcript."};
+  if (c.kind === "audio") return {act: "song"};
+  if (c.page === "find") return {act: "ignore"};
+  if (onNew && mode === "long" && c.longMode === "broll")
+    return c.kind === "video" ? {act: "broll-video"} : c.kind === "folder" ? {act: "broll-folder"} : {act: "toast", toast: "Drop your video, or a folder of B-roll."};
+  if (c.kind === "video" || c.kind === "link") {
+    if (c.kind === "link" && mode === "long") return {act: "toast", toast: "A link can be made into short clips. Long videos are made from footage on this Mac."};
+    return {act: "add", mode};
   }
-  if (AUDIO_RE.test(p)) {                                                  // a song: for what you're making, or for the video in front of you
-    const song = {song: p, name: p.split("/").pop()};
-    if (SONG_SHEET && !$("#sheet").hidden) { const f = SONG_SHEET; f.close(); return f.onPick(song); }
-    const [pg, id] = location.hash.replace(/^#/, "").split("/");
-    if (pg === "new") { COMPOSE.song = song; LAST = ""; return route(); }
-    const it = (pg === "long" || pg === "short") && items().find(i => i.id === id);
-    if (it && it.status === "done") { if (confirm(`Render “${it.title}” again with “${song.name}”? The cut stays the same.`)) songForProject(pg, id, song); return; }
-    toast("Drop a song on a new video, or on a finished one, to use it.");
-    return;
+  if (c.kind === "folder") return mode === "long" ? {act: "add-folder", mode} : {act: "toast", toast: "Short clips are made from videos or a link. Drop a video, not a folder."};
+  if (c.kind === "image") return {act: "toast", toast: mode === "long" ? "That's a photo. Drop videos or a folder of footage here (photos are B-roll: keep them in your footage folder)." : "That's a photo; drop videos here."};
+  return {act: "toast", toast: "FirstCut can't use that file. Drop a video."};
+}
+async function dropInfo(p) {                                               // what it is: the engine looks (a Photos export may have no usual extension)
+  if (/^https?:\/\//.test(p)) return {kind: "link", name: p.replace(/^https?:\/\/(www\.)?/, ""), path: p};
+  try { return await api("/api/app/probe?path=" + encodeURIComponent(p)); }
+  catch (e) {
+    if (/file on this Mac|full path/.test(e.message)) { toast(e.message); return null; }
+    return {kind: VIDEO_RE.test(p) ? "video" : AUDIO_RE.test(p) ? "audio" : IMAGE_RE.test(p) ? "image" : /\.[A-Za-z0-9]{1,5}$/.test(p) ? "other" : "folder", name: p.split("/").pop(), path: p};
   }
-  if (location.hash.startsWith("#find")) return;
-  if (location.hash.startsWith("#new/long") && COMPOSE.longMode === "broll") {
-    if (VIDEO_RE.test(p)) COMPOSE.video = p; else COMPOSE.brollDir = p;
-    LAST = ""; route(); return;
+}
+function addShort(info) {                                                  // short form: every video (and link) dropped, chosen or pasted joins the tray
+  if (info.kind !== "video" && info.kind !== "link") return toast(info.kind === "image" ? "That's a photo; drop videos here." : "Short clips are made from videos or a link. That isn't one.");
+  COMPOSE.shorts = [...(COMPOSE.shorts || []).filter(s => s.path !== info.path),
+                    {path: info.path, kind: info.kind, name: info.name || info.path.split("/").pop(), dur: info.duration || 0, w: info.w || 0, h: info.h || 0}];
+  COMPOSE.source = ""; COMPOSE.sourceInfo = null; LAST = ""; route();
+}
+function addLongClip(info) {                                               // long form: dropped videos are this video's footage (read where they are)
+  COMPOSE.source = ""; COMPOSE.sourceInfo = null;
+  COMPOSE.clips = [...(COMPOSE.clips || []).filter(c => c.path !== info.path), {path: info.path, dropped: true, name: info.name, dur: info.duration || 0, w: info.w || 0, h: info.h || 0}];
+  LAST = ""; route();
+}
+window.vbDragOver = on => {                                                // (told by the window shell while files are dragged over it)
+  document.body.classList.toggle("dropping", !!on);
+  let h = $("#drop-hint");
+  if (!on) { if (h) h.hidden = true; return; }
+  const [page, arg] = location.hash.replace(/^#/, "").split("/");
+  const m = page === "new" ? (arg === "short" ? "short" : "long") : (page === "short" || page === "long") ? page : (COMPOSE.mode === "short" ? "short" : "long");
+  if (!h) { h = document.createElement("div"); h.id = "drop-hint"; h.className = "drop-hint"; h.setAttribute("role", "status"); document.body.appendChild(h); }
+  h.textContent = page === "find" ? "" : page === "new" ? (m === "short" ? "Drop to add to your short clips" : "Drop to add to your long video") : (m === "short" ? "Drop to make short clips" : "Drop to start a long video");
+  h.hidden = !h.textContent;
+};
+window.vbDropBusy = on => {                                                // (a clip being exported by Photos: it arrives as a copy, which takes a moment)
+  COMPOSE.busy = on ? 1 : 0;
+  if (location.hash.startsWith("#new")) { LAST = ""; route(); } else if (on) toast("Getting the clip from Photos…");
+};
+window.vbDropFailed = msg => toast("Couldn't get that clip: " + String(msg || "unknown error").slice(0, 160));
+// The tray: what has been dropped, as little thumbnails (first frame, the right way up, with its length); click one to see it play.
+function trayHTML(items, mode) {
+  const tile = (it, k) => {
+    const link = it.kind === "link", pic = link ? "" : `/api/app/thumb?path=${encodeURIComponent(it.path)}&t=1`;
+    return `<div class="dtile" data-k="${k}"><button class="dtile-open" data-dopen="${k}" ${link ? "disabled" : ""} aria-label="${link ? "Link: " : "Preview "}${esc(it.name)}" title="${esc(it.name)}">
+        ${link ? `<span class="dtile-link" aria-hidden="true">link</span>` : `<img alt="" src="${pic}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'dtile-link',textContent:'no picture'}))">`}
+        ${it.dur ? `<span class="dtile-dur">${mmss(it.dur)}</span>` : ""}</button>
+      <span class="ell small muted dtile-name">${esc(it.name)}</span><button class="x dtile-x" data-drm="${k}" aria-label="Remove ${esc(it.name)}">×</button></div>`;
+  };
+  const wait = COMPOSE.busy ? `<div class="dtile dtile-wait" role="status"><span class="dtile-open"><span class="dtile-link">Getting the clip from Photos…</span></span></div>` : "";
+  return `<div class="tray" id="tray" data-mode="${mode}" role="list" aria-label="Dropped videos">${items.map(tile).join("")}${wait}</div>`;
+}
+function bindTray() {
+  const tray = $("#tray"); if (!tray) return;
+  const list = () => (COMPOSE.mode === "short" ? (COMPOSE.shorts || []) : [...new Map((COMPOSE.clips || []).filter(c => c.dropped).map(c => [c.path, c])).values()]);
+  tray.querySelectorAll("[data-dopen]").forEach(b => b.onclick = () => { const it = list()[+b.dataset.dopen]; if (it) openDropPreview(it); });
+  tray.querySelectorAll("[data-drm]").forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const it = list()[+b.dataset.drm]; if (!it) return;
+    if (COMPOSE.mode === "short") COMPOSE.shorts = (COMPOSE.shorts || []).filter(s => s.path !== it.path);
+    else COMPOSE.clips = (COMPOSE.clips || []).filter(c => c.path !== it.path);
+    LAST = ""; route();
+  });
+}
+function openDropPreview(it) {                                             // a small player over the page: the file itself, as it is
+  closeDropPreview();
+  const el = document.createElement("div");
+  el.id = "dprev"; el.className = "dprev"; el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true"); el.setAttribute("aria-label", "Preview of " + it.name);
+  const dims = it.w && it.h ? ` · ${it.w}×${it.h}${it.h > it.w ? " (vertical)" : ""}` : "";
+  el.innerHTML = `<div class="dprev-box"><video controls autoplay playsinline src="/api/app/localfile?path=${encodeURIComponent(it.path)}" poster="/api/app/thumb?path=${encodeURIComponent(it.path)}&t=1"></video>
+    <div class="dprev-bar"><span class="ell grow">${esc(it.name)}<span class="muted">${it.dur ? " · " + mmss(it.dur) : ""}${dims}</span></span><button class="btn" id="dprev-x">Close</button></div></div>`;
+  el.onclick = e => { if (e.target === el) closeDropPreview(); };
+  document.body.appendChild(el);
+  const v = el.querySelector("video");
+  v.onerror = () => {                                                      // (this page can't decode it: show what it looks like, and say so)
+    v.replaceWith(Object.assign(document.createElement("img"), {src: `/api/app/thumb?path=${encodeURIComponent(it.path)}&t=1`, alt: "", className: "dprev-still"}));
+    const m = document.createElement("div"); m.className = "small muted"; m.textContent = "This window can't play that file, but it is the right one: it's what is shown here. FirstCut will read it as it is."; el.querySelector(".dprev-bar").before(m);
+  };
+  $("#dprev-x").onclick = closeDropPreview; $("#dprev-x").focus();
+}
+function closeDropPreview() {
+  const el = $("#dprev"); if (!el) return;
+  const v = el.querySelector("video"); if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
+  el.remove();
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#dprev")) { e.preventDefault(); closeDropPreview(); } });
+window.addEventListener("hashchange", closeDropPreview);
+window.vbDrop = async p => {
+  const [page, arg] = location.hash.replace(/^#/, "").split("/");
+  const info = await dropInfo(p); if (!info) return;
+  const plan = dropPlan({page: page || "home", arg, mode: COMPOSE.mode, longMode: COMPOSE.longMode, kind: info.kind});
+  switch (plan.act) {
+    case "ignore": return;
+    case "toast": return toast(plan.toast);
+    case "transcript": COMPOSE.txSrc = p; LAST = ""; return route();
+    case "song": {                                                         // a song: for what you're making, or for the video in front of you
+      const song = {song: p, name: p.split("/").pop()};
+      if (SONG_SHEET && !$("#sheet").hidden) { const f = SONG_SHEET; f.close(); return f.onPick(song); }
+      if (page === "new") { COMPOSE.song = song; LAST = ""; return route(); }
+      const it = (page === "long" || page === "short") && items().find(i => i.id === arg);
+      if (it && it.status === "done") { if (confirm(`Render “${it.title}” again with “${song.name}”? The cut stays the same.`)) songForProject(page, arg, song); return; }
+      return toast("Drop a song on a new video, or on a finished one, to use it.");
+    }
+    case "broll-video": COMPOSE.video = p; LAST = ""; return route();
+    case "broll-folder": COMPOSE.brollDir = p; LAST = ""; return route();
+    default: {                                                             // "add" / "add-folder": into the composer of the tab you are on
+      const m = plan.mode;
+      if (page !== "new" || arg !== m) {                                   // (no composer here yet: open one, in the same mode)
+        if (COMPOSE.mode !== m) { COMPOSE.mode = m; COMPOSE.notes = ""; }
+        COMPOSE.mode = m; location.hash = "#new/" + m;
+      }
+      COMPOSE.mode = m;
+      if (plan.act === "add-folder") return setSource(p);
+      return m === "short" ? addShort(info) : addLongClip(info);
+    }
   }
-  if (location.hash.startsWith("#new/long") && VIDEO_RE.test(p)) {        // Long form: dropped videos are this video's footage (read where
-    COMPOSE.mode = "long"; COMPOSE.source = ""; COMPOSE.sourceInfo = null;  //  they are: only the path is taken), one or several
-    COMPOSE.clips = [...(COMPOSE.clips || []).filter(c => c.path !== p), {path: p, dropped: true}];
-    LAST = ""; return route();
-  }
-  const m = VIDEO_RE.test(p) ? "short" : location.hash.startsWith("#new/short") && /^https?:/.test(p) ? "short" : "long";
-  if (COMPOSE.mode !== m) { COMPOSE.mode = m; COMPOSE.notes = ""; }
-  location.hash = "#new/" + m; setSource(p);
 };
 async function make() {
   const b = $("#make"); b.disabled = true; $("#make-err").textContent = "";
@@ -1449,9 +1651,12 @@ async function make() {
                                        : clips.length ? {clips: [...new Set(clips.map(c => c.path))], notes: COMPOSE.notes, options: o, ...song,
                                                          ...(clips.every(c => c.dropped) ? {title: (() => { const v = [...new Set(clips.map(c => c.path))];   // dropped videos: named after
                                                            return v.length === 1 ? v[0].split("/").pop().replace(/\.[^.]+$/, "") : v[0].split("/").slice(-2, -1)[0] || "Dropped videos"; })()} : {})}
+                                       : m === "short" && (COMPOSE.shorts || []).length ? {sources: COMPOSE.shorts.map(s => s.path), notes: COMPOSE.notes, options: o, ...song}   // (one set of clips for each)
                                        : {source: COMPOSE.source, notes: COMPOSE.notes, options: o, ...song});
-    COMPOSE = {mode: m, source: "", sourceInfo: null, notes: "", opts: {long: {}, short: {}}, clips: [], longMode: COMPOSE.longMode, video: "", brollDir: "", song: null};
+    COMPOSE = {mode: m, source: "", sourceInfo: null, notes: "", opts: {long: {}, short: {}}, clips: [], shorts: [], longMode: COMPOSE.longMode, video: "", brollDir: "", song: null};
     location.hash = (m === "long" ? "#long/" : "#short/") + r.id;
+    if (r.ids && r.ids.length > 1) toast(`Making clips from ${r.ids.length} videos: they're in Making it now.`);
+    if (r.errors && r.errors.length) setTimeout(() => toast("Left out: " + r.errors.join(" · ").slice(0, 200)), 600);
     refresh();
   } catch (e) { $("#make-err").textContent = e.message; b.disabled = false; }
 }
@@ -1495,9 +1700,14 @@ function liveMount(job, kind, st) {
 }
 function liveHead(st) {
   const steps = LIVE_STEPS[LIVE.kind] || [], i = steps.findIndex(s => s[0] === st.status), pct = Math.round((st.progress || 0) * 100);
-  const eta = etaText(LIVE.id || "", st.progress || 0) || etaText(location.hash.split("/")[1] || "", st.progress || 0);
+  const pg = st.prog || {}, fmtT = s => { s = Math.round(s || 0); return s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+  let eta = ""; if (pg.eta_s != null && !pg.long) { const l = pg.eta_s; eta = l < 60 ? "under a minute left" : l < 3600 ? `about ${Math.max(1, Math.round(l / 60))} min left` : `about ${(l / 3600).toFixed(1)} h left`; }
+  const stepsDone = (pg.stages_done || []).map(d => `${esc(d.label)} ${fmtT(d.seconds)} ✓`).join(" · ");
+  const here = pg.stage_elapsed_s != null ? `for ${fmtT(pg.stage_elapsed_s)}` : "";
+  const slow = pg.long ? `Taking longer than usual: ${esc(st.detail || st.stage || "this step")} · ${Math.max(1, Math.round((pg.stage_elapsed_s || 0) / 60))} min` : "";
   lvq("#lv-head").innerHTML = `<div class="lv-top"><b class="grow ell">${esc(st.stage || "Waiting its turn")}</b><span class="muted">${pct}%${eta ? ` · ${eta}` : ""}</span>
       <button class="btn danger" id="${st.stopId}">Stop</button></div>${st.detail ? `<div class="small muted ell" style="margin-top:4px">${esc(st.detail)}</div>` : ""}
+    ${here || stepsDone ? `<div class="small muted prog-line">${[here, stepsDone].filter(Boolean).join(" · ")}</div>` : ""}${slow ? `<div class="small prog-slow">${slow}</div>` : ""}
     <div class="bar" style="margin:10px 0 12px"><i style="width:${pct}%"></i></div>
     <div class="row" style="justify-content:space-between"><div class="lv-steps">${steps.map(([k, l], n) => `<span class="${i < 0 ? "" : n < i ? "done" : n === i ? "now" : ""}">${l}</span>`).join("")}</div>
       <span class="small muted">${esc(st.note || "")}</span></div>`;
@@ -1663,7 +1873,7 @@ function liveNow() {                                          // the latest thre
 //    buttons; Delete works), reassure (nothing changes until "Render the changes", and it says what would: "Cut 12 s (3 sentences)").
 // 4. Words in the video: green marker AND underline (not colour alone); will be cut: struck through and red; will be added: dashed blue.
 //    The box scrolls; the page repaints around a selection are held off (teHolding) so a selection is never lost mid-way.
-const TE = {pid: null, open: false, data: null, at: 0, loading: false, sel: null, scroll: 0, busy: false};
+const TE = {focus: null, pid: null, open: false, data: null, at: 0, loading: false, sel: null, scroll: 0, busy: false};
 function teHolding() {                                                     // a selection in the words: the page doesn't repaint under it
   const s = getSelection(), box = $("#te-box");
   return !!(TE.open && box && s && !s.isCollapsed && s.anchorNode && box.contains(s.anchorNode));
@@ -1733,10 +1943,11 @@ function paintTranscriptEdit(pid, busy) {
     const parts = ["<p>"];
     d.words.forEach((w, k) => { if (k && brk.has(k)) parts.push("</p><p>"); parts.push(`<span class="te-w f${f[k] || 0}" data-i="${k}">${esc(w[0])}</span> `); });
     parts.push("</p>");
-    body = `<div class="te-legend small muted"><span class="te-w f1">In the video</span><span class="te-w f0">Not in it</span>${n ? `<span class="te-w f2">Will be cut</span><span class="te-w f3">Will be added</span>` : ""}</div>
-      <div class="te-box" id="te-box" tabindex="0" role="textbox" aria-readonly="true" aria-label="The words of the video. Select some, then press Delete to cut them.">${parts.join("")}</div>
-      <div class="te-bar"><span class="small muted grow" id="te-selinfo"></span>
-        <button class="btn" id="te-cut" disabled>Cut from the video</button><button class="btn" id="te-add" disabled>Add to the video</button></div>
+    const nIn = f.split("").filter(c => c === "1" || c === "2").length, nOut = f.length - nIn;
+    body = `<div class="te-legend small muted"><button class="te-w f1" data-tf="in" aria-pressed="${TE.focus === "in"}" title="Show only the words that are in the video">In the video · ${nIn}</button><button class="te-w f0" data-tf="out" aria-pressed="${TE.focus === "out"}" title="Show only the words that are not in the video">Not in it · ${nOut}</button>${n ? `<span class="te-w f2">Will be cut</span><span class="te-w f3">Will be added</span>` : ""}</div>
+      <div class="te-box${TE.focus ? " focus-" + TE.focus : ""}" id="te-box" tabindex="0" role="textbox" aria-readonly="true" aria-label="The words of the video. Select some, then press Delete to cut them.">${parts.join("")}</div>
+      ${d.locked ? `<div class="small muted">${esc(d.locked)}</div>` : `<div class="te-bar"><span class="small muted grow" id="te-selinfo"></span>
+        <button class="btn" id="te-cut" disabled>Cut from the video</button><button class="btn" id="te-add" disabled>Add to the video</button></div>`}
       ${n ? `<div class="card te-staged"><b>${esc(st.summary || "")}</b><span class="small muted grow">Nothing changes until you render it.</span>
           <button class="btn quiet" id="te-undo">Undo</button><button class="btn quiet" id="te-clear">Discard</button>
           ${st.queued ? `<span class="small" style="font-weight:600">Queued</span>` : `<button class="btn primary" id="te-go">${d.busy ? "Apply when it's finished" : "Render the changes"}</button>`}</div>` : ""}
@@ -1761,11 +1972,12 @@ function paintTranscriptEdit(pid, busy) {
     paintTranscriptEdit(pid);
   };
   const cut = () => { if (TE.sel) act("cut", {first: TE.sel[0], last: TE.sel[1]}); };
-  ["#te-cut", "#te-add"].forEach(id => $(id).onmousedown = e => e.preventDefault());      // (pressing a button keeps the selection)
-  $("#te-cut").onclick = cut;
-  $("#te-add").onclick = () => { if (TE.sel) act("add", {first: TE.sel[0], last: TE.sel[1]}); };
+  ["#te-cut", "#te-add"].forEach(id => { const el = $(id); if (el) el.onmousedown = e => e.preventDefault(); });      // (pressing a button keeps the selection)
+  if ($("#te-cut")) $("#te-cut").onclick = cut;
+  if ($("#te-add")) $("#te-add").onclick = () => { if (TE.sel) act("add", {first: TE.sel[0], last: TE.sel[1]}); };
+  slot.querySelectorAll("[data-tf]").forEach(b => b.onclick = () => { TE.focus = TE.focus === b.dataset.tf ? null : b.dataset.tf; paintTranscriptEdit(pid); });   // (the key: show one kind)
   box.onkeydown = e => {
-    if ((e.key === "Delete" || e.key === "Backspace") && TE.sel && can) { e.preventDefault(); cut(); }
+    if ((e.key === "Delete" || e.key === "Backspace") && TE.sel && can && !d.locked) { e.preventDefault(); cut(); }
     else if (e.key === "Escape") { getSelection().removeAllRanges(); TE.sel = null; teSelUI(); }
   };
   [["#te-undo", "undo-staged"], ["#te-clear", "clear"], ["#te-go", "apply"], ["#te-prev", "undo"]].forEach(([id, path]) => { const el = $(id); if (el) el.onclick = () => { el.disabled = true; act(path, {}); }; });
@@ -1785,13 +1997,17 @@ function paintLong(pid) {
   else if (st === "approval" && p.awaiting_approval) h += `<div class="card" style="padding:18px"><b>The plan is ready for you to check</b><div class="small muted" style="margin-top:4px">It follows your outline step by step; approve it to render.</div><div class="row" style="margin-top:12px"><button class="btn primary" id="l-approve">Approve and render</button></div></div>`;
   else if (st === "done" && c) {
     const base = `/media/${p.job}/`;
-    h += `<video class="lf-video" controls playsinline preload="metadata" src="${base}${c.file}?v=${c.rendered_at}" poster="${base}${c.thumb}?v=${c.rendered_at}"></video>
+    const waiting = (p.pending_changes || []).length;
+    if (waiting) h += `<div class="stale" role="status"><b>The video is out of date</b><span class="muted">${waiting} change${waiting === 1 ? "" : "s"} not rendered yet: ${esc([...new Set(p.pending_changes.map(x => x.note).filter(Boolean))].join(", "))}. This is the last render.</span><span class="grow"></span>
+        <button class="btn quiet" id="l-stale-discard" title="Go back to the B-roll as it was in this video">Discard changes</button><button class="btn primary" id="l-stale-go">Re-render</button></div>`;
+    h += `${p.archived ? storageArchivedCard("long", p, `${base}${c.thumb}?v=${c.rendered_at}`) : `<video class="lf-video" controls playsinline preload="metadata" src="${base}${c.file}?v=${c.rendered_at}" poster="${base}${c.thumb}?v=${c.rendered_at}"></video>`}
       <div class="row small muted"><span>${mmss(c.duration)}</span>${c.footage_s ? `<span>· made from ${mmss(c.footage_s)} of footage, ${c.cuts} cuts</span>` : ""}<span class="grow"></span><span class="ell">Saved in ${esc(p.saved_to || p.folder)}</span></div>
       ${(() => { const n = p.notes_info || {}, q = n.qa;                       // Notes: YouTube chapters, and the quality check
         const qa = q ? (q.fix || q.look ? [q.fix ? `${q.fix} to fix` : "", q.look ? `${q.look} to look at` : ""].filter(Boolean).join(", ") : "No issues found") : "", qaMore = !!(q && (q.fix || q.look));
-        return n.chapters || qa ? `<div class="row small notes-row">${n.chapters ? `<span class="muted">Chapters</span><span class="ell muted grow" title="${esc(n.chapters)}">${esc(n.chapters.trim().split("\n").slice(0, 3).join(" · "))}${n.chapters.trim().split("\n").length > 3 ? " …" : ""}</span><button class="btn quiet" id="l-chap">Copy</button>` : `<span class="grow"></span>`}
+        const writing = n.notes_state === "writing" ? `<div class="small muted" id="l-notes-writing">Writing chapters and a description…</div>` : "";
+        return writing + (n.chapters || qa ? `<div class="row small notes-row">${n.chapters ? `<span class="muted">Chapters</span><span class="ell muted grow" title="${esc(n.chapters)}">${esc(n.chapters.trim().split("\n").slice(0, 3).join(" · "))}${n.chapters.trim().split("\n").length > 3 ? " …" : ""}</span><button class="btn quiet" id="l-chap">Copy</button>` : `<span class="grow"></span>`}
           ${qa ? `<span class="${q && q.fix ? "err" : "muted"}" style="white-space:nowrap">Quality check: ${esc(qa)}</span>${qaMore ? `<button class="btn quiet" id="l-qa" aria-expanded="false">See what it found</button>` : ""}` : ""}</div>
-          <div id="l-qa-box" hidden></div>` : ""; })()}
+          <div id="l-qa-box" hidden></div>` : ""); })()}
       <div id="l-shots" class="shots-wrap"></div>
       <div id="te-slot"></div>
       ${c.edit_note ? `<div class="small ${c.edit_note.ok ? "muted" : "err"}">${esc(c.edit_note.result || c.edit_note.instruction)}</div>` : ""}
@@ -1803,11 +2019,14 @@ function paintLong(pid) {
         <button class="btn" id="l-learn">Remember</button></div><div class="small muted" id="l-learned"></div>`;
   } else h += `<div class="card" style="padding:18px"><b>Ready to make</b><div class="row" style="margin-top:12px"><button class="btn primary" id="l-again">Make the video</button></div></div>`;
   $("#view").innerHTML = h + `</div>`;
-  if (busy) liveMount(p.job, "long", {status: st, stage: js.stage, detail: js.detail, progress: js.progress, stopId: "l-stop", note: "You can close the window: it keeps going."});
+  if (busy) liveMount(p.job, "long", {prog: js, status: st, stage: js.stage, detail: js.detail, progress: js.progress, stopId: "l-stop", note: "You can close the window: it keeps going."});
   paintTranscriptEdit(pid, busy);
   const on = (id, f) => { const el = $(id); if (el) el.onclick = async () => { el.disabled = true; try { await f(); } catch (e) { alert(e.message); } el.disabled = false; refresh(); }; };
   on("#l-stop", () => post(`/api/ai/projects/${pid}/cancel`));
   on("#l-rerender", () => post(`/api/ai/projects/${pid}/rerender`));
+  if ($("#arch-go")) storageArchivedBind("long", pid);
+  on("#l-stale-go", () => { delete BROLL[pid]; return post(`/api/ai/projects/${pid}/rerender`); });                // (one render with every waiting change; it queues if another video is being made)
+  on("#l-stale-discard", async () => { await post(`/api/app/long/${pid}/pending/discard`); delete BROLL[pid]; toast("Back to the B-roll of the last render."); });
   if ($("#l-chap")) $("#l-chap").onclick = async () => { try { await navigator.clipboard.writeText((p.notes_info || {}).chapters || ""); toast("Chapters copied: paste them into the YouTube description."); } catch (e) { alert(e.message); } };
   if ($("#l-qa")) $("#l-qa").onclick = async () => {                        // the report, in the app: what it found, and one button to send it back through the editor
     const box = $("#l-qa-box"), open = box.hidden;
@@ -1849,17 +2068,18 @@ function paintLong(pid) {
 const BROLL = {};                                                          // pid -> {key, job, shots, err}
 async function paintBroll(p) {
   const box = $("#l-shots"); if (!box) return;
-  const key = p.id + ":" + (p.clip && p.clip.rendered_at);
+  const key = p.id + ":" + (p.clip && p.clip.rendered_at) + ":" + (p.pending_changes || []).length;     // (a waiting change refreshes the strip)
   const draw = () => {
     const d = BROLL[p.id];
     if (!d || d.key !== key) { box.innerHTML = ""; return; }
     if (d.err || !d.shots.length) { box.innerHTML = d.err ? `<div class="small muted">${esc(d.err)}</div>` : ""; return; }
-    box.innerHTML = `<div class="row" style="justify-content:space-between"><span class="small" style="font-weight:600">B-roll in this video</span><span class="small muted">Click a shot to see it; Replace swaps just that one.</span></div>
+    box.innerHTML = `<div class="row" style="justify-content:space-between"><span class="small" style="font-weight:600">B-roll in this video</span><span class="small muted">Click a shot to see it; Replace swaps it, Edit trims it. Nothing renders until you press Re-render.</span></div>
       <div class="broll-strip" role="list">${d.shots.map(x => `<div class="shot-t" role="listitem" data-k="${x.k}" data-at="${x.at}" data-end="${x.at + x.length}">
-        <button class="shot-pic" data-seek="${x.at}" aria-label="Go to ${esc(x.what || "this shot")} at ${mmss(x.at)}" title="${esc(x.what)}">${x.thumb ? `<img alt="" loading="lazy" src="/media/${d.job}/${x.thumb}">` : ""}<span class="badge">${mmss(x.at)}</span>${x.photo ? `<span class="badge l">Photo</span>` : ""}</button>
-        <button class="btn quiet shot-rep" data-rep="${x.k}">Replace…</button></div>`).join("")}</div>`;
+        <button class="shot-pic" data-seek="${x.at}" aria-label="Go to ${esc(x.what || "this shot")} at ${mmss(x.at)}" title="${esc(x.what)}">${x.thumb ? `<img alt="" loading="lazy" src="/media/${d.job}/${x.thumb}">` : ""}<span class="badge">${mmss(x.at)}</span>${x.photo ? `<span class="badge l">Photo</span>` : ""}${x.changed ? `<span class="shot-changed" title="Changed: not in the video until you re-render">changed</span>` : ""}</button>
+        <div class="shot-acts"><button class="btn quiet shot-rep" data-rep="${x.k}">Replace…</button>${x.photo ? "" : `<button class="btn quiet shot-rep" data-edit="${x.k}" title="Trim where this shot starts and stops, or slide it">Edit…</button>`}</div></div>`).join("")}</div>`;
     box.querySelectorAll("[data-seek]").forEach(b => b.onclick = () => { const v = $(".lf-video"); if (v) { v.currentTime = +b.dataset.seek + 0.05; v.play().catch(() => {}); } });
     box.querySelectorAll("[data-rep]").forEach(b => b.onclick = () => openReplace(p, +b.dataset.rep));
+    box.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => shotEditOpen(p, +b.dataset.edit));
     const v = $(".lf-video");
     if (v) v.ontimeupdate = () => { const t = v.currentTime; box.querySelectorAll(".shot-t").forEach(el => el.classList.toggle("on", t >= +el.dataset.at && t < +el.dataset.end)); };
   };
@@ -1882,7 +2102,7 @@ async function openReplace(p, k) {
         <input id="rp-q" type="search" autocomplete="off" placeholder="Search your footage, e.g. students walking to class" aria-label="Search for another shot">
         <button class="mic mic-in" id="rp-mic" aria-label="Dictate: say what you want" title="Say it instead of typing (the words are worked out on this Mac)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg><span class="mic-t" hidden></span></button></div>
       <div class="rp-list" role="list"><div class="small muted" style="padding:14px 20px">Finding shots that fit…</div></div>
-      <div class="row" style="padding:12px 20px;border-top:1px solid var(--line);justify-content:space-between"><span class="small muted">Only this shot changes; the video renders again.</span>
+      <div class="row" style="padding:12px 20px;border-top:1px solid var(--line);justify-content:space-between"><span class="small muted">Only this shot changes. Nothing renders until you press Re-render on the video.</span>
         <button class="btn" id="rp-speaker">Show the speaker instead</button></div></div>`;
   m.hidden = false;
   m.onclick = e => { if (e.target === m) close(); };
@@ -1890,7 +2110,7 @@ async function openReplace(p, k) {
   $("#rp-close").onclick = close;
   const use = async (choice, b) => {
     b.disabled = true;
-    try { await post(`/api/app/long/${p.id}/shots/${k}`, {choice}); close(); delete BROLL[p.id]; toast(choice === "speaker" ? "Taking that shot out: the video is rendering again." : "Swapping the shot: the video is rendering again."); refresh(); }
+    try { const r = await post(`/api/app/long/${p.id}/shots/${k}`, {choice}); close(); delete BROLL[p.id]; toast((choice === "speaker" ? "That shot is taken out." : "Shot replaced.") + " Press Re-render when you've made all your changes."); refresh(); }
     catch (e) { b.disabled = false; alert(e.message); }
   };
   $("#rp-speaker").onclick = e => use("speaker", e.currentTarget);
@@ -1927,6 +2147,120 @@ async function openReplace(p, k) {
   } catch (e) { list.innerHTML = `<div class="err small" style="padding:14px 20px">${esc(e.message)}</div>`; }
 }
 
+// ---- Edit… on a B-roll shot: where it starts and stops in its own file, without a render.
+// North star: "Three frames where the camera starts to point down: cut them off, or slide the shot a few frames." The strip of stills is the
+// shot's file around the lit part; two handles move the in and out, the lit part slides, buttons move a frame at a time. Save only changes
+// the plan (the video is marked out of date); Re-render is on the video.
+async function shotEditOpen(p, k) {
+  const m = $("#sheet");
+  let v = null;
+  const close = () => { try { if (v) { v.pause(); v.removeAttribute("src"); v.load(); } } catch (e) { /* none */ } m.hidden = true; m.innerHTML = ""; document.removeEventListener("keydown", onkey); };
+  const onkey = e => { if (e.key === "Escape") close(); };
+  const shell = inner => `<div class="dialog" role="dialog" aria-label="Edit this shot" style="flex-direction:column;height:auto;max-height:100%;width:min(780px,100%);overflow-y:auto">${inner}</div>`;
+  m.innerHTML = shell(`<div class="small muted" style="padding:24px 20px">Opening the shot…</div>`);
+  m.hidden = false;
+  m.onclick = e => { if (e.target === m) close(); };
+  document.addEventListener("keydown", onkey);
+  let d;
+  try { d = await api(`/api/app/long/${p.id}/shots/${k}/edit`); }
+  catch (e) { m.innerHTML = shell(`<div class="row" style="padding:16px 20px;justify-content:space-between"><b>Can't edit this shot</b><button class="x" id="se-x" aria-label="Close" style="background:transparent;font-size:18px">×</button></div><div class="err small" style="padding:0 20px 20px">${esc(e.message)}</div>`); $("#se-x").onclick = close; return; }
+  const fps = +d.fps || 30, t0 = +d.t0, t1 = Math.max(+d.t1, t0 + 0.1), span = t1 - t0, dur = +d.dur, minLen = +d.min_length || 0.5, maxLen = +d.max_length || 1e9;
+  const fr = t => Math.round(t * fps) / fps;
+  let tin = fr(+d.in), tout = fr(+d.out);
+  const names = d.stills || [], media = `/api/app/long/${p.id}/shots/${k}/media`;
+  const sec = t => t.toFixed(2) + " s";
+  m.innerHTML = shell(`
+    <div class="row" style="padding:16px 20px 10px;justify-content:space-between;align-items:flex-start"><div><h2 style="font-size:17px">Edit the shot at ${mmss(d.at)}</h2>
+      <div class="small muted ell" style="max-width:600px">${esc(d.what || d.name || "")}</div></div><button class="x" id="se-x" aria-label="Close" style="background:transparent;font-size:18px">×</button></div>
+    <div class="se-video"><video id="se-v" playsinline muted></video><img id="se-frame" alt=""></div>
+    <div class="se-strip" id="se-strip" aria-label="The film around this shot">${names.length ? names.map(n => `<img class="se-still" alt="" draggable="false" src="/media/${d.job}/${n}">`).join("") : `<div class="small muted" style="margin:auto">No pictures for this file: use the buttons below.</div>`}
+      <div class="se-dim" id="se-dl" style="left:0"></div><div class="se-dim" id="se-dr" style="right:0"></div>
+      <div class="se-win" id="se-win" title="Drag to slide the whole shot"></div>
+      <div class="se-h" id="se-hi" role="slider" tabindex="0" aria-label="Where the shot starts" title="Where the shot starts"></div>
+      <div class="se-h" id="se-ho" role="slider" tabindex="0" aria-label="Where the shot stops" title="Where the shot stops"></div>
+      <div class="se-head" id="se-head" hidden></div></div>
+    <div class="se-read small"><span>Starts <b id="se-ti"></b></span><span>Stops <b id="se-to"></b></span><span>Shows <b id="se-len"></b></span><span class="muted" id="se-hint"></span></div>
+    <div class="se-nudge"><span class="grp"><span class="small muted">Start</span><button class="btn" data-n="in:-10">−10f</button><button class="btn" data-n="in:-1">−1f</button><button class="btn" data-n="in:1">+1f</button><button class="btn" data-n="in:10">+10f</button></span>
+      <span class="grp"><span class="small muted">Stop</span><button class="btn" data-n="out:-10">−10f</button><button class="btn" data-n="out:-1">−1f</button><button class="btn" data-n="out:1">+1f</button><button class="btn" data-n="out:10">+10f</button></span>
+      <span class="grp"><span class="small muted">Slide</span><button class="btn" data-n="slide:-10">◀ 10f</button><button class="btn" data-n="slide:-1">◀ 1f</button><button class="btn" data-n="slide:1">1f ▶</button><button class="btn" data-n="slide:10">10f ▶</button></span></div>
+    <div class="row" style="padding:12px 20px;border-top:1px solid var(--line);margin-top:8px;justify-content:space-between"><span class="small muted" id="se-note">The shot starts at the same moment of the video. A shorter shot shows the speaker again sooner. Nothing renders until you press Re-render.</span>
+      <span class="row"><button class="btn" id="se-play">Play it</button><button class="btn" id="se-cancel">Cancel</button><button class="btn primary" id="se-save">Save</button></span></div>`);
+  $("#se-x").onclick = close; $("#se-cancel").onclick = close;
+  v = $("#se-v");
+  const strip = $("#se-strip"), win = $("#se-win"), hi = $("#se-hi"), ho = $("#se-ho"), frame = $("#se-frame"), head = $("#se-head"), pct = t => ((t - t0) / span * 100);
+  let ignore = false;
+  const clampIn = t => { const lo = Math.max(t0, 0, tout - maxLen), hiB = tout - minLen; return fr(Math.max(lo, Math.min(hiB, t))); };
+  const clampOut = t => { const lo = tin + minLen, hiB = Math.min(t1, dur, tin + maxLen); return fr(Math.max(Math.min(lo, hiB), Math.min(hiB, t))); };
+  const slide = to => {                                                    // same length, in at `to`, kept inside the strip and the file
+    const len = tout - tin, a = fr(Math.max(Math.max(t0, 0), Math.min(Math.min(t1, dur) - len, to)));
+    tin = a; tout = fr(a + len);
+  };
+  const still = t => { if (!names.length) return; const i = Math.max(0, Math.min(names.length - 1, Math.round((t - t0) / (+d.step || 1)))); frame.src = `/media/${d.job}/${names[i]}`; frame.hidden = false; };
+  const paint = () => {
+    const a = pct(tin), b = pct(tout);
+    win.style.left = a + "%"; win.style.width = Math.max(0, b - a) + "%"; hi.style.left = a + "%"; ho.style.left = b + "%";
+    $("#se-dl").style.width = Math.max(0, a) + "%"; $("#se-dr").style.width = Math.max(0, 100 - b) + "%";
+    $("#se-ti").textContent = sec(tin); $("#se-to").textContent = sec(tout);
+    const len = tout - tin; $("#se-len").textContent = sec(len) + ` (${Math.round(len * fps)} frames)`;
+    hi.setAttribute("aria-valuenow", tin.toFixed(2)); ho.setAttribute("aria-valuenow", tout.toFixed(2));
+    $("#se-hint").textContent = len >= maxLen - 0.001 ? "As long as it can be before the next shot." : tout >= Math.min(t1, dur) - 0.001 ? "At the end of the film shown here." : "";
+  };
+  const at = e => { const r = strip.getBoundingClientRect(); return t0 + Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width))) * span; };
+  const drag = (el, move) => {                                             // pointer capture: the drag follows the mouse out of the handle
+    el.onpointerdown = e => { e.preventDefault(); e.stopPropagation(); try { el.setPointerCapture(e.pointerId); } catch (x) { /* synthetic events */ } if (v) v.pause(); ignore = false; el._s = {x: e.clientX, tin, tout, t: at(e)}; };
+    el.onpointermove = e => { if (!el._s) return; move(e, el._s); paint(); };
+    el.onpointerup = el.onpointercancel = () => { if (el._s) { el._s = null; } };
+  };
+  drag(hi, e => { tin = clampIn(at(e)); still(tin); });
+  drag(ho, e => { tout = clampOut(at(e)); still(Math.max(tin, tout - 1 / fps)); });
+  drag(win, (e, s) => { slide(s.tin + (at(e) - s.t)); still(tin); });
+  const nudge = (what, f) => {
+    const dt = f / fps;
+    if (what === "in") { tin = clampIn(tin + dt); still(tin); }
+    else if (what === "out") { tout = clampOut(tout + dt); still(Math.max(tin, tout - 1 / fps)); }
+    else { slide(tin + dt); still(tin); }
+    paint();
+  };
+  m.querySelectorAll("[data-n]").forEach(b => b.onclick = () => { const [w, f] = b.dataset.n.split(":"); nudge(w, +f); });
+  const keys = (what) => e => { const dir = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0; if (!dir) return; e.preventDefault(); e.stopPropagation(); nudge(what, dir * (e.shiftKey ? 10 : 1)); };
+  hi.onkeydown = keys("in"); ho.onkeydown = keys("out");
+  win.tabIndex = 0; win.setAttribute("role", "slider"); win.setAttribute("aria-label", "Slide the whole shot"); win.onkeydown = keys("slide");
+  // playing just the chosen part: the original file as it is (like Quick Look); a file this page can't play gets a small copy
+  let mode = "direct";
+  const useCopy = () => {
+    if (mode !== "direct") return;
+    mode = "copy"; v.src = `/api/app/long/${p.id}/shots/${k}/preview?s=${tin.toFixed(2)}&e=${(tout + 0.5).toFixed(2)}`; v.dataset.off = tin.toFixed(3);
+    $("#se-note").textContent = "Preparing a small copy to play…";
+    v.oncanplay = () => { $("#se-note").textContent = ""; v.play().catch(() => {}); };
+  };
+  v.addEventListener("error", () => { if (mode === "direct") useCopy(); else $("#se-note").textContent = "This shot can't be played here: use the pictures."; });
+  v.addEventListener("loadedmetadata", () => { if (mode === "direct" && !v.videoWidth) return useCopy(); if (mode === "direct") v.currentTime = tin; });
+  v.addEventListener("timeupdate", () => {
+    const off = mode === "copy" ? +v.dataset.off || 0 : 0, t = off + v.currentTime;
+    if (mode === "copy" ? t >= tout - 1e-3 : t >= tout) v.currentTime = mode === "copy" ? 0 : tin;       // (the chosen part, again)
+    head.hidden = false; head.style.left = pct(Math.max(t0, Math.min(t1, t))) + "%";
+  });
+  let loaded = false;
+  $("#se-play").onclick = () => {
+    if (!v.paused) { v.pause(); return; }
+    frame.hidden = true;
+    if (mode === "copy") { mode = "direct"; loaded = false; }                // (a copy was made for earlier in/out points: try the original again)
+    if (!loaded) { loaded = true; v.autoplay = true; v.src = media; }        // (loadedmetadata above jumps to the start; autoplay plays it)
+    else { v.currentTime = tin; v.play().catch(() => {}); }
+    $("#se-play").textContent = "Pause";
+  };
+  v.addEventListener("pause", () => { $("#se-play").textContent = "Play it"; });
+  $("#se-save").onclick = async () => {
+    const b = $("#se-save"); b.disabled = true;
+    try {
+      const r = await post(`/api/app/long/${p.id}/shots/${k}/trim`, {in: tin, out: tout});
+      close(); delete BROLL[p.id];
+      toast((r.clamped ? "Saved (kept to what fits: " + sec(r.length) + "). " : "Shot saved. ") + "Press Re-render when you've made all your changes."); refresh();
+    } catch (e) { b.disabled = false; alert(e.message); }
+  };
+  paint(); still(tin);
+}
+
 // ---- short clips
 function paintShort(jid) {
   const j = SHORTS.find(x => x.id === jid);
@@ -1939,7 +2273,8 @@ function paintShort(jid) {
   else if (j.status === "failed" || j.status === "cancelled") h += `<div class="card" style="padding:18px"><b>${j.status === "failed" ? "It didn't finish" : "Stopped"}</b><div class="err small" style="margin-top:6px">${esc(j.error || "")}</div><div class="row" style="margin-top:12px"><button class="btn primary" id="s-again">Try again</button></div></div>`;
   if (!busy && j.status === "done") h += `<div class="row">${chipsHTML("short", "job-" + jid, j.options || {}, DRAFT["job-" + jid] || {})}<span class="small muted">Change one and press Make again; only these clips change.</span><button class="btn" id="s-remake">Make again</button></div>`;
   if (clips.length) {
-    h += `<div class="clips">` + clips.map(c => `<div class="clip ${c.keep === false ? "off" : ""} ${SEL_CLIP[jid] === c.index ? "sel" : ""}" data-i="${c.index}">
+    if (j.archived) h += storageArchivedCard("short", j, "");
+    h += `<div class="clips${j.archived ? " archived" : ""}">` + clips.map(c => `<div class="clip ${c.keep === false ? "off" : ""} ${SEL_CLIP[jid] === c.index ? "sel" : ""}" data-i="${c.index}">
       <div class="v" data-play="${c.index}"><img alt="" loading="lazy" src="/media/${j.id}/${c.thumb}?v=${c.rendered_at || 0}">
         <span class="badge">${mmss(c.duration)}</span><input type="checkbox" class="keep" data-keep="${c.index}" ${c.keep === false ? "" : "checked"} aria-label="Keep this clip"></div>
       <div style="font-weight:600;font-size:12.5px;line-height:1.35">${esc(c.title || "Clip " + (c.index + 1))}</div></div>`).join("") + `</div>`;
@@ -1949,7 +2284,7 @@ function paintShort(jid) {
       <button class="btn primary" id="s-apply" ${SEL_CLIP[jid] == null ? "disabled" : ""}>Apply</button></div>`;
   }
   $("#view").innerHTML = h + `</div>`;
-  if (busy) liveMount(j.id, "short", {status: j.status, stage: j.stage, detail: j.detail, progress: j.progress, stopId: "s-stop", note: "Close the window if you like: it keeps going."});
+  if (busy) liveMount(j.id, "short", {prog: j, status: j.status, stage: j.stage, detail: j.detail, progress: j.progress, stopId: "s-stop", note: "Close the window if you like: it keeps going."});
   bindChips();
   const on = (id, f) => { const el = $(id); if (el) el.onclick = async () => { el.disabled = true; try { await f(); } catch (e) { alert(e.message); } el.disabled = false; refresh(); }; };
   on("#s-stop", () => post(`/api/jobs/${jid}/cancel`));
@@ -1960,8 +2295,10 @@ function paintShort(jid) {
   on("#s-apply", () => { const t = $("#s-change").value.trim(); if (t) return post(`/api/jobs/${jid}/clips/${SEL_CLIP[jid]}/edit`, {instruction: t}); });
   bindMic($("#s-mic"), $("#s-change"), () => {});                             // dictate the change to the selected clip
   document.querySelectorAll("[data-keep]").forEach(cb => cb.onclick = async e => { e.stopPropagation(); await post(`/api/app/short/${jid}/keep`, {index: +cb.dataset.keep, keep: cb.checked}).catch(er => alert(er.message)); LAST = ""; refresh(); });
+  if ($("#arch-go")) storageArchivedBind("short", jid);
   document.querySelectorAll("[data-play]").forEach(v => v.onclick = e => {
     if (e.target.matches("input")) return;
+    if (j.archived) { toast("The clips were removed to save space. Re-render brings them back."); return; }
     const i = +v.dataset.play, c = clips.find(x => x.index === i);
     SEL_CLIP[jid] = i;
     document.querySelectorAll(".clip").forEach(el => el.classList.toggle("sel", +el.dataset.i === i));
@@ -1974,9 +2311,23 @@ function paintShort(jid) {
       playing.paused ? playing.play() : playing.pause();
       return;
     }
-    v.innerHTML = `<video src="/media/${j.id}/${c.file}?v=${c.rendered_at || 0}" autoplay controls playsinline></video>`;
-    v.querySelector("video").addEventListener("play", ev => document.querySelectorAll(".clip video").forEach(o => { if (o !== ev.target) o.pause(); }));
+    openClipPlayer(`/media/${j.id}/${c.file}?v=${c.rendered_at || 0}`, `/media/${j.id}/${c.thumb}?v=${c.rendered_at || 0}`);
   });
+}
+
+// A finished short clip, opened large over the page like a shot in Find footage: fitted to the window (never cropped), with the player's own
+// controls (scrub, volume, full screen). Esc, a click outside, or the scrim closes it.
+function openClipPlayer(src, poster) {
+  if (PLAYER) closePlayer(true);
+  const p = $("#player"), sc = $("#pscrim");
+  const fit = ar => { const h = Math.min(innerHeight * 0.88, innerWidth * 0.92 / ar), w = h * ar;
+    Object.assign(p.style, {left: (innerWidth - w) / 2 + "px", top: (innerHeight - h) / 2 + "px", width: w + "px", height: h + "px", transform: "none"}); };
+  p.innerHTML = `<video src="${esc(src)}" poster="${esc(poster)}" controls autoplay playsinline></video>`;
+  p.classList.remove("anim"); fit(9 / 16);
+  p.hidden = false; sc.hidden = false; PLAYER = {clip: true};
+  requestAnimationFrame(() => sc.classList.add("on"));
+  const v = p.querySelector("video");
+  v.addEventListener("loadedmetadata", () => { if (v.videoWidth && v.videoHeight) fit(v.videoWidth / v.videoHeight); });     // (a clip that is not 9:16 gets its own shape)
 }
 
 // ---- find footage
@@ -2005,10 +2356,11 @@ function findStatus() {
   const step = /^Describing/.test(st.stage || "") ? "describing scenes" : "cataloguing";             // (the stage names a file: too long here)
   const prog = st.running ? `${st.total ? `${(st.done || 0).toLocaleString()} of ${st.total.toLocaleString()}` : "starting"}` : "";
   const where = (st.scope || []).length === 1 ? shortName(st.scope[0]) : "";
-  if (!u) return {text: `${cnt(L.videos, L.photos)} catalogued${src.length > 1 ? ` in ${src.length} folders` : ""}.${prog ? ` Now ${step}${where ? " " + where : ""}: ${prog}.` : ""}`, btn: ""};
+  const load = st.running && st.load ? ` ${st.load}.` : "";                                       // ("Using the whole Mac while you're away", "Paused: another app needs the Mac"...)
+  if (!u) return {text: `${cnt(L.videos, L.photos)} catalogued${src.length > 1 ? ` in ${src.length} folders` : ""}.${prog ? ` Now ${step}${where ? " " + where : ""}: ${prog}.` : ""}${load}`, btn: ""};
   const r = src.find(x => x.path === u) || {mounted: true};
   if (!r.mounted) return {text: `That folder's drive isn't plugged in. Plug it in to search it.`, btn: ""};
-  if (r.cataloguing) return {text: `Now ${step} this folder: ${prog}. Search works on what is done so far.`, btn: "stop"};
+  if (r.cataloguing) return {text: `Now ${step} this folder: ${prog}. Search works on what is done so far.${load}`, btn: "stop"};
   if (!r.videos && !r.photos) return {text: "This folder isn't catalogued yet.", btn: "run"};
   return {text: `${cnt(r.videos, r.photos)} catalogued here.`, btn: "more"};
 }
@@ -2919,6 +3271,7 @@ function paintMusicStatus() {
     : st.running ? `${esc(st.stage || "Listening to your music")}${st.total ? ` (${(st.done || 0).toLocaleString()} of ${st.total.toLocaleString()})` : ""}`
     : `${(M.tracks || 0).toLocaleString()} songs${M.searchable === false ? " · searched by name and feel until the music search model is downloaded (Settings › General › Run setup again)" : ""}`;
   if (el.dataset.html !== html) { el.dataset.html = html; el.innerHTML = html; }
+  musicFindRow();                                                          // (Find my downloads / Import new, under the status line)
 }
 const musicQuery = () => MUSIC.q.trim() || MUSIC.mood;                     // the words, or the mood chip when the box is empty
 function songMenu(t, b, e) {                                                // "Use…" on the Music page
@@ -2996,6 +3349,7 @@ function paintMusic() {
         <input id="mu-q" type="search" value="${esc(MUSIC.q)}" placeholder="${MUSIC.source === "favs" ? "Find one of your favourites" : "Describe the song, e.g. calm piano, upbeat and hopeful, a big drop"}" aria-label="Describe the song" autocomplete="off"></div>
       <div class="moods" id="moods" role="group" aria-label="Moods"></div>
       <div class="small muted row" id="music-st" style="min-height:20px"></div>
+      ${MUSIC.source === "mine" ? `<div class="row mf-row" id="mf-row"></div>` : ""}
       <div class="songs page-songs" id="music-list" role="list"></div>
       <div class="mbar" id="mbar" hidden></div>
     </div>`;
@@ -3007,6 +3361,166 @@ function paintMusic() {
     clearTimeout(MUSIC.t); MUSIC.t = setTimeout(musicSearch, MUSIC.source === "openverse" || MUSIC.source === "epidemic" ? 600 : 300); };
   $("#mu-q").focus();
   musicSearch();
+}
+
+// ---- Music › Find my downloads and Import new (musicfind.py).
+// 1. North star: "Songs you already downloaded from Artlist or Soundstripe are one click from your library."
+// 2. User and context: someone who downloads songs into Downloads all the time and forgets to move them; wants no filing, and no risk of
+//    ripped songs ending up in a video.
+// 3. Principles: reassure (copies, originals stay, rips are never offered, nothing imports without a click), speed (Import new: one
+//    button, labelled with the count), explore (the review list for the unsure ones, tucked under "Maybe").
+const MF = {st: null, sel: new Set(), out: new Set(), view: "intro", extra: [], poll: 0, msg: "", checkedAt: 0, importing: false, importingMsg: "", result: null, dontOffer: false, open: false};
+const mfList = a => a.length < 3 ? a.join(" and ") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
+const mfSongs = n => `${n} song${n === 1 ? "" : "s"}`;
+async function mfWait() {                                                // poll the scan until it is done: its state
+  for (;;) {
+    const st = await api("/api/app/music/find");
+    MF.st = st;
+    if (!st.running) return st;
+    if (MF.open) musicFindPaint();
+    await new Promise(r => setTimeout(r, 700));
+  }
+}
+function musicFindRow() {
+  const el = $("#mf-row"); if (!el || !A) return;
+  const f = A.music_find || {}, running = !!f.running, n = f.n || 0, names = Object.keys(f.sources || {});
+  let html;
+  if (MF.importing) html = `<span class="small muted" role="status">${esc(MF.importingMsg)}</span>`;
+  else {
+    const can = n > 0 && !running;
+    html = `<button class="btn quiet" id="mf-find" title="Look for songs from Artlist, Soundstripe and similar libraries in your Downloads folder">Find my downloads…</button>`
+      + (f.scanned_before ? `<button class="btn${can ? " primary" : ""}" id="mf-new" ${can ? "" : "disabled"} title="Copies the sure songs from ${esc(names.join(", ") || "your downloads")} into your library. Maybes and ripped songs are never included.">${running ? "Checking Downloads…" : n ? `Import ${n} new` : "Nothing new"}</button>` : "")
+      + (MF.msg ? `<span class="small mf-msg" role="status">${MF.msg}</span>`
+        : f.watch && n ? `<span class="small">${n} new song${n === 1 ? "" : "s"} from ${esc(mfList(names))} in Downloads: <a href="#" id="mf-review">Review</a></span>`
+        : f.last_imported ? `<span class="small muted">Last added ${esc(new Date(f.last_imported.replace(" ", "T")).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}))}</span>` : "");
+  }
+  if (el.dataset.html !== html) {
+    el.dataset.html = html; el.innerHTML = html;
+    if ($("#mf-find")) $("#mf-find").onclick = () => musicFindOpen();
+    if ($("#mf-new")) $("#mf-new").onclick = musicFindImportNew;
+    if ($("#mf-review")) $("#mf-review").onclick = e => { e.preventDefault(); musicFindOpen(true); };
+    if ($("#mf-show")) $("#mf-show").onclick = e => { e.preventDefault(); MUSIC.source = "mine"; MUSIC.q = ""; paintMusic(); };
+  }
+  if (f.scanned_before && !running && !MF.importing && !MF.open && Date.now() - MF.checkedAt > 120000) {   // the quick check behind the button's count (tags are remembered: it is fast)
+    MF.checkedAt = Date.now(); post("/api/app/music/find", {}).catch(() => {});
+  }
+}
+async function musicFindImportNew() {
+  MF.msg = ""; MF.importing = true; MF.importingMsg = "Looking in Downloads and adding the new songs…"; musicFindRow();
+  let plain = "";
+  try {
+    await post("/api/app/music/import_new", {});
+    const st = await mfWait(), a = st.after;
+    if (st.error) throw new Error(st.error);
+    if (!a) throw new Error(st.denied && st.denied.length ? "macOS didn't let FirstCut read Downloads. Allow it in System Settings › Privacy & Security › Files & Folders." : "Nothing was added.");
+    const n = a.imported.length, names = Object.keys(a.sources || {}), mb = a.maybes || 0;
+    plain = n ? `Added ${mfSongs(n)} from ${mfList(names)}.` : "Nothing new to add.";
+    MF.msg = esc(plain)
+      + (mb ? ` ${esc(`${mb} maybe${mb === 1 ? " is" : "s are"} waiting to be reviewed.`)} <a href="#" id="mf-review">Review</a>` : "")
+      + (n ? ` <a href="#" id="mf-show">Show in library</a>` : "")
+      + (a.failed && a.failed.length ? ` ${esc(`${a.failed.length} couldn't be copied.`)}` : "");
+    toast(plain + (mb ? ` ${mb} maybe${mb === 1 ? " is" : "s are"} waiting to be reviewed.` : ""));
+  } catch (e) { MF.msg = `<span class="err">${esc(e.message)}</span>`; }
+  MF.importing = false; MF.checkedAt = Date.now();
+  try { await refresh(); } catch (e) { /* the row below still shows the result */ }
+  const el = $("#mf-row"); if (el) el.dataset.html = "";
+  musicFindRow(); if (MUSIC.source === "mine" && $("#music-list")) musicSearch();
+}
+function musicFindOpen(review) {
+  const m = $("#sheet"); musicStop();
+  MF.open = true; MF.result = null;
+  const close = () => { musicStop(); MF.open = false; m.hidden = true; m.innerHTML = ""; document.removeEventListener("keydown", esc4); musicFindRow(); };
+  const esc4 = e => { if (e.key === "Escape") close(); };
+  m.innerHTML = `<div class="dialog" role="dialog" aria-label="Find my music downloads" style="flex-direction:column;height:min(680px,100%);width:min(720px,100%)">
+      <div class="row" style="padding:16px 20px 6px;justify-content:space-between"><h2 style="font-size:17px">Find my music downloads</h2><button class="x" id="mf-close" aria-label="Close" style="background:transparent;font-size:18px">×</button></div>
+      <div id="mf-body" class="mf-body"></div></div>`;
+  m.hidden = false; document.addEventListener("keydown", esc4);
+  $("#mf-close").onclick = close; MF.close = close;
+  const f = A.music_find || {};
+  if (review && MF.st && MF.st.done) { MF.view = "results"; musicFindPaint(); }
+  else if (review || (f.running)) { MF.view = "scanning"; musicFindPaint(); musicFindScan(); }
+  else { MF.view = "intro"; musicFindPaint(); }
+}
+async function musicFindScan() {
+  MF.view = "scanning"; MF.sel = new Set(); MF.out = new Set(); musicFindPaint();
+  try {
+    const started = await post("/api/app/music/find", {folders: MF.extra.length ? ["~/Downloads", ...MF.extra] : undefined});
+    const st = await mfWait();
+    if (st.error) throw new Error(st.error);
+    (st.found || []).forEach(i => MF.sel.add(i.id));
+    MF.view = "results";
+  } catch (e) { MF.view = "error"; MF.err = e.message; }
+  if (MF.open) musicFindPaint();
+  refresh().catch(() => {});
+}
+function musicFindPaint() {
+  const body = $("#mf-body"); if (!body || !MF.open) return;
+  const st = MF.st || {};
+  if (MF.view === "intro") {
+    body.innerHTML = `<div class="mf-pad"><p class="muted">FirstCut looks in your Downloads folder for songs that came from a licensed music library: Artlist, Soundstripe, Musicbed, Epidemic Sound and similar. It reads each file's tags and name. Nothing is changed by looking.</p>
+      <p class="muted small">macOS will ask once to let FirstCut read your Downloads folder.</p>
+      ${MF.extra.length ? `<div class="mf-chips">${MF.extra.map((x, k) => `<span class="mf-chip">${esc(midCut(x, 44))} <button class="x" data-mfx="${k}" aria-label="Don't look here" style="background:transparent">×</button></span>`).join("")}</div>` : ""}
+      <div class="row"><button class="btn primary" id="mf-scan">Scan Downloads</button><button class="btn" id="mf-more">Also look in a folder…</button></div>
+      <p class="small muted">Songs ripped from YouTube are never offered, because they aren't licensed.</p></div>`;
+    $("#mf-scan").onclick = musicFindScan;
+    $("#mf-more").onclick = async () => { const p = await pick("folder", "Another folder to look in"); if (p && !MF.extra.includes(p)) { MF.extra.push(p); musicFindPaint(); } };
+    body.querySelectorAll("[data-mfx]").forEach(b => b.onclick = () => { MF.extra.splice(+b.dataset.mfx, 1); musicFindPaint(); });
+  } else if (MF.view === "scanning") {
+    body.innerHTML = `<div class="mf-pad" role="status"><p>${st.waiting ? "Waiting for macOS to let FirstCut read this folder. Click Allow in the window on your screen." : `Looking… ${(st.scanned || 0).toLocaleString()} songs checked`}</p>
+      <p class="small muted">This is quick the second time: what each file says is remembered.</p></div>`;
+  } else if (MF.view === "error") {
+    body.innerHTML = `<div class="mf-pad"><p class="err">${esc(MF.err || "Something went wrong.")}</p><div class="row"><button class="btn" id="mf-again">Try again</button></div></div>`;
+    $("#mf-again").onclick = musicFindScan;
+  } else if (MF.view === "done") {
+    const r = MF.result || {}, n = (r.imported || []).length;
+    body.innerHTML = `<div class="mf-pad"><p><b>${n ? `Added ${mfSongs(n)} to your library.` : "Nothing was added."}</b></p>
+      ${(r.already || []).length ? `<p class="small muted">${(r.already || []).length} were already in your library.</p>` : ""}
+      ${(r.failed || []).length ? `<p class="err small">${r.failed.length} couldn't be copied: ${esc(r.failed.map(x => x.name).slice(0, 3).join(", "))}</p>` : ""}
+      <p class="small muted">FirstCut listens to each new song once, then you can search it in words. The originals are still in Downloads.</p>
+      <div class="row">${n ? `<button class="btn" id="mf-open">Open the music folder</button>` : ""}<button class="btn primary" id="mf-done">Done</button></div></div>`;
+    if ($("#mf-open")) $("#mf-open").onclick = () => reveal(r.imported[0].path);
+    $("#mf-done").onclick = () => { MF.close(); if (MUSIC.source === "mine") { MUSIC.q = ""; musicSearch(); } };
+  } else {                                                               // the review list
+    const found = st.found || [], maybe = st.maybe || [], sk = st.skipped || {};
+    const groups = {}; found.forEach(i => (groups[i.source] = groups[i.source] || []).push(i));
+    const row = i => `<label class="mf-song"><input type="checkbox" data-mfid="${esc(i.id)}" ${MF.sel.has(i.id) ? "checked" : ""} aria-label="Add ${esc(i.title)}">
+        ${i.member ? `<span class="mf-noplay" title="Inside a zip: it plays after it is added">${PP_PLAY}</span>` : `<button class="song-play mf-play" data-mfplay="${esc(i.id)}" aria-label="Play ${esc(i.title)}">${PP_PLAY}</button>`}
+        <span class="grow ell"><b class="ell" style="display:block">${esc(i.title)}</b><span class="small muted ell" style="display:block" title="${esc(i.why || i.reason)}">${esc([i.artist, i.duration ? mmss(i.duration) : "", i.member ? "in " + i.path.split("/").pop() : i.name !== i.title + (i.name.match(/\.[^.]+$/) || [""])[0] ? i.name : ""].filter(Boolean).join(" · "))}</span></span></label>`;
+    const left = [sk.youtube ? `${sk.youtube} ripped from YouTube or a downloader (never offered: not licensed)` : "", sk.recordings ? `${sk.recordings} voice recording${sk.recordings === 1 ? "" : "s"}` : "",
+      sk.other ? `${sk.other} that don't say they came from a library` : "", sk.already ? `${sk.already} already in your library` : "", sk.duplicates ? `${sk.duplicates} duplicate${sk.duplicates === 1 ? "" : "s"}` : "",
+      sk.declined ? `${sk.declined} you said no to` : ""].filter(Boolean);
+    const n = MF.sel.size;
+    body.innerHTML = `<div class="mf-list">
+      ${found.length || maybe.length ? "" : `<div class="mf-pad"><p><b>No new licensed songs found.</b></p><p class="small muted">${st.denied && st.denied.length ? "macOS didn't let FirstCut read " + esc(st.denied[0]) + ". Allow it in System Settings › Privacy & Security › Files & Folders." : "Songs downloaded from Artlist, Soundstripe and similar libraries show up here."}</p></div>`}
+      ${Object.entries(groups).map(([s, a]) => `<div class="mf-g"><b>From ${esc(s || "a music library")}</b> <span class="muted small">(${a.length})</span></div>${a.map(row).join("")}`).join("")}
+      ${maybe.length ? `<details class="mf-maybe"><summary><b>Maybe</b> <span class="muted small">(${maybe.length}): nothing says where these came from</span></summary>${maybe.map(row).join("")}</details>` : ""}
+      ${left.length ? `<div class="small muted mf-left">Left out: ${esc(left.join("; "))}.</div>` : ""}
+      ${st.partial ? `<div class="small muted mf-left">It stopped looking after a while: scan again to see the rest.</div>` : ""}
+    </div>
+    <div class="mf-foot"><div class="row" style="justify-content:space-between;flex-wrap:wrap">
+        <label class="small muted"><input type="checkbox" id="mf-dont" ${MF.dontOffer ? "checked" : ""}> Don't offer the songs I leave unticked again</label>
+        <span class="row"><button class="btn" id="mf-rescan">Scan again</button><button class="btn primary" id="mf-add" ${n ? "" : "disabled"}>Add ${n} song${n === 1 ? "" : "s"} to my library</button></span></div>
+      <div class="small muted">Copies the songs into your music library. The originals stay in Downloads. Songs ripped from YouTube are never offered.</div></div>`;
+    const all = [...found, ...maybe];
+    body.querySelectorAll("[data-mfid]").forEach(c => c.onchange = () => { c.checked ? MF.sel.add(c.dataset.mfid) : MF.sel.delete(c.dataset.mfid); const b = $("#mf-add"); if (b) { b.disabled = !MF.sel.size; b.textContent = `Add ${mfSongs(MF.sel.size).replace("song", "song")} to my library`; } });
+    body.querySelectorAll("[data-mfplay]").forEach(b => b.onclick = e => {
+      e.preventDefault(); const i = all.find(x => x.id === b.dataset.mfplay); if (!i) return;
+      const t = {source: "found", id: i.id, title: i.title, artist: i.artist, dur: i.duration, preview: `/api/app/localfile?path=${encodeURIComponent(i.path)}`};
+      const same = MUSIC.playing === "found" + i.id && MUSIC.audio && !MUSIC.audio.paused;
+      playSong(t, b);
+      const a = MUSIC.audio;
+      if (a) { const sync = () => body.querySelectorAll("[data-mfplay]").forEach(x => { x.innerHTML = (x === b && !a.paused) ? PP_PAUSE : PP_PLAY; }); a.addEventListener("play", sync); a.addEventListener("pause", sync); a.addEventListener("ended", sync); sync(); }
+    });
+    $("#mf-dont").onchange = e => { MF.dontOffer = e.target.checked; };
+    $("#mf-rescan").onclick = musicFindScan;
+    $("#mf-add").onclick = async e => {
+      e.target.disabled = true; e.target.textContent = "Adding…"; musicStop();
+      const ids = [...MF.sel], no = MF.dontOffer ? all.filter(x => !MF.sel.has(x.id)).map(x => x.id) : [];
+      try { MF.result = await post("/api/app/music/import", {ids, decline: no}); MF.view = "done"; toast(`Added ${mfSongs(MF.result.imported.length)}.`); }
+      catch (er) { MF.view = "error"; MF.err = er.message; }
+      musicFindPaint(); refresh().catch(() => {});
+    };
+  }
 }
 
 // ---- choosing a song: your music library (search in words, hear the best part) or any audio file
@@ -3128,7 +3642,78 @@ async function sendBasket() {
 }
 
 // ---- settings
-const TABS = [["general", "General"], ["ai", "AI"], ["edits", "How it edits"], ["places", "Where things go"], ["library", "Footage library"], ["music", "Music library"], ["online", "Online sources"], ["connect", "Connect an AI"]];
+// ---- Storage (storage.py). North star: "Old videos can go: the cuts stay, so nothing is lost." The person is an editor whose disk fills with
+// renders; they want it to look after itself without risking a project. One choice (after how many days), the biggest projects listed with a
+// Keep pin and Remove, and one button to free what is due, after a look at the list.
+const STORAGE = {data: null, at: 0, loading: false, err: "", confirm: false};
+const storageSize = n => n >= 1e12 ? (n / 1e12).toFixed(1) + " TB" : n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " KB" : n + " B";
+const storageAge = d => d < 1 ? "today" : d < 2 ? "yesterday" : d < 60 ? Math.round(d) + " days ago" : Math.round(d / 30) + " months ago";
+function storageLoad(force) {
+  if (STORAGE.loading || (!force && STORAGE.data && Date.now() - STORAGE.at < 15000)) return;
+  STORAGE.loading = true;
+  api("/api/app/storage").then(d => { STORAGE.data = d; STORAGE.at = Date.now(); STORAGE.err = ""; }).catch(e => { STORAGE.err = e.message; STORAGE.at = Date.now(); })
+    .finally(() => { STORAGE.loading = false; if (SET_TAB === "storage" && !$("#modal").hidden) paintSettings(false); });
+}
+function storagePane(S) {
+  storageLoad(false);
+  const st = S.storage || {auto_days: 0, also_finalcut: false}, d = STORAGE.data;
+  const rows = d ? d.rows : [], days = st.auto_days || 0;
+  const due = rows.filter(r => r.due);
+  const summary = !d ? (STORAGE.err ? esc(STORAGE.err) : "Measuring…") : `Videos and working files use <b>${storageSize(d.bytes)}</b> across ${d.projects} project${d.projects === 1 ? "" : "s"}.`
+    + (rows.some(r => r.archived) ? ` ${rows.filter(r => r.archived).length} already have their video removed.` : "");
+  const row = r => `<div class="st-row ${r.archived ? "gone" : ""}"><span class="st-kind muted small">${r.kind === "long" ? "Long" : "Short"}</span>
+      <span class="ell grow" title="${esc(r.title)}">${esc(r.title)}${r.archived ? ` <span class="small muted">· video removed</span>` : ""}</span>
+      <span class="small muted st-n">${storageSize(r.bytes)}</span><span class="small muted st-age">${storageAge(r.age_days)}</span>
+      <button class="btn quiet" data-st-keep="${r.kind}:${r.id}" aria-pressed="${r.keep}" title="Never remove this one's video">${r.keep ? "Kept" : "Keep"}</button>
+      <button class="btn quiet" data-st-rm="${r.kind}:${r.id}" ${r.can ? "" : "disabled"} title="${r.can ? "Remove its video; the cuts stay" : esc(r.why || "")}">Remove video</button></div>`;
+  return `<h2 style="font-size:17px">Storage</h2>
+    <div class="muted" style="margin-top:-8px">The cuts and plans are always kept: any project can be rendered again with one button. Your original footage is never touched.</div>
+    <div id="st-sum">${summary}</div>
+    <div class="row" style="gap:10px;flex-wrap:wrap"><span>Remove old videos after</span><div class="seg" role="group" aria-label="Remove old videos after">${[[0, "Never"], [7, "7 days"], [14, "14 days"], [30, "30 days"], [60, "60 days"]].map(([v, l]) =>
+      `<button data-st-days="${v}" class="${days === v ? "on" : ""}">${l}</button>`).join("")}</div></div>
+    <label class="row" style="gap:10px;align-items:flex-start"><input type="checkbox" id="st-fc" ${st.also_finalcut ? "checked" : ""} style="width:16px;height:16px;margin:2px 0 0;accent-color:var(--accent)">
+      <span>Also remove Final Cut folders<span class="small muted" style="display:block">Off by default: a project you already imported into Final Cut may need these files.</span></span></label>
+    ${days && d ? `<div class="row" style="gap:10px;flex-wrap:wrap"><button class="btn ${due.length ? "primary" : ""}" id="st-free" ${due.length ? "" : "disabled"}>Free up ${storageSize(d.due || 0)} now</button>
+      <span class="small muted">${due.length ? `${due.length} project${due.length === 1 ? " is" : "s are"} older than ${days} days. It also happens by itself, a few times a day, when nothing is being made.` : `Nothing is older than ${days} days.`}</span></div>` : `<div class="small muted">${days ? "" : "Nothing is removed unless you choose a number of days."}</div>`}
+    ${STORAGE.confirm && due.length ? `<div class="card" style="padding:12px 14px;display:flex;flex-direction:column;gap:8px"><b>These videos will be removed (${storageSize(d.due)}):</b>
+      <div class="st-list">${due.map(r => `<div class="st-row"><span class="st-kind muted small">${r.kind === "long" ? "Long" : "Short"}</span><span class="ell grow">${esc(r.title)}</span><span class="small muted st-n">${storageSize(r.gain)}</span><span class="small muted st-age">${storageAge(r.age_days)}</span></div>`).join("")}</div>
+      <div class="small muted">Each one keeps its cuts. Open it and press Re-render to get the video back.</div>
+      <div class="row"><button class="btn primary" id="st-free-go">Remove these videos</button><button class="btn quiet" id="st-free-no">Cancel</button><span class="small" id="st-msg"></span></div></div>` : ""}
+    <h3 style="font-size:14px;margin:6px 0 0">Biggest projects</h3>
+    ${rows.length ? `<div class="card st-list">${rows.slice(0, 25).map(row).join("")}</div>` : `<div class="muted small">${d ? "No projects yet." : ""}</div>`}
+    <div class="small muted">What goes: the finished videos and the files made along the way. What stays: the cuts, the words, the notes, the credits and a poster picture.${S.storage && S.storage.also_finalcut ? "" : " The Final Cut folder stays too."}</div>
+    <div class="small" id="st-err"></div>`;
+}
+function storageBind() {
+  const act = async (path, body, ok) => { try { const r = await post(path, body); if (ok) ok(r); } catch (e) { toast(e.message); } STORAGE.confirm = false; storageLoad(true); };
+  document.querySelectorAll("[data-st-days]").forEach(b => b.onclick = async () => { await saveSettings({storage: {auto_days: +b.dataset.stDays}}); STORAGE.confirm = false; storageLoad(true); });
+  if ($("#st-fc")) $("#st-fc").onchange = async e => { await saveSettings({storage: {also_finalcut: e.target.checked}}); storageLoad(true); };
+  document.querySelectorAll("[data-st-keep]").forEach(b => b.onclick = () => { const [kind, id] = b.dataset.stKeep.split(":"); act("/api/app/storage/pin", {kind, id, keep: b.getAttribute("aria-pressed") !== "true"}); });
+  document.querySelectorAll("[data-st-rm]").forEach(b => b.onclick = () => {
+    const [kind, id] = b.dataset.stRm.split(":"), r = ((STORAGE.data || {}).rows || []).find(x => x.kind === kind && x.id === id); if (!r) return;
+    if (confirm(`Remove the video of “${r.title}”? That frees ${storageSize(r.gain)}. Its cuts stay: Re-render brings the video back.`))
+      act("/api/app/storage/remove", {kind, id}, x => toast(`${storageSize(x.freed)} freed.`));
+  });
+  if ($("#st-free")) $("#st-free").onclick = () => { STORAGE.confirm = true; paintSettings(false); };
+  if ($("#st-free-no")) $("#st-free-no").onclick = () => { STORAGE.confirm = false; paintSettings(false); };
+  if ($("#st-free-go")) $("#st-free-go").onclick = () => { $("#st-free-go").disabled = true; act("/api/app/storage/free", {}, x => toast(`${storageSize(x.freed)} freed from ${x.removed} project${x.removed === 1 ? "" : "s"}.`)); };
+}
+// A project whose video was removed to save space: its poster and one button, where the player would be.
+function storageArchivedCard(kind, o, poster) {
+  const a = o.archived || {}, when = a.at ? new Date(a.at * 1000).toLocaleDateString([], {day: "numeric", month: "short"}) : "";
+  return `<div class="arch">${poster ? `<div class="arch-pic"><img alt="" src="${esc(poster)}"></div>` : ""}<div class="arch-t"><b>The video was removed to save space</b>
+    <div class="muted">${a.freed ? `${storageSize(a.freed)} freed${when ? " on " + when : ""}. ` : ""}The cuts and everything it did are saved: Re-render makes the same ${kind === "long" ? "video" : "clips"} again.</div>
+    <div class="row"><button class="btn primary" id="arch-go">Re-render</button><span class="small muted" id="arch-msg"></span></div></div></div>`;
+}
+function storageArchivedBind(kind, id) {
+  const b = $("#arch-go"); if (!b) return;
+  b.onclick = async () => {
+    b.disabled = true; $("#arch-msg").textContent = "";
+    try { const r = await post(`/api/app/item/${kind}/${id}/restore`); if (r.note) toast(r.note); refresh(); }
+    catch (e) { $("#arch-msg").textContent = e.message; b.disabled = false; }
+  };
+}
+const TABS = [["general", "General"], ["ai", "AI"], ["edits", "How it edits"], ["places", "Where things go"], ["storage", "Storage"], ["library", "Footage library"], ["music", "Music library"], ["online", "Online sources"], ["connect", "Connect an AI"]];
 function closeSettings() { $("#modal").hidden = true; if (location.hash.startsWith("#settings")) history.replaceState(null, "", "#home"); route(false); }
 $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeSettings(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#modal").hidden) closeSettings(); });
@@ -3198,6 +3783,7 @@ function paintSettings(fromRefresh) {
          ["Music", "music", [["", "None"], ["auto", "Match the content"], ["upbeat", "Upbeat"], ["chill", "Chill"]], d.music]]
       : [["Length", "long_minutes", [[0, "AI decides"], [1, "1 min"], [2, "2 min"], [3, "3 min"], [5, "5 min"]], d.long_minutes],
          ["Pace", "pace", [["auto", "Automatic"], ["fast", "Fast-paced cuts"], ["slow", "Take it slow"]], d.pace || "auto"],
+         ["Transitions", "transitions", [["auto", "Automatic"], ["none", "None"]], d.transitions || "auto"],
          ["Clean up voices", "voices", [["auto", "When a recording is noisy"], ["always", "Always"], ["never", "Never"]], d.voices || "auto"],
          ["Captions", "caption_style", [["none", "Off"], ["clean", "Clean"], ["bold", "Bold yellow"], ["pop", "Pop green"]], d.caption_style],
          ["B-roll", "library", [[true, "Folder + library"], [false, "Folder only"]], d.library],
@@ -3207,10 +3793,12 @@ function paintSettings(fromRefresh) {
          ["Log footage", "log", [["convert", "Convert automatically (recommended)"], ["leave", "Leave as shot"]], d.log || "convert"]];   // (S-Log3 etc. -> normal colour in FirstCut's own videos; Final Cut always gets the original clips)
     pane = `<div class="card" style="padding:12px 14px;display:flex;flex-direction:column;gap:6px">
         <label for="gloss-in"><b>Names and words</b> <span class="small muted">· one per line</span></label>
-        <textarea id="gloss-in" rows="3" style="border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical;font-size:14px;line-height:1.5;background:transparent" placeholder="Northfield&#10;Tamsin Thorne Delacroix&#10;Dr. Sarah Okafor">${esc((S.glossary || []).join("\n"))}</textarea>
+        <textarea id="gloss-in" rows="3" style="border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical;font-size:14px;line-height:1.5;background:transparent" placeholder="Northfield&#10;Orchard Hall&#10;Dr. Maria Santos">${esc((S.glossary || []).join("\n"))}</textarea>
         <span class="small muted">People, places and brands. Transcripts, captions and titles spell them this way, even when the speech-to-text hears them wrong.</span>
       </div>
-      <div class="row" style="justify-content:space-between"><h2 style="font-size:17px">How it edits</h2><div class="seg" role="group" aria-label="Which kind of video">${[["short", "Short clips"], ["long", "Long form"]].map(([v, l]) => `<button data-kind="${v}" class="${STYLE_KIND === v ? "on" : ""}">${l}</button>`).join("")}</div></div>
+      <h2 style="font-size:17px;margin-bottom:-4px">How it edits</h2>
+      <div class="small muted" style="margin-bottom:-2px">Reels and long videos each have their own notes and defaults: pick which one you are setting up.</div>
+      <div class="seg" role="group" aria-label="Which kind of video" style="display:flex;width:100%">${[["short", "Short clips and reels"], ["long", "Long videos"]].map(([v, l]) => `<button data-kind="${v}" class="${STYLE_KIND === v ? "on" : ""}" style="flex:1;padding:9px 12px;font-size:14px">${l}</button>`).join("")}</div>
       <div class="card" style="padding:10px 10px 10px 14px;display:flex;flex-direction:column;gap:8px">
         <textarea id="style-in" rows="2" style="border:0;outline:0;resize:none;background:transparent;font-size:14px;line-height:1.5" aria-label="Tell the editor how you like your ${kindWord}" placeholder="${STYLE_KIND === "short" ? "Tell it how you like your short clips. For example: I like fast cuts, bold captions, and clips that start right on the punchline." : "Tell it how you like your long videos. For example: open with the strongest line, lots of B-roll, and never show the interviewer."}">${esc(DRAFT.style || "")}</textarea>
         <div class="row" style="justify-content:space-between"><span class="small muted">It keeps only the key points. A new point that disagrees with an old one replaces it.</span>
@@ -3230,6 +3818,8 @@ function paintSettings(fromRefresh) {
       <div class="card">${P.map(([k, what, holds, btn]) => `<div class="place"><div><b>${what}</b><div class="small muted">${A.sizes && A.sizes[k] != null ? A.sizes[k] + " GB" : ""}</div></div>
         <div style="min-width:0"><div class="path ell">${esc(S.places[k])}</div><div class="small muted" style="margin-top:4px">${holds}</div></div><button class="btn" data-place="${k}">${btn}</button></div>`).join("")}</div>
       <div class="small muted">Moving copies everything to the new folder first, then removes the old copy. If the drive with the models isn't plugged in, FirstCut asks for it instead of downloading everything again.</div><div class="small" id="place-msg">${esc(A.moving || "")}</div>`;
+  } else if (SET_TAB === "storage") {
+    pane = storagePane(S);
   } else if (SET_TAB === "online") {
     const K = A.keys || {}, ep = K.epidemic_status || {};
     const row = (id, name, what, link, linkText, extra = "") => `<div class="opt" style="align-items:center"><div class="grow" style="display:flex;flex-direction:column;gap:3px">
@@ -3281,6 +3871,9 @@ function paintSettings(fromRefresh) {
           <span class="small" style="color:${x && !x.mounted ? "var(--warn)" : "var(--muted)"}">${x && !x.mounted ? "not plugged in" : x ? `${(x.tracks || 0).toLocaleString()} songs` : ""}</span>
           <button class="x" data-rmmusic="${esc(r)}" aria-label="Remove this music folder" style="background:transparent;font-size:16px">×</button></div>`; }).join("") || `<div class="small muted" style="padding:14px">No music folder yet.</div>`}
         <div class="row" style="padding:9px 14px"><button class="btn" id="mus-add">Add a folder…</button></div></div>
+      <label class="row" style="gap:10px;align-items:flex-start;flex-wrap:nowrap"><input type="checkbox" id="mus-watch" ${(S.music || {}).watch_downloads ? "checked" : ""} style="width:16px;height:16px;margin:2px 0 0;accent-color:var(--accent)">
+        <span><b>Look for new music downloads</b><span class="small muted" style="display:block">When FirstCut opens, and once a day, it checks Downloads for songs from Artlist, Soundstripe and similar libraries and shows a dot on Music. It never adds anything by itself. macOS asks once to let FirstCut read Downloads.</span></span></label>
+      <div class="row"><button class="btn quiet" id="mus-unno">Offer the songs I said no to again</button><span class="small muted" id="mus-unno-msg"></span></div>
       ${roots.length ? `<div class="row"><button class="btn" id="mus-run" ${st.running ? "hidden" : ""}>Look for new songs</button>
         <span class="small muted">${esc(st.running ? `${st.stage || "Listening"}${st.total ? ` (${(st.done || 0).toLocaleString()} of ${st.total.toLocaleString()})` : ""}` : st.error ? "Last run failed: " + st.error : (st.stage || ""))}</span></div>` : ""}
       <div class="small muted">Only songs you have a licence for. Your music never leaves this Mac.</div>`;
@@ -3294,6 +3887,8 @@ function paintSettings(fromRefresh) {
         <div class="row" style="padding:9px 14px;justify-content:space-between"><button class="btn" id="lib-add">Add a folder…</button>
           <div class="row" style="gap:10px;flex-wrap:wrap"><span>Catalogue new footage by itself</span><div class="seg" role="group" aria-label="When to catalogue">${[["open", "Whenever FirstCut is open"], ["night", "At night (7 pm to 7 am)"], ["off", "Only when I ask"]].map(([v, l]) => `<button data-libwhen="${v}" class="${(S.library.when || "open") === v ? "on" : ""}">${l}</button>`).join("")}</div>
             <span class="small muted" style="flex-basis:100%">It waits while a video is being made, so it never slows one down.</span></div>
+          <div class="row" style="gap:10px;flex-wrap:wrap"><span>How much of this Mac it uses</span><div class="seg" role="group" aria-label="How much of this Mac the catalogue uses">${[["adapt", "What you leave free"], ["gentle", "One file at a time"], ["full", "All of it"]].map(([v, l]) => `<button data-libload="${v}" class="${(S.library.load || "adapt") === v ? "on" : ""}">${l}</button>`).join("")}</div>
+            <span class="small muted" style="flex-basis:100%">${(S.library.load || "adapt") === "gentle" ? "Slowest, and the Mac stays free for anything else." : (S.library.load || "adapt") === "full" ? "Always as many files at once as the Mac can read. Use it overnight." : "All of it while you're away, a little while you work or watch a shot, and none while a game or another heavy app needs it."}</span></div>
           ${S.ai.use === "local" ? "" : (() => { const acct = S.ai.use === "claude" ? "Claude" : "ChatGPT", w = S.library.describe_with === "local" ? "local" : "account";
             return `<div class="row" style="gap:10px;flex-wrap:wrap"><span>Describe shots with</span><div class="seg" role="group" aria-label="Who describes the shots">${[["account", `Your ${acct} account · recommended`], ["local", "This Mac · private"]].map(([v, l]) => `<button data-libdesc="${v}" class="${w === v ? "on" : ""}">${l}</button>`).join("")}</div>
             <span class="small muted" style="flex-basis:100%">${w === "local" ? "Free and private. This Mac's picture model takes about a minute a file, so a big library takes several nights." : `A few seconds a file. A small contact sheet of each file goes to ${acct}, about 2,000 tokens each: 1,000 files is about 2 million tokens of your plan (around 50 cents at API prices). Offline, this Mac takes over.`}</span></div>`; })()}</div></div>
@@ -3309,6 +3904,7 @@ function paintSettings(fromRefresh) {
   if (fromRefresh) $("#modal .pane").scrollTop = scroll;
   $("#set-close").onclick = closeSettings;
   document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { SET_TAB = b.dataset.tab; paintSettings(false); });
+  if (SET_TAB === "storage") storageBind();
   document.querySelectorAll("[data-app]").forEach(b => b.onclick = () => saveSettings({appearance: b.dataset.app}));
   if ($("#g-login")) $("#g-login").onchange = e => native("login", {value: e.target.checked});
   if ($("#mcp-on")) $("#mcp-on").onchange = e => saveSettings({mcp: {enabled: e.target.checked}});
@@ -3380,6 +3976,7 @@ function paintSettings(fromRefresh) {
     try { A.settings = (await post("/api/app/library/add", {path: p})).settings; paintSettings(false); refresh(); } catch (e) { alert(e.message); } };
   document.querySelectorAll("[data-rmroot]").forEach(b => b.onclick = () => saveSettings({library: {folders: S.library.folders.filter((_, i) => i !== +b.dataset.rmroot)}}));
   document.querySelectorAll("[data-libwhen]").forEach(b => b.onclick = () => saveSettings({library: {when: b.dataset.libwhen}}));
+  document.querySelectorAll("[data-libload]").forEach(b => b.onclick = () => saveSettings({library: {load: b.dataset.libload}}));
   document.querySelectorAll("[data-libdesc]").forEach(b => b.onclick = () => saveSettings({library: {describe_with: b.dataset.libdesc}}));
   document.querySelectorAll("[data-key-save]").forEach(b => b.onclick = async () => {
     const id = b.dataset.keySave, v = ($("#key-" + id) || {}).value || ""; if (!v.trim()) return;
@@ -3388,6 +3985,8 @@ function paintSettings(fromRefresh) {
   if ($("#mus-add")) $("#mus-add").onclick = async () => { const p = await pick("folder", "Choose the folder with your music"); if (!p) return;
     try { A.settings = (await post("/api/app/music/add", {path: p})).settings; paintSettings(false); refresh(); } catch (e) { alert(e.message); } };
   document.querySelectorAll("[data-rmmusic]").forEach(b => b.onclick = async () => { try { A.settings = (await post("/api/app/music/remove", {path: b.dataset.rmmusic})).settings; paintSettings(false); refresh(); } catch (e) { alert(e.message); } });
+  if ($("#mus-watch")) $("#mus-watch").onchange = e => saveSettings({music: {watch_downloads: e.target.checked}}).catch(er => toast(er.message));
+  if ($("#mus-unno")) $("#mus-unno").onclick = async () => { await post("/api/app/music/undecline", {}).catch(er => toast(er.message)); $("#mus-unno-msg").textContent = "They can show up again the next time FirstCut looks."; };
   if ($("#mus-run")) $("#mus-run").onclick = async () => { await post("/api/app/music/catalog").catch(e => alert(e.message)); refresh(); };
   if ($("#lib-run")) $("#lib-run").onclick = async () => { await post("/api/library/start").catch(e => alert(e.message)); refresh(); };
   if ($("#lib-stop")) $("#lib-stop").onclick = async () => { await post("/api/library/stop").catch(() => {}); refresh(); };

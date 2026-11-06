@@ -1,8 +1,8 @@
 """Names and words the person types once (Settings › How it edits › Names and words): transcripts, captions, titles and graphics spell
 them this way.
 
-Speech to text has never heard most names. The work Mac's Tamsin Thorne Delacroix take came back as "Northfeld", "Nortfield", "Northfild" and
-"Et Northfild" for one school, Northfield. Parakeet can't be told the words beforehand, so its words are corrected afterwards (conservatively:
+Speech to text has never heard most names. A recorded interview came back with a school's name as "Nortfeld", "Norfield", "Northfeeld" and
+"North Feeld" for one school, Northfield. Parakeet can't be told the words beforehand, so its words are corrected afterwards (conservatively:
 a near miss that sounds the same and is not an ordinary word), and the AI that writes titles and captions is told the spellings.
 
     terms(cfg) -> list[str]                    the app's list, read fresh (a change in Settings takes effect at once), else clipper.glossary
@@ -130,8 +130,8 @@ def _tail(heard: str, name: str) -> str:
 
 def correct(words: list[dict], names: list[str]) -> list[dict]:
     """Near misses of the names fixed in a word list ({"text","start","end",...}). A name of n words is looked for in windows of n and
-    n+1 heard words (speech to text splits names: "Et Northfild"); a wider window wins only when it fits clearly better. Punctuation
-    around the heard words is kept ("Northfeld," -> "Northfield,"). Names that are themselves ordinary words only get their capitals fixed."""
+    n+1 heard words (speech to text splits names: "North Feeld"); a wider window wins only when it fits clearly better. Punctuation
+    around the heard words is kept ("Nortfeld," -> "Northfield,"). Names that are themselves ordinary words only get their capitals fixed."""
     if not words or not names:
         return words
     plans = []

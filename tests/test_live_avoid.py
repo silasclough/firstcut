@@ -81,8 +81,10 @@ def test_ruling_out_the_placed_shot_swaps_it_and_renders_again(made, monkeypatch
     assert "red" in shot["what"]
     v1 = _latest(made["folder"])
     res = r.avoid_shot(pid, shot)
-    assert res["result"] == "swapped" and "next best" in res["message"]
+    assert res["result"] == "swapped" and "next best" in res["message"] and res["pending"] == 1
     assert made["store"].get(made["proj"]["job"])["status"] == "done"
+    assert _latest(made["folder"]) == v1                                                          # (not rendered: the old video stays until Re-render)
+    r.rerender(pid)
     v2 = _latest(made["folder"])
     assert v2 != v1
     c = _rgb_at(v2, 5.0, tmp_path)

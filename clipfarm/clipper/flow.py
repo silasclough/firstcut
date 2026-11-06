@@ -276,7 +276,7 @@ def requirements(outline: list[str], text: str = "") -> dict[int, list[tuple[str
     def is_name(w: str, label: bool = False) -> bool:
         if text:
             c, l = talk_cap.get(w, 0), talk_low.get(w.lower(), 0)
-            if c == 0 and l == 0 and not label:                      # never heard: a name only if something CLOSE is heard with a capital ("Eolene" for Jolene)
+            if c == 0 and l == 0 and not label:                      # never heard: a name only if something CLOSE is heard with a capital ("Jolane" for Jolene)
                 import difflib
                 return bool(difflib.get_close_matches(w, talk_caps_anywhere, n=1, cutoff=0.7))
             return c >= (max(2, l) if label else max(1, l))             # a topic label needs its capital seen twice (once could be stray chatter)             # never heard at all: maybe a name the recogniser misspelled ("Eolene")

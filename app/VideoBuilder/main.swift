@@ -64,19 +64,77 @@ final class DockProgress: NSView {
 /// nothing): each path goes to the page (window.vbDrop). Nothing is copied: FirstCut reads footage where it is. Drags inside the page
 /// (shots in Find footage) have no file URLs and go on to WebKit as before.
 final class DropWebView: WKWebView {
+    // Photos (and some other apps) don't put the video on the drag as a file: the pasteboard holds a preview JPEG as a file URL and the real
+    // video as a FILE PROMISE that has to be exported on drop. So a promise wins over any file URL that came with it, and the exported copy
+    // goes to ~/Library/Caches/FirstCut/dropped/<id>/ (a copy: Finder drops are read where they are; subfolders older than a week are
+    // removed at launch). The page is told while the export runs (window.vbDropBusy) so it can show a placeholder tile.
+    static let droppedRoot: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/FirstCut/dropped", isDirectory: true)
+    private var exporting = 0
+
+    static func cleanDropped() {
+        let fm = FileManager.default
+        guard let subs = try? fm.contentsOfDirectory(at: droppedRoot, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        for u in subs {
+            let when = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+            if Date().timeIntervalSince(when) > 7 * 24 * 3600 { try? fm.removeItem(at: u) }
+        }
+    }
+
+    override init(frame: CGRect, configuration: WKWebViewConfiguration) {
+        super.init(frame: frame, configuration: configuration)
+        registerForDraggedTypes(NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) } + [.fileURL])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    private func promises(_ info: NSDraggingInfo) -> [NSFilePromiseReceiver] {
+        (info.draggingPasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil) as? [NSFilePromiseReceiver]) ?? []
+    }
     private func files(_ info: NSDraggingInfo) -> [URL] {
         (info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
     }
+    private func ours(_ info: NSDraggingInfo) -> Bool { !promises(info).isEmpty || !files(info).isEmpty }
+
+    private func hint(_ on: Bool) { evaluateJavaScript("window.vbDragOver && window.vbDragOver(\(on))") }   // ("Drop to add to your short clips")
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        files(sender).isEmpty ? super.draggingEntered(sender) : .copy
+        if ours(sender) { hint(true); return .copy }
+        return super.draggingEntered(sender)
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        hint(false)
+        super.draggingExited(sender)
+    }
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        hint(false)
+        super.draggingEnded(sender)
     }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        files(sender).isEmpty ? super.draggingUpdated(sender) : .copy
+        ours(sender) ? .copy : super.draggingUpdated(sender)
     }
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        files(sender).isEmpty ? super.prepareForDragOperation(sender) : true
+        ours(sender) ? true : super.prepareForDragOperation(sender)
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        hint(false)
+        let proms = promises(sender)
+        if !proms.isEmpty {                                              // (the real thing is the promise: any file URL here is its preview picture)
+            let dest = DropWebView.droppedRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try? FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+            exporting += proms.count
+            evaluateJavaScript("window.vbDropBusy && window.vbDropBusy(true)")
+            for r in proms {
+                r.receivePromisedFiles(atDestination: dest, options: [:], operationQueue: .main) { [weak self] url, error in
+                    guard let self = self else { return }
+                    self.exporting -= 1
+                    if let error = error {
+                        self.evaluateJavaScript("window.vbDropFailed && window.vbDropFailed(\(jsString(error.localizedDescription)))")
+                    } else {
+                        self.evaluateJavaScript("window.vbDrop && window.vbDrop(\(jsString(url.path)))")
+                    }
+                    if self.exporting <= 0 { self.exporting = 0; self.evaluateJavaScript("window.vbDropBusy && window.vbDropBusy(false)") }
+                }
+            }
+            return true
+        }
         let urls = files(sender)
         if urls.isEmpty { return super.performDragOperation(sender) }
         for u in urls { evaluateJavaScript("window.vbDrop && window.vbDrop(\(jsString(u.path)))") }
@@ -125,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         if #available(macOS 26.0, *) { glassOn = true }
         cfg.userContentController.addUserScript(WKUserScript(source: "window.vbNative = {build: \(jsString(build))}; document.documentElement.classList.add('native'\(glassOn ? ", 'glass'" : ""));",
                                                              injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        DropWebView.cleanDropped()
         web = DropWebView(frame: .zero, configuration: cfg)
         web.navigationDelegate = self
         web.uiDelegate = self

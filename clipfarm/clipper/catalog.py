@@ -66,7 +66,7 @@ QUERY_SYSTEM = (
     "caps in the air', 'campus building on a sunny day', 'volleyball player spiking the ball'). Use the creator's notes for who and where. "
     "Give one or two per passage; give none where nothing visual fits. Never describe the speaker talking to the camera. Never use a "
     "person's name or an organisation's name: the search only sees pictures, so describe what is visible ('a young woman walking across "
-    "a campus', not 'Elena walking across Northfield University').")
+    "a campus', not 'Elena walking across Northfield College').")
 QUERY_SCHEMA = {"type": "object", "properties": {"passages": {"type": "array", "items": {"type": "object", "properties": {
     "n": {"type": "integer"}, "looks": {"type": "array", "items": {"type": "string"}}}, "required": ["n", "looks"]}}},
     "required": ["passages"]}
@@ -185,7 +185,9 @@ class SigLIP:
 class Catalog:
     def __init__(self, cfg, embedder=None, vision=None):
         c = cfg.get("catalog") or {}
-        self.workers = int(c.get("workers") or 3)                 # (files read at once: see index())
+        self.workers = int(c.get("workers") or 0)                 # files read at once: 0 = as many as the Mac can spare (loadgov.py), else exactly this many
+        self.load_mode = str(c.get("load") or "adapt")           # "adapt" | "gentle" (one file at a time) | "full" (Settings > Footage library)
+        self.governor = None                                     # the running pass's loadgov.Governor (the page's activity messages reach it)
         d = Path(os.path.expanduser(str(c.get("dir", "data/catalog"))))
         self.dir = d if d.is_absolute() else cfg.root / d
         self.roots = [Path(os.path.expanduser(str(r))) for r in (c.get("roots") or [])]
@@ -237,7 +239,7 @@ class Catalog:
             ev = [dict(e) for e in self.live if e["n"] > after]
             last = self.live_n
         return {"events": ev, "last": last,
-                "status": {k: self.status.get(k) for k in ("running", "stage", "done", "total", "started", "error")}}
+                "status": {k: self.status.get(k) for k in ("running", "stage", "done", "total", "started", "error", "workers", "load")}}
 
     @staticmethod
     def who(model) -> str:
@@ -537,7 +539,13 @@ class Catalog:
         # Several files at once: reading a 4K camera file off a drive is mostly waiting (the drive, ffmpeg), and one at a time left the Mac
         # idle most of the time (about 8 files a minute). The picture model still takes one picture batch at a time (its own lock).
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-        W = max(1, min(6, int(self.workers)))
+        from . import loadgov
+        if int(self.workers) > 0:                                # a number set by hand: exactly that many
+            gov = loadgov.Governor("gentle", cap=int(self.workers))
+            gov.fixed, gov._target, gov._why = int(self.workers), int(self.workers), "full"
+        else:
+            gov = loadgov.Governor(self.load_mode)
+        self.governor = gov.start()
 
         def work(f):
             if self.stop.is_set() or (deadline and time.time() > deadline):
@@ -552,22 +560,33 @@ class Catalog:
                 log.warning(f"catalog: {f.get('path')}: {e}")
                 return "fail", f, None
 
-        pending, it, n, halt = set(), iter(todo), 0, False
-        with ThreadPoolExecutor(W, thread_name_prefix="catalog-frames") as pool:
+        pending, it, n, halt, exhausted = set(), iter(todo), 0, False, False
+        try:
+          with ThreadPoolExecutor(max(1, gov.cap), thread_name_prefix="catalog-frames") as pool:
             while True:
-                while not halt and len(pending) < W and not (self.stop.is_set() or (deadline and time.time() > deadline)):
+                stopping = self.stop.is_set() or bool(deadline and time.time() > deadline)
+                want = gov.target()                              # how many may be in flight now: the Mac decides (0 = paused)
+                self.status.update(workers=want, load=gov.note())
+                while not halt and not exhausted and not stopping and len(pending) < want:
                     f = next(it, None)
                     if f is None:
+                        exhausted = True
                         break
                     if progress:
                         progress(n, len(todo), f"Looking at {f['rel']}")
                     pending.add(pool.submit(work, f))
                 if not pending:
-                    break
-                finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    if halt or exhausted or stopping:
+                        break
+                    self.status["stage"] = gov.note() or "Paused"       # (paused: another app needs the Mac; nothing in flight)
+                    self.stop.wait(1.0)
+                    continue
+                finished, pending = wait(pending, timeout=2.0, return_when=FIRST_COMPLETED)
                 for fut in finished:
                     what, f, why = fut.result()
                     n += 1
+                    if what in ("ok", "fail") and getattr(gov, "note_done", None):
+                        gov.note_done()                                  # (how fast files finish is how the governor finds the right count)
                     if what == "stop":
                         stopped, halt = why, True
                     elif what == "ok":
@@ -576,6 +595,9 @@ class Catalog:
                     elif what == "fail":
                         failed += 1
                     self.compile_soon(done + failed)                     # what is done so far is searchable while the rest runs
+        finally:
+            gov.stop()
+            self.status.update(workers=0, load="")
         self.compile()
         if stopped:
             log.error(f"catalog: stopped: {stopped}")

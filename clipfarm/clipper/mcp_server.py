@@ -129,7 +129,7 @@ def _obj(props: dict, required: list[str] | None = None) -> dict:
 
 
 S = {"type": "string"}
-PROJECT = {**S, "description": "Which video: its id, or its title or part of it (e.g. 'Weekend Workshop'). Leave out for the most recent one."}
+PROJECT = {**S, "description": "Which video: its id, or its title or part of it (e.g. 'a workshop shoot'). Leave out for the most recent one."}
 TOOLS = [
     {"name": "list_projects", "description": "Every video FirstCut has made or is making on this Mac (long videos, short-clip batches, transcripts), newest first, with status.",
      "inputSchema": _obj({})},
