@@ -41,9 +41,7 @@ Needs a Mac with Apple silicon (M1 or newer) and macOS 13 or later.
 ## Install
 
 1. Open `FirstCut.dmg` and drag **FirstCut** onto **Applications**.
-2. Open FirstCut. It isn't from the App Store and isn't notarized yet, so the first time macOS stops it:
-   - If you see an **Open** button, click it.
-   - If you only see **Done** or **Move to Trash**: click Done, open **System Settings › Privacy & Security**, scroll down to "FirstCut was blocked", click **Open Anyway**, then open FirstCut again.
+2. Open FirstCut. It is signed and notarized by Apple, so macOS only asks once whether you want to open an app you downloaded: click **Open**.
 3. Setup gets it ready. It downloads the speech-to-text model and, if you want, a model that runs on your Mac. It shows the size first: about 6 GB on an 8 GB Mac, 10 GB on 16 GB.
 4. Choose who makes the editing decisions: your ChatGPT account, your Claude account, or only this Mac.
 5. The first time it opens footage on an external drive, or in Desktop, Documents or Downloads, macOS asks whether FirstCut may use those files. Click **Allow**.
