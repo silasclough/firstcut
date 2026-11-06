@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clipper</title>
+<style>
+  :root {
+    --bg: #0d0f14; --panel: #151922; --panel2: #1c2130; --line: #2a3142; --text: #e9edf5; --muted: #8b94a8;
+    --accent: #7c5cff; --accent2: #22d3a6; --warn: #ffb547; --bad: #ff5c6c; --radius: 14px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f5f6fa; --panel: #ffffff; --panel2: #f0f2f8; --line: #dde1ea; --text: #151922; --muted: #5d667a; }
+  }
+  * { box-sizing: border-box; }
+  button, a, input, select, textarea { touch-action: manipulation; }          /* no double-tap-zoom delay on iPhone */
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 16px 80px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 22px; letter-spacing: -.02em; }
+  .logo { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, var(--accent), var(--accent2)); display: grid; place-items: center; color: #fff; font-size: 16px; }
+  .engines { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill { font-size: 12px; padding: 4px 9px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .pill.ok { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 40%, var(--line)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  h1 { font-size: clamp(24px, 4vw, 34px); margin: 4px 0 4px; letter-spacing: -.03em; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  input[type=text], input[type=url], input[type=number], select, textarea {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 11px 12px; font: inherit; min-width: 0; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); border-color: transparent; }
+  .url { flex: 1 1 380px; font-size: 16px; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 11px 16px; cursor: pointer; background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+  button.primary { background: var(--accent); color: #fff; border-color: transparent; font-weight: 700; }
+  button.primary:disabled { opacity: .55; cursor: default; }
+  button.small { padding: 6px 10px; font-size: 13px; border-radius: 8px; }
+  button.danger { color: var(--bad); }
+  .opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-top: 14px; }
+  .opts label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .opts label[hidden] { display: none !important; }
+  .opts label > * { text-transform: none; letter-spacing: 0; font-size: 14px; }
+  .check { flex-direction: row !important; align-items: center; gap: 8px !important; }
+  .drop { margin-top: 14px; border: 1.5px dashed var(--line); border-radius: 12px; padding: 14px; text-align: center; color: var(--muted); cursor: pointer; }
+  .drop.hover { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .msg { margin-top: 10px; font-size: 14px; min-height: 20px; } .msg.err { color: var(--bad); }
+  .jobs { margin-top: 22px; display: flex; flex-direction: column; gap: 14px; }
+  .job-head { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .job-title { font-weight: 700; flex: 1 1 260px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .status { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: var(--panel2); }
+  .status.done { color: var(--accent2); } .status.failed { color: var(--bad); } .status.cancelled { color: var(--muted); }
+  .bar { height: 7px; background: var(--panel2); border-radius: 99px; overflow: hidden; margin: 12px 0 6px; }
+  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .6s ease; }
+  .err { color: var(--bad); font-size: 13px; margin-top: 6px; white-space: pre-wrap; word-break: break-word; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; margin-top: 14px; }
+  /* No overflow:hidden around the <video>: WebKit/Safari renders a playing video inside a rounded,
+     clipped container as a black box (audio keeps playing). Round the video element itself instead. */
+  /* Safari renders a playing <video> as a black box when it (or a parent) is clipped with rounded corners /
+     overflow, or sits inside <details>. So: square video, no clipping parents, plain show/hide section. */
+  .clip { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; padding: 6px 6px 0; }
+  .clip video { width: 100%; height: auto; background: #000; display: block; }
+  .tabs { display: flex; gap: 6px; margin: 0 0 14px; flex-wrap: wrap; }
+  .tab { background: var(--panel); }
+  .tab.on { background: var(--accent); color: #fff; border-color: transparent; font-weight: 700; }
+  .tab .count { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 4px; border-radius: 99px; background: var(--warn); color: #000; font-size: 12px; font-weight: 800; }
+  .tab .count:empty { display: none; }
+  .clips-toggle { margin-top: 10px; }
+  .clip .body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .clip .t { font-weight: 700; font-size: 14px; }
+  .score { font-size: 12px; font-weight: 800; color: #fff; background: var(--accent); border-radius: 7px; padding: 1px 7px; margin-right: 6px; }
+  .clip .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
+  .clip textarea { width: 100%; font-size: 12px; min-height: 64px; resize: vertical; }
+  .restyle { display: none; flex-direction: column; gap: 6px; }
+  .restyle.open { display: flex; }
+  .restyle select, .restyle input { font-size: 13px; padding: 7px 8px; }
+  .empty { color: var(--muted); text-align: center; padding: 30px 0; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .busy-veil { position: absolute; inset: 0; background: rgba(0,0,0,.55); color: #fff; display: grid; place-items: center; font-weight: 700; }
+  .vid { position: relative; }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr 1fr; gap: 10px; } .clip .body { padding: 8px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><div class="logo">✂</div>Clipper</div>
+    <div class="engines" id="engines"></div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab" data-tab="mine">My clips</button>
+    <button class="tab" data-tab="approval">Approval <span class="count" id="appr-count"></span></button>
+    <button class="tab" id="feed-tab" title="TikTok-style review: like = post, dislike = delete">Swipe feed ▶</button>
+    <button class="tab" id="ai-tab" title="Long videos from your raw footage: AI edit + Final Cut project, saved to the big drive">AI videos ▶</button>
+    <button class="tab" id="lf-tab" title="My Explainers: yes / no on video ideas and titles, review and backlog of the daily long-form video">Long-form ▶</button>
+  </nav>
+
+  <section class="card" id="new-card">
+    <h1>Long video in, short clips out.</h1>
+    <p class="sub">Paste a YouTube, podcast or stream link (or drop a file). Clipper finds the best moments and makes vertical clips with captions, ready to post.</p>
+    <form id="form" class="row" autocomplete="off">
+      <input class="url" id="url" type="url" placeholder="https://www.youtube.com/watch?v=..." aria-label="Video link">
+      <button class="primary" id="go" type="submit">Get clips</button>
+    </form>
+    <div class="drop" id="drop">or drop video files here / click to choose (mp4, mov, mkv, webm) - several files become one job<input id="file" type="file" accept="video/*" multiple hidden></div>
+    <label style="display:block;margin-top:14px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">What are you looking for? (optional - the AI reads this)
+      <textarea id="o-prompt" rows="2" style="width:100%;margin-top:6px;text-transform:none;letter-spacing:0;font-size:14px" placeholder="e.g. the funniest reactions, the moment he finds out, skip the sponsor reads, keep it chronological and focused on the road trip"></textarea></label>
+    <div class="opts">
+      <label>What to make<select id="o-mode"><option value="clips">Short clips (best moments)</option><option value="polish">Whole video: captions + music</option><option value="long">One long video (several clips, in order, tightened)</option><option value="asis">Already edited: just post it (no editing)</option></select></label>
+      <label class="long-only">Target length (min, 0 = auto)<input id="o-long" type="number" min="0" max="60" step="0.5" value="0"></label>
+      <label>Music<select id="o-music"><option value="">Off</option><option value="auto">Match what's said</option><option value="chill">Chill</option><option value="upbeat">Upbeat</option><option value="funny">Funny</option><option value="suspense">Suspense</option><option value="emotional">Emotional</option><option value="epic">Epic</option><option value="adventure">Adventure</option></select></label>
+      <label class="check polish-only"><input id="o-fcp" type="checkbox" checked> Final Cut Pro project</label>
+      <label hidden>Source<select id="o-source"><option value="auto">Auto-detect</option><option value="glasses">Meta glasses</option><option value="standard">Regular video</option></select></label>
+      <label class="clip-only">Clips (0 = all the good ones)<input id="o-clips" type="number" min="0" max="30"></label>
+      <label class="clip-only">Min length (s)<input id="o-min" type="number" min="8" max="170"></label>
+      <label class="clip-only">Max length (s)<input id="o-max" type="number" min="15" max="180"></label>
+      <label hidden class="clip-only">Framing<select id="o-layout"></select></label>
+      <label>Captions<select id="o-style"></select></label>
+      <label hidden>Pacing<select id="o-pace"></select></label>
+      <label hidden class="clip-only" title="Standard = the reel as it is. YouTube = animated graphics (stats, quotes, flags, logos, photos). Business = calm slides, charts and stats.">Edit style<select id="o-edit"><option value="standard">Standard reel</option><option value="auto">Auto (decide per clip)</option><option value="youtube">YouTube style (all graphics)</option><option value="business">Business style (calm slides, charts)</option></select></label>
+      <label hidden>Language<select id="o-lang"><option value="en">English</option><option value="auto">Auto-detect</option><option value="es">Spanish</option><option value="de">German</option><option value="fr">French</option><option value="pt">Portuguese</option></select></label>
+      <label class="check clip-only"><input id="o-hook" type="checkbox" checked> Hook title on top</label>
+    </div>
+    <div class="msg" id="msg"></div>
+  </section>
+
+  <div class="jobs" id="jobs"><div class="empty">No jobs yet.</div></div>
+  <p style="text-align:center"><button id="more-jobs" style="display:none"></button></p>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let SHOW_JOBS = 6;
+let STATUS = null, OPEN = new Set(), RESTYLE_OPEN = new Set(), LAST_RUNNING = true;
+let TAB = (location.hash === "#approval") ? "approval" : "mine";
+const PACE_LABEL = {natural: "Natural", tight: "Tight (cut pauses)", fast: "Fast (cut + 1.08x)"};
+
+function lsGet(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function fillSelect(sel, entries, value) {
+  sel.innerHTML = entries.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+  if (value !== undefined) sel.value = value;
+}
+
+async function loadStatus() {
+  STATUS = await api("/api/status");
+  const d = STATUS.defaults;
+  $("#o-clips").value = lsGet("clips", d.clips); $("#o-min").value = lsGet("min", d.min_len); $("#o-max").value = lsGet("max", d.max_len);
+  fillSelect($("#o-layout"), Object.entries(STATUS.layouts), lsGet("layout", d.layout));
+  fillSelect($("#o-style"), [["mix", "Mix (different per clip)"], ...Object.entries(STATUS.caption_styles)], lsGet("style", d.caption_style));
+  fillSelect($("#o-pace"), STATUS.paces.map(p => [p, PACE_LABEL[p] || p]), lsGet("pace", d.pace));
+  $("#o-edit").value = "auto";                       // (these five are not choices any more: the editor decides)
+  $("#o-lang").value = lsGet("lang", d.language || "en");
+  $("#o-source").value = lsGet("source", "auto");
+  $("#o-mode").value = lsGet("mode", "clips");
+  $("#o-prompt").value = lsGet("prompt", "");
+  $("#o-music").value = lsGet("music", "");
+  $("#o-fcp").checked = lsGet("fcp", "1") === "1";
+  showMode();
+  const llm = STATUS.llm.find(x => x.ok);
+  $("#engines").innerHTML = [
+    `<span class="pill ${llm ? "ok" : ""}" title="${esc(STATUS.llm.map(x => x.name + ": " + x.why).join("\n"))}">Moments: ${llm ? esc(llm.name) : "heuristic only"}</span>`,
+    `<span class="pill ok">Transcribe: ${STATUS.transcriber === "openai" ? "OpenAI" : "local " + esc(STATUS.whisper_model)}</span>`,
+    `<span class="pill ${STATUS.openai_key ? "ok" : ""}">OpenAI key ${STATUS.openai_key ? "set" : "not set"}</span>`
+  ].join("");
+}
+
+function showMode() {
+  const mode = $("#o-mode").value, polish = mode === "polish" || mode === "long" || mode === "asis";
+  document.querySelectorAll(".clip-only").forEach(e => e.style.display = polish ? "none" : "");
+  document.querySelectorAll(".polish-only").forEach(e => e.style.display = polish ? "" : "none");
+  document.querySelectorAll(".long-only").forEach(e => e.style.display = mode === "long" ? "" : "none");
+  if (polish && !$("#o-music").value && !lsGet("music_set", "")) $("#o-music").value = "auto";
+}
+document.addEventListener("change", e => {
+  if (e.target.id === "o-mode") showMode();
+  if (e.target.id === "o-music") lsSet("music_set", "1");
+});
+
+function options() {
+  const o = {clips: +$("#o-clips").value, min_len: +$("#o-min").value, max_len: +$("#o-max").value,
+             layout: "auto", caption_style: $("#o-style").value, pace: "tight", edit_style: "auto",
+             hook_title: $("#o-hook").checked, language: "en", source_type: "auto",
+             mode: $("#o-mode").value, music: $("#o-music").value, fcp: $("#o-fcp").checked, long_minutes: +$("#o-long").value || 0,
+             prompt: $("#o-prompt").value.trim()};
+  lsSet("prompt", o.prompt);
+  lsSet("source", o.source_type); lsSet("mode", o.mode); lsSet("music", o.music); lsSet("fcp", o.fcp ? "1" : "0");
+  lsSet("clips", o.clips); lsSet("min", o.min_len); lsSet("max", o.max_len); lsSet("layout", o.layout);
+  lsSet("style", o.caption_style); lsSet("pace", o.pace); lsSet("edit", o.edit_style); lsSet("lang", o.language);
+  return o;
+}
+
+function say(t, bad = false) { const m = $("#msg"); m.textContent = t; m.className = "msg" + (bad ? " err" : ""); }
+
+$("#form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const url = $("#url").value.trim();
+  if (!url) return say("Paste a link first.", true);
+  $("#go").disabled = true;
+  try {
+    const job = await api("/api/jobs", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({url, ...options()})});
+    OPEN.add(job.id); $("#url").value = ""; say("Queued. Clips appear below as they finish.");
+    refresh();
+  } catch (err) { say(err.message, true); } finally { $("#go").disabled = false; }
+});
+
+const drop = $("#drop"), fileIn = $("#file");
+drop.addEventListener("click", () => fileIn.click());
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hover"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("hover"); }));
+drop.addEventListener("drop", e => uploadAll([...e.dataTransfer.files]));
+fileIn.addEventListener("change", () => { uploadAll([...fileIn.files]); fileIn.value = ""; });
+
+async function uploadAll(files) {
+  files = files.filter(f => /\.(mp4|mov|mkv|webm|m4v)$/i.test(f.name))
+               .sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+  if (!files.length) return say("Choose .mp4, .mov, .mkv, .webm or .m4v files.", true);
+  if (files.length === 1) { if (await upload(files[0])) say("Uploaded. Set what you want on the job below, then press Clip it."); return; }
+  // several files = ONE job: they're joined in order and the clips are cut from all of them
+  let job;
+  try {
+    job = await api("/api/jobs/batch", {method: "POST", headers: {"Content-Type": "application/json"},
+                     body: JSON.stringify({names: files.map(f => f.name), ...options()})});
+  } catch (err) { return say(err.message, true); }
+  OPEN.add(job.id); refresh();
+  for (let i = 0; i < files.length; i++) {
+    const ok = await upload(files[i], ` (${i + 1} of ${files.length})`, `job=${job.id}&index=${i}&`);
+    if (!ok) return say(`Stopped at ${files[i].name}. Drop the same files again to retry.`, true);
+  }
+  say(`Uploaded ${files.length} videos as one job. Set what you want on the job below, then press Clip it.`);
+}
+
+function upload(file, tag = "", prefix = "") { return new Promise(resolve => {
+  const q = new URLSearchParams({name: file.name, options: JSON.stringify(options())});
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/upload?" + prefix + q);
+  xhr.upload.onprogress = e => { if (e.lengthComputable) say(`Uploading ${file.name}${tag}: ${Math.round(100 * e.loaded / e.total)}%`); };
+  xhr.onload = () => {
+    try { const j = JSON.parse(xhr.responseText); if (xhr.status >= 300) throw new Error(j.error); OPEN.add(j.id); refresh(); resolve(true); }
+    catch (err) { say(err.message || "upload failed", true); resolve(false); }
+  };
+  xhr.onerror = () => { say(`Upload of ${file.name} failed (connection lost).`, true); resolve(false); };
+  xhr.send(file);
+}); }
+
+function fmtTime(s) { s = Math.round(s || 0); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+
+function hhmm(iso) { if (!iso) return ""; const d = new Date(iso); return d.toLocaleString([], {weekday: "short", hour: "numeric", minute: "2-digit"}); }
+function postLine(job, c) {
+  const p = c.post; if (!p) return "";
+  const key = job.id + ":" + c.index;
+  const btn = (act, label, cls = "") => `<button class="small ${cls}" data-${act}="${key}">${label}</button>`;
+  if (p.state === "review") return `<div class="meta">${STATUS && STATUS.feed ? `<span class="pill">Waiting for your swipe</span> <a href="/feed"><button class="small">Open feed</button></a>` : `<span class="pill">Posts after ${esc(hhmm(p.approve_at))} unless rejected</span>`} ${btn("reject", "Reject", "danger")} ${btn("approve", "Approve now")}</div>`;
+  if (p.state === "approved") return `<div class="meta"><span class="pill ok">Approved - waiting for a slot</span> ${btn("reject", "Reject", "danger")}</div>`;
+  if (p.state === "scheduled") return `<div class="meta"><span class="pill ok">Scheduled ${esc(hhmm(p.slot))}</span></div>`;
+  if (p.state === "posted") return `<div class="meta"><span class="pill ok">Posted</span></div>`;
+  if (p.state === "disliked") return `<div class="meta"><span class="pill">Deleted - you disliked it</span></div>`;
+  if (p.state === "rejected") return `<div class="meta"><span class="pill">Rejected${p.why ? " - " + esc(p.why) : ""}</span></div>`;
+  return `<div class="meta"><span class="pill">${esc(p.state)}</span></div>`;
+}
+
+function clipVersion(c) { return c.rendered_at || Math.round(c.render_s || 0); }   // changes only when THIS clip is re-rendered
+
+function clipVidHTML(job, c) {
+  const base = `/media/${job.id}/`, v = clipVersion(c);
+  if (c.deleted) return `<img src="${base}${c.thumb}?v=${v}" style="width:100%;display:block;opacity:.45" alt="deleted">`;
+  // the small preview copy loads fast; Download / Open below give the full-quality file
+  return `<video src="${base}${c.preview || c.file}?v=${v}" poster="${base}${c.thumb}?v=${v}" controls preload="none" playsinline></video>`;
+}
+
+function postNextHTML(job, c) {
+  if ((job.source || {}).auto || c.deleted) return "";
+  const s = (c.post_next || {}).state;
+  if (s) return `<span class="pill ok" title="It goes out in the next free posting slot, ahead of everything else">${s === "pending" ? "Sending to the posting Mac…" : "Posts next ✓ (first in line)"}</span>`;
+  return `<button class="small primary" data-postnext="${job.id}:${c.index}" title="Send this to My Channel now: it jumps to the front of the line">Post next ▶</button>`;
+}
+
+function editBoxHTML(c, key) {
+  return `<div class="edit" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+    <textarea data-edit-text="${key}" rows="2" style="font-size:13px" placeholder='Tell the AI what to change - e.g. "start with the line about the roof, and cut the part where he laughs"'></textarea>
+    <div class="actions"><button class="small primary" data-edit="${key}" ${c.restyling ? "disabled" : ""}>Apply change</button>
+      ${c.edited ? `<button class="small" data-revert="${key}" ${c.restyling ? "disabled" : ""}>Back to the first cut</button>` : ""}</div>
+    ${c.edited ? `<div class="meta">Changed: ${esc(c.edited.summary)} <span title="${esc(c.edited.instruction)}">(you said: "${esc(c.edited.instruction.slice(0, 60))}")</span></div>` : ""}
+    ${c.edit_note ? `<div class="${c.edit_note.ok ? "meta" : "err"}">${esc(c.edit_note.result)}</div>` : ""}
+  </div>`;
+}
+
+function clipBodyHTML(job, c) {
+  const base = `/media/${job.id}/`;
+  const key = job.id + ":" + c.index;
+  const open = RESTYLE_OPEN.has(key);
+  const layouts = Object.entries(STATUS.layouts).map(([v,l]) => `<option value="${v}" ${v === (c.layout === "track" ? "track" : c.layout) ? "selected" : ""}>${esc(l)}</option>`).join("");
+  const styles = Object.entries(STATUS.caption_styles).map(([v,l]) => `<option value="${v}" ${v === c.caption_style ? "selected" : ""}>${esc(l)}</option>`).join("");
+  const paces = STATUS.paces.map(p => `<option value="${p}" ${p === c.pace ? "selected" : ""}>${esc(PACE_LABEL[p] || p)}</option>`).join("");
+  const musicLine = c.music ? `<div class="meta">Music: ${esc(c.music.title)} - ${esc(c.music.artist)} (${esc(c.music.mood || "")}${c.music.genre ? ", " + esc(c.music.genre) : ""})${c.music.why ? ` · <span title="${esc(c.music.why)}">why?</span>` : ""}</div>` : "";
+  if (c.polish) {
+    const fcp = c.fcp;
+    return `
+      <div class="t">${esc(c.title)}</div>
+      <div class="meta">${fmtTime(c.duration)} finished · ${Math.round(c.trimmed_s || 0)}s of dead space cut (${c.cuts} cuts) · captions: ${esc(c.caption_style)}</div>
+      ${musicLine}
+      ${c.story ? `<div class="meta">Story: ${esc(c.story.summary)}<br>Kept from each clip: ${c.story.files.map(f => esc(f.name.replace(/\.[^.]+$/, "")) + " " + Math.round(f.kept_s) + "s").join(" · ")}</div>` : ""}
+      ${c.caption ? `<textarea readonly title="Credits to put in your description">${esc(c.caption)}</textarea>` : ""}
+      <div class="actions">
+        <a href="${base}${c.file}?dl=1"><button class="small primary">Download video</button></a>
+        <a href="${base}${c.file}" target="_blank" rel="noopener"><button class="small">Open</button></a>
+        ${c.srt ? `<a href="${base}${c.srt}?dl=1"><button class="small" title="The captions as a subtitle file (.srt): words with start and end times. Upload it to YouTube as subtitles or import it into any editor.">Subtitles (.srt)</button></a>` : ""}
+        ${fcp ? `<a href="${base}fcp_project.zip?dl=1"><button class="small primary">Final Cut project (.zip)</button></a>` : ""}
+        ${postNextHTML(job, c)}
+      </div>
+      ${editBoxHTML(c, key)}
+      ${fcp ? `<div class="meta">Unzip into <b>${esc(fcp.unpack_to.replace(/\/[^/]*$/, ""))}</b>, then in Final Cut Pro: File &gt; Import &gt; XML… and pick <b>${esc(fcp.fcpxml)}</b>. ${fcp.clips} clips, ${fcp.captions} caption titles${fcp.music ? ", music with volume keyframes" : ""}${fcp.valid ? " · checked against Final Cut's format ✓" : ""}. Moved it somewhere else? Use File &gt; Relink Files.</div>` : ""}`;
+  }
+  if (c.deleted) return `
+      <div class="t"><span class="score" title="${esc(c.reason)}">${c.score}</span>${esc(c.title)}</div>
+      <div class="meta">${fmtTime(c.duration)} · deleted: you disliked it in the swipe feed (thumbnail and notes kept)</div>`;
+  return `
+      <div class="t"><span class="score" title="${esc(c.reason)}">${c.score}</span>${esc(c.title)}</div>
+      <div class="meta">${fmtTime(c.duration)} · from ${fmtTime(c.source_start)} · ${esc(c.layout === "glasses" ? "stabilized POV" : c.layout)} · ${c.cuts} cuts · ${esc(c.picked_by)}</div>
+      ${c.restyle_error ? `<div class="err">${esc(c.restyle_error)}</div>` : ""}
+      ${musicLine}
+      ${postLine(job, c)}
+      <textarea readonly>${esc(c.caption)}</textarea>
+      <div class="actions">
+        <a href="${base}${c.file}?dl=1"><button class="small primary">Download</button></a>
+        <a href="${base}${c.file}" target="_blank" rel="noopener"><button class="small">Open</button></a>
+        ${postNextHTML(job, c)}
+        <button class="small" data-copy="${key}">Copy caption</button>
+        <button class="small" data-restyle="${key}">${open ? "Close" : "Restyle"}</button>
+        ${c.srt ? `<a href="${base}${c.srt}?dl=1"><button class="small" title="The captions as a subtitle file (.srt): words with start and end times. Upload it to YouTube as subtitles or import it into any editor.">Subtitles (.srt)</button></a>` : ""}
+      </div>
+      ${editBoxHTML(c, key)}
+      <div class="restyle ${open ? "open" : ""}">
+        <input type="text" value="${esc(c.title)}" data-f="title" placeholder="Hook title">
+        <select data-f="layout">${layouts}</select>
+        <select data-f="caption_style">${styles}</select>
+        <select data-f="pace">${paces}</select>
+        <select data-f="edit_style">${[["standard","Standard reel"],["auto","Auto (decide per clip)"],["youtube","YouTube style"],["business","Business style"]].map(([v,l]) => `<option value="${v}" ${v === (c.edit_style || "standard") ? "selected" : ""}>${l}</option>`).join("")}</select>
+        <select data-f="music"><option value="off" ${!c.music ? "selected" : ""}>No music</option><option value="auto">Music: match the clip</option>$<option value="chill" ${c.music && c.music.mood === "chill" ? "selected" : ""}>Music: chill</option><option value="upbeat" ${c.music && c.music.mood === "upbeat" ? "selected" : ""}>Music: upbeat</option><option value="funny" ${c.music && c.music.mood === "funny" ? "selected" : ""}>Music: funny</option><option value="suspense" ${c.music && c.music.mood === "suspense" ? "selected" : ""}>Music: suspense</option><option value="emotional" ${c.music && c.music.mood === "emotional" ? "selected" : ""}>Music: emotional</option><option value="epic" ${c.music && c.music.mood === "epic" ? "selected" : ""}>Music: epic</option><option value="adventure" ${c.music && c.music.mood === "adventure" ? "selected" : ""}>Music: adventure</option></select>
+        <label class="meta"><input type="checkbox" data-f="hook_title" ${c.hook_title ? "checked" : ""}> Hook title</label>
+        <button class="small primary" data-apply="${key}">Re-render this clip</button>
+      </div>`;
+}
+
+function deviceLine(j, running) {
+  const info = j.info || {}, dev = info.device || {}, src = j.source || {};
+  if (info.damaged) return `<div class="err">⚠ This video file is cut off: it says ${fmtTime(info.damaged.claimed_s)} long but only the first ${fmtTime(info.damaged.usable_s)} can be read (an interrupted export or upload). Clips are made from that part only - upload the file again for the rest.</div>`;
+  if (src.auto) return `<div class="meta"><span class="pill ok">Nightly auto-clip</span> ${esc(src.channel || "")} · ${esc(src.license || src.kind || "")}${src.topic ? " · topic: " + esc(src.topic) : ""} · <a href="${esc(src.url)}" target="_blank" rel="noopener">source</a></div>`;
+  if (info.profile === "glasses")
+    return `<div class="meta"><span class="pill ok">Meta glasses</span> ${esc(info.profile_how || "")}${!running && j.options.source_type !== "standard" ? ` <button class="small" data-redo="${j.id}" data-as="standard">Redo as regular video</button>` : ""}</div>`;
+  if (info.profile === "standard" && dev.shape_match && !running)
+    return `<div class="meta">Shaped like Meta glasses footage (${esc(dev.dims)}), but no glasses metadata. <button class="small" data-redo="${j.id}" data-as="glasses">Redo as Meta glasses</button></div>`;
+  return "";
+}
+
+function isRunning(j) { return ["queued", "uploading", "joining", "downloading", "transcribing", "finding", "rendering"].includes(j.status); }
+
+function draftHTML(j) {
+  const o = j.options || {}, sel = (v, cur) => (String(v) === String(cur) ? "selected" : "");
+  const opts = (entries, cur) => entries.map(([v, l]) => `<option value="${esc(v)}" ${sel(v, cur)}>${esc(l)}</option>`).join("");
+  const musics = [["", "Off"], ["auto", "Match what's said"], ["chill", "Chill"], ["upbeat", "Upbeat"], ["funny", "Funny"], ["suspense", "Suspense"], ["emotional", "Emotional"], ["epic", "Epic"], ["adventure", "Adventure"]];
+  return `<div class="draft" data-job="${j.id}" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+    <b>Ready - choose what you want, then press Clip it.</b>
+    <label style="display:block;margin-top:10px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">What are you looking for? (the AI reads this)
+      <textarea data-d="prompt" rows="3" style="width:100%;margin-top:6px;text-transform:none;letter-spacing:0;font-size:14px" placeholder="e.g. the funniest reactions, skip the intro, keep it in order">${esc(o.prompt || "")}</textarea></label>
+    <div class="opts">
+      <label>What to make<select data-d="mode">${opts([["clips", "Short clips (best moments)"], ["polish", "Whole video: captions + music"], ["long", "One long video (several clips, in order, tightened)"], ["asis", "Already edited: just post it (no editing)"]], o.mode || "clips")}</select></label>
+      <label>Music<select data-d="music">${opts(musics, o.music || "")}</select></label>
+      <label>Source<select data-d="source_type">${opts([["auto", "Auto-detect"], ["glasses", "Meta glasses"], ["standard", "Regular video"]], o.source_type || "auto")}</select></label>
+      <label>Clips (0 = all the good ones)<input data-d="clips" type="number" min="0" max="30" value="${esc(o.clips ?? 10)}"></label>
+      <label>Min length (s)<input data-d="min_len" type="number" min="8" max="170" value="${esc(o.min_len ?? 20)}"></label>
+      <label>Max length (s)<input data-d="max_len" type="number" min="15" max="180" value="${esc(o.max_len ?? 55)}"></label>
+      <label>Target length (min, long video; 0 = auto)<input data-d="long_minutes" type="number" min="0" max="60" step="0.5" value="${esc(o.long_minutes ?? 0)}"></label>
+      <label>Framing<select data-d="layout">${opts(Object.entries(STATUS.layouts), o.layout || "auto")}</select></label>
+      <label>Captions<select data-d="caption_style">${opts([["mix", "Mix (different per clip)"], ...Object.entries(STATUS.caption_styles)], o.caption_style || "mix")}</select></label>
+      <label>Pacing<select data-d="pace">${opts(STATUS.paces.map(p => [p, PACE_LABEL[p] || p]), o.pace || "tight")}</select></label>
+      <label>Language<select data-d="language">${opts([["en", "English"], ["auto", "Auto-detect"], ["es", "Spanish"], ["de", "German"], ["fr", "French"], ["pt", "Portuguese"]], o.language || "en")}</select></label>
+      <label class="check"><input data-d="hook_title" type="checkbox" ${o.hook_title !== false ? "checked" : ""}> Hook title on top</label>
+      <label class="check"><input data-d="fcp" type="checkbox" ${o.fcp ? "checked" : ""}> Final Cut Pro project (whole / long video)</label>
+    </div>
+    <div class="row" style="margin-top:10px"><button class="primary" data-start="${j.id}">Clip it</button></div>
+  </div>`;
+}
+
+function jobHeadHTML(j) {
+  const pct = Math.round((j.progress || 0) * 100);
+  const running = isRunning(j);
+  const dur = j.info && j.info.duration ? ` · ${fmtTime(j.info.duration)} source` : "";
+  return `
+    <div class="job-head">
+      <div class="job-title" title="${esc(j.title)}">${esc(j.title)}</div>
+      <span class="status ${j.status}">${esc(j.status)}</span>
+      ${running ? `<button class="small" data-cancel="${j.id}">Cancel</button>` : ""}
+      ${["failed", "cancelled"].includes(j.status) ? `<button class="small" data-retry="${j.id}">Retry</button>` : ""}
+      ${!running ? `<button class="small danger" data-del="${j.id}">Delete</button>` : ""}
+    </div>
+    <div class="meta">${esc(j.stage)}${running ? ` · ${pct}%` : ""}${dur} · ${j.clips.length} clip${j.clips.length === 1 ? "" : "s"}${j.info && j.info.ai_on ? ` · AI: ${esc(j.info.ai_on)}` : ""}</div>
+    ${deviceLine(j, running)}
+    ${j.status === "draft" ? draftHTML(j) : ""}
+    ${running ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ""}
+    ${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}`;
+}
+
+// Update the page IN PLACE. A <video> element is created once per clip render and never rebuilt or
+// moved afterwards (Safari blanks the picture of a playing video that is re-parented; Chrome resets it).
+function setHTML(el, html) { if (el._h !== html) { el.innerHTML = html; el._h = html; } }
+
+function clipsOpen(j) { return OPEN.has(j.id) || (!OPEN.has("closed:" + j.id) && !(j.source || {}).auto); }   // nightly jobs start collapsed
+
+function syncClips(card, j) {
+  let det = card.querySelector(":scope > .clips");
+  if (!j.clips.length) { if (det) det.remove(); return; }
+  if (!det) {
+    det = document.createElement("div");
+    det.className = "clips";
+    det.innerHTML = `<button class="small clips-toggle" data-cliptoggle="${j.id}"></button><div class="grid"></div>`;
+    card.appendChild(det);
+  }
+  const open = clipsOpen(j);
+  const label = open ? "Hide clips" : `Show ${j.clips.length} clip${j.clips.length === 1 ? "" : "s"}`;
+  const tb = det.querySelector(".clips-toggle"); if (tb.textContent !== label) tb.textContent = label;
+  const grid = det.querySelector(".grid");
+  grid.style.display = open ? "" : "none";
+  const want = new Set(j.clips.map(c => j.id + ":" + c.index));
+  [...grid.children].forEach(el => { if (!want.has(el.dataset.key)) el.remove(); });
+  let prev = null;
+  for (const c of j.clips) {
+    const key = j.id + ":" + c.index;
+    let el = [...grid.children].find(x => x.dataset.key === key);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "clip";
+      el.dataset.key = key;
+      el.innerHTML = `<div class="vid"></div><div class="body"></div>`;
+      if (prev) prev.after(el); else grid.prepend(el);
+    }
+    const vid = el.querySelector(".vid");
+    const ver = String(clipVersion(c));
+    if (vid._ver !== ver) { vid.innerHTML = clipVidHTML(j, c); vid._ver = ver; }      // first time / after a re-render only
+    const veil = vid.querySelector(".busy-veil");
+    if (c.restyling && !veil) vid.insertAdjacentHTML("beforeend", `<div class="busy-veil">Re-rendering…</div>`);
+    if (!c.restyling && veil) veil.remove();
+    const body = el.querySelector(".body");
+    const editing = document.activeElement && body.contains(document.activeElement) && document.activeElement.closest(".restyle, .edit");
+    if (!editing) setHTML(body, clipBodyHTML(j, c));
+    prev = el;
+  }
+}
+
+function showTab() {
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.tab === TAB));
+  $("#new-card").style.display = TAB === "mine" ? "" : "none";
+}
+
+async function refresh() {
+  let all;
+  try { all = await api("/api/jobs"); } catch (e) { return; }   // server restarting
+  const waiting = all.filter(j => (j.source || {}).auto)
+                     .reduce((n, j) => n + j.clips.filter(c => (c.post || {}).state === "review").length, 0);
+  LAST_RUNNING = all.some(isRunning);
+  const cnt = $("#appr-count"); const ct = waiting ? String(waiting) : ""; if (cnt.textContent !== ct) cnt.textContent = ct;
+  let jobs = all.filter(j => TAB === "approval" ? (j.source || {}).auto : !(j.source || {}).auto);
+  const total = jobs.length;
+  if (TAB === "approval") jobs = jobs.slice(0, SHOW_JOBS);            // ~100 nightly jobs x 10 clips would freeze a phone
+  const box = $("#jobs");
+  if (!jobs.length) {
+    setHTML(box, TAB === "approval"
+      ? `<div class="empty">No nightly auto-clips yet. They arrive here overnight; anything you don't reject by the review time gets posted to My Channel.</div>`
+      : `<div class="empty">No jobs yet. Paste a link above.</div>`);
+    return;
+  }
+  const empty = box.querySelector(":scope > .empty"); if (empty) { empty.remove(); box._h = null; }
+  const more = $("#more-jobs");
+  if (more) { more.style.display = total > jobs.length ? "" : "none"; more.textContent = `Show ${Math.min(6, total - jobs.length)} more of ${total - jobs.length} older jobs`; }
+  const ids = new Set(jobs.map(j => j.id));
+  [...box.querySelectorAll(":scope > section[data-job]")].forEach(el => { if (!ids.has(el.dataset.job)) el.remove(); });
+  let prev = null;
+  for (const j of jobs) {
+    let card = [...box.children].find(x => x.dataset.job === j.id);
+    if (!card) {
+      card = document.createElement("section");
+      card.className = "card";
+      card.dataset.job = j.id;
+      card.innerHTML = `<div class="jhead"></div>`;
+      if (prev) prev.after(card); else box.prepend(card);
+    }
+    setHTML(card.querySelector(":scope > .jhead"), jobHeadHTML(j));
+    syncClips(card, j);
+    prev = card;
+  }
+}
+
+$("#jobs").addEventListener("click", async e => {
+  const t = e.target.closest("button"); if (!t) return;
+  try {
+    if (t.dataset.cancel) await api(`/api/jobs/${t.dataset.cancel}/cancel`, {method: "POST"});
+    if (t.dataset.retry) await api(`/api/jobs/${t.dataset.retry}/retry`, {method: "POST"});
+    if (t.dataset.reject || t.dataset.approve) {
+      const [jid, idx] = (t.dataset.reject || t.dataset.approve).split(":");
+      const r = await api(`/api/jobs/${jid}/clips/${idx}/${t.dataset.reject ? "reject" : "approve"}`, {method: "POST"});
+      if (!["rejected", "approved"].includes(r.result)) say(r.result, true);
+    }
+    if (t.dataset.edit || t.dataset.revert) {
+      const key = t.dataset.edit || t.dataset.revert, [jid, idx] = key.split(":");
+      const box = t.closest(".edit"), ta = box.querySelector("textarea");
+      const body = t.dataset.revert ? {revert: true} : {instruction: ta.value.trim()};
+      if (!t.dataset.revert && !body.instruction) { say("Type what you want changed first.", true); return; }
+      await api(`/api/jobs/${jid}/clips/${idx}/edit`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      if (ta) ta.value = "";
+      say("On it - the AI is re-cutting that clip.");
+    }
+    if (t.dataset.start) {
+      const box = t.closest(".draft"), body = {};
+      box.querySelectorAll("[data-d]").forEach(el => body[el.dataset.d] = el.type === "checkbox" ? el.checked : el.value);
+      t.disabled = true; t.textContent = "Starting…";
+      await api(`/api/jobs/${t.dataset.start}/start`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      say("Started - clips appear below as they finish.");
+    }
+    if (t.dataset.postnext) {
+      const [jid, idx] = t.dataset.postnext.split(":");
+      const r = await api(`/api/jobs/${jid}/clips/${idx}/post_next`, {method: "POST"});
+      say(r.result === "sent" || r.result === "queued" ? "Sent: it's first in line for the next posting slot." : r.result, !["sent", "queued"].includes(r.result) && !r.result.startsWith("queued"));
+    }
+    if (t.dataset.redo) await api(`/api/jobs/${t.dataset.redo}/retry`, {method: "POST", headers: {"Content-Type": "application/json"},
+                                   body: JSON.stringify({source_type: t.dataset.as})});
+    if (t.dataset.del && confirm("Delete this job and its clips?")) await api(`/api/jobs/${t.dataset.del}`, {method: "DELETE"});
+    if (t.dataset.copy) {
+      const ta = t.closest(".clip").querySelector("textarea");
+      await navigator.clipboard.writeText(ta.value).catch(() => { ta.select(); document.execCommand("copy"); });
+      t.textContent = "Copied"; setTimeout(() => t.textContent = "Copy caption", 1200); return;
+    }
+    if (t.dataset.restyle) {
+      const k = t.dataset.restyle; RESTYLE_OPEN.has(k) ? RESTYLE_OPEN.delete(k) : RESTYLE_OPEN.add(k);
+      return refresh();
+    }
+    if (t.dataset.apply) {
+      const [jid, idx] = t.dataset.apply.split(":"); const box = t.closest(".restyle"); const body = {};
+      box.querySelectorAll("[data-f]").forEach(el => body[el.dataset.f] = el.type === "checkbox" ? el.checked : el.value);
+      await api(`/api/jobs/${jid}/clips/${idx}/restyle`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      RESTYLE_OPEN.delete(t.dataset.apply);
+    }
+  } catch (err) { say(err.message, true); }
+  refresh();
+});
+$("#tabs").addEventListener("click", e => {
+  const b = e.target.closest("[data-tab]"); if (!b || b.dataset.tab === TAB) return;
+  TAB = b.dataset.tab;
+  history.replaceState(null, "", TAB === "approval" ? "#approval" : "#");
+  $("#jobs").replaceChildren(); $("#jobs")._h = null;           // a tab switch builds the list fresh
+  showTab(); refresh();
+});
+$("#jobs").addEventListener("click", e => {
+  const b = e.target.closest("[data-cliptoggle]"); if (!b) return;
+  const id = b.dataset.cliptoggle, card = b.closest("section[data-job]");
+  if (clipsOpen({id})) { OPEN.delete(id); OPEN.add("closed:" + id); } else { OPEN.add(id); OPEN.delete("closed:" + id); }
+  refresh();
+});
+showTab();
+
+$("#more-jobs").addEventListener("click", () => { SHOW_JOBS += 6; refresh(); });
+$("#feed-tab").addEventListener("click", () => { location.href = "/feed"; });
+$("#ai-tab").addEventListener("click", () => { location.href = "/ai"; });
+$("#lf-tab").addEventListener("click", () => { location.href = "/longform"; });
+let pollTimer = null;
+async function poll() {
+  clearTimeout(pollTimer);
+  if (!document.hidden) await refresh();
+  pollTimer = setTimeout(poll, LAST_RUNNING ? 2000 : 10000);       // quick while a job is running, relaxed otherwise
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+loadStatus().catch(e => say("Can't reach the Clipper server: " + e.message, true)).finally(poll);
+setInterval(() => loadStatus().catch(() => {}), 30000);
+</script>
+</body>
+</html>

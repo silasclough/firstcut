@@ -1,0 +1,2 @@
+-r app/VideoBuilder/requirements-app.txt
+pytest

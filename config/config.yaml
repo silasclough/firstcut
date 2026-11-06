@@ -1,0 +1,194 @@
+# FirstCut's built-in settings (the public engine config; regenerate with app/VideoBuilder/make_config.py; the app writes overlay.yaml on top).
+paths:
+  queue: data/queue
+  state: data/state
+  dedupe_db: data/dedupe.sqlite
+  work: out/work
+  review: out/review
+  ready: out/ready
+  posted: out/posted
+  rejected: out/rejected
+  public: out/public
+  logs: logs
+  reports: reports
+  minecraft_footage: assets/minecraft
+  story_inbox: inbox/stories
+  music: assets/music
+  placeholder: assets/placeholder
+  streamer_inbox: inbox/streamers
+  permissions: permissions/streamers.yaml
+  ramp: config/ramp.yaml
+  banned_names: config/banned_names.txt
+llm:
+  claude:
+    enabled: false
+    models:
+      script: sonnet
+      default: sonnet
+      cheap: haiku
+    efforts:
+      script: medium
+      default: low
+      cheap: low
+    tasks:
+    - flow_script_
+    - flow_longform_ideas
+    - flow_explainer_
+    cheap_tasks:
+    - anim_qa
+    - sfx_cues
+    - thumb_critic
+    - thumb_combo
+    - thumb_art_qa
+    - clip_title
+    effort: medium
+    timeout_s: 1200
+    fallback: false
+    config_dir: ''
+  provider_chain:
+  - ollama
+  - anthropic
+  - template
+  anthropic:
+    model: claude-opus-5-5
+    effort: medium
+    max_tokens: 16000
+    server_fallbacks: true
+  ollama:
+    base_url: http://127.0.0.1:11434
+    model: qwen3:14b
+    timeout_s: 600
+video:
+  width: 1080
+  height: 1920
+  fps: 30
+  encoder: auto
+  videotoolbox_bitrate: 8M
+  x264_crf: 20
+  x264_preset: medium
+  audio_bitrate: 192k
+  loudness_lufs: -14
+  render_timeout_s: 1800
+captions:
+  fonts:
+  - /System/Library/Fonts/Supplemental/Arial Black.ttf
+  - /System/Library/Fonts/Supplemental/Impact.ttf
+  - /System/Library/Fonts/Supplemental/Arial Bold.ttf
+  - /Library/Fonts/Arial Bold.ttf
+  font_size: 92
+  max_words: 3
+  max_chars: 18
+  pause_break_s: 0.35
+  min_word_s: 0.12
+  uppercase: true
+  text_color: '#FFFFFF'
+  highlight_color: '#FFE81A'
+  stroke_color: '#000000'
+  stroke_width: 9
+  center_y: 0.6
+  box_height: 420
+music:
+  mood_by_category:
+    fiction_relationship: chill
+    fiction_wild: chill
+    inbox: chill
+    reddit: chill
+    fiction_minecraft: adventure
+    real_conspiracy: suspense
+    real_crazy: suspense
+    news: suspense
+    fiction: adventure
+  volume_db: -20
+  duck: true
+  fade_out_s: 1.5
+  allowed_licenses:
+  - CC BY 4.0
+  - CC BY 3.0
+  - CC0
+  - CC0 1.0
+  - Public Domain
+quality:
+  language: en
+  min_words: 85
+  max_words: 165
+  min_seconds: 30
+  max_seconds: 60
+  max_speedup: 1.12
+  max_hook_words: 14
+  dedupe_threshold: 0.55
+  premise_dedupe_threshold: 0.6
+  max_script_attempts: 4
+  max_stage_attempts: 3
+clipper:
+  ai_videos:
+    local_projects: false
+    chatgpt_plan:
+      app_name: FirstCut
+      model: gpt-5.4
+    openai:
+      model: gpt-4.1-mini
+      script_model: gpt-5.4
+      script_reasoning_effort: xhigh
+      host: null
+    dir: ~/Movies/FirstCut
+    host: null
+    local: true
+    parakeet_bin: ~/clipfarm/.venv-parakeet/bin/parakeet-mlx
+  data_dir: data/clipper
+  default_clips: 10
+  min_len: 20
+  max_len: 55
+  language: en
+  llm_chain:
+  - openai
+  - ollama
+  openai_model: gpt-5.4-mini
+  openai_reasoning_effort: low
+  transcriber: auto
+  openai_whisper: false
+  whisper_model: base.en
+  whisper_compute: int8
+  transcribe_chunk_s: 300
+  face_rate: 2.0
+  min_face_coverage: 0.35
+  title_seconds: 3.2
+  max_source_minutes: 240
+  max_upload_mb: 8000
+  fcp_unpack_dir: ~/Movies/FirstCut
+  music:
+    speech_lufs: -36
+    ambient_lufs: -26
+    min_gap_lu: 16
+    speech_words_per_s: 0.6
+  local_timeout_s: 2400
+  ollama_model: null
+  remote_llm:
+    enabled: true
+    timeout_s: 300
+  glasses:
+    min_len: 8
+    max_len: 40
+    seconds_per_clip: 30
+  remote_ollama:
+    base_url: null
+catalog:
+  roots: []
+  dir: data/catalog
+  frame_every_s: 3.0
+  max_frames: 120
+  photos: true
+  model: google/siglip2-base-patch16-224
+  vision_model: qwen3-vl:8b
+  min_score: 0.085
+  window: null
+  skip: []
+whisper:
+  backend: auto
+  model: base.en
+  compute_type: int8
+  mlx_model: mlx-community/whisper-base.en-mlx
+power:
+  require_ac_for:
+  - night
+  - make
+  - post

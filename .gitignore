@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+.private-patterns
+.env
+data/
+logs/
+out/
+.DS_Store

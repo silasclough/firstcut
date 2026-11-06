@@ -1,0 +1,21 @@
+#!/bin/bash
+# FirstCut for AI apps (Claude Desktop, Claude Code, Cursor, LM Studio...): the MCP server, on stdin/stdout.
+# It talks to the FirstCut app that is running on this Mac (and opens it if needed). Turn it on in FirstCut › Settings › Connect an AI.
+# Lives in FirstCut.app/Contents/Resources/bin/; in a source checkout it runs the checkout's code with its .venv.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SUP="$HOME/Library/Application Support"
+if [ -n "${VIDEOBUILDER_HOME:-}" ]; then H="$VIDEOBUILDER_HOME"
+elif [ ! -e "$SUP/FirstCut" ] && [ -f "$SUP/Video Builder/settings.json" ]; then H="$SUP/Video Builder"   # (the first name's folder stays)
+else H="$SUP/FirstCut"; fi
+if [ -d "$HERE/../app/clipfarm" ]; then                                  # inside the app
+  CODE="$(cd "$HERE/../app" && pwd)"; PY="$H/runtime/env/bin/python"; CONF="$CODE/config/app.yaml"; BIN="$HERE"
+else                                                                     # a source checkout (app/VideoBuilder/)
+  CODE="$(cd "$HERE/../.." && pwd)"; PY="$CODE/.venv/bin/python"; CONF="$CODE/config/config.yaml"; BIN="$HERE"
+fi
+if [ ! -x "$PY" ]; then
+  echo "FirstCut isn't set up on this Mac yet: open FirstCut once, then try again." >&2
+  exit 1
+fi
+export PYTHONPATH="$CODE" CLIPFARM_ROOT="$H" CLIPFARM_CONFIG="$CONF" VIDEOBUILDER_HOME="$H" VIDEOBUILDER_BIN="$BIN" PYTHONUNBUFFERED=1
+exec "$PY" -m clipfarm mcp

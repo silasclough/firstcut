@@ -56,4 +56,25 @@ It works offline too. With the model on your Mac downloaded, it keeps editing wi
 
 Delete FirstCut from Applications, then delete `~/Library/Application Support/FirstCut` and the models folder you chose in Setup.
 
+## Build from source
+
+FirstCut is free software under the GNU GPL v3.0. To build it yourself you need a Mac with Apple silicon, Xcode's command line
+tools (`xcode-select --install`) and Python 3.12.
+
+```bash
+git clone https://github.com/you/firstcut.git && cd firstcut
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q tests            # the tests run offline
+./scripts/package_videobuilder.sh               # builds dist/FirstCut.app, .zip and .dmg
+```
+
+Without a Developer ID certificate the build is signed for your Mac only. The engine is a Python package called `clipfarm` (its
+name from before FirstCut); `docs/ARCHITECTURE.md` explains how the pieces fit, and `CONTRIBUTING.md` how to send a change.
+
+## License
+
+FirstCut is licensed under the [GNU General Public License v3.0](LICENSE): you may use, study, change and share it, and anything
+you share that is built from it must stay under the same licence. Third-party components keep their own licences; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 <sub>Screenshots use sample projects and placeholder thumbnails.</sub>

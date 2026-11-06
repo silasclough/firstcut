@@ -1,0 +1,673 @@
+<!doctype html>
+<!--
+  Video Builder (the work app: clipper.app = work, config/work.yaml) - design notes (CLAUDE.md UI rules). The personal /ai page is unchanged:
+  everything app-only sits behind body.app (.app-only shows, .personal hides).
+  1. North star: "Point it at an interview, press one button, get a Final Cut timeline with B-roll from the whole drive - or type what you
+     need and find the shot yourself." One primary button per tab; everything else under Options.
+  2. User and context: the editor at work (college marketing), at a desk between shoots, fluent in Final Cut, not interested in AI settings;
+     the window may be half the screen wide.
+  3. Principles: guide (one clear button), speed (search on Enter, big thumbnails that scan fast, a click to preview, tick to collect),
+     explore (options folded away).
+  4. Build: two tabs. Make a video: footage folder, notes, save-to folder, Make the video; finished cards open Final Cut / Finder directly.
+     Find footage: one search box, catalogue status, a grid of shots, an inline preview, picked shots -> one Final Cut event.
+     Light and dark (text toggle), flat, hairline borders, one light-blue accent, works at 380 px.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Videos</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --panel: #ffffff; --panel2: #eaeff5; --line: #d9e0ea; --text: #16202c; --muted: #5f6b7a;
+    --accent: #5aa9e6; --on-accent: #0b1b2b; --good: #2f7a4b; --warn: #94640c; --bad: #b3322b; --radius: 6px;
+    --serif: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+  :root[data-theme="dark"] {
+    --bg: #12171e; --panel: #19202a; --panel2: #222b37; --line: #2f3a49; --text: #e6ecf3; --muted: #93a0b1;
+    --accent: #7dbdf0; --on-accent: #0b1b2b; --good: #8fc79a; --warn: #e0b45c; --bad: #ef8c84;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body.app .personal { display: none !important; }
+  body:not(.app) .app-only { display: none !important; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin-top: 14px; }
+  .shot { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--panel); cursor: pointer; position: relative; }
+  .shot:hover { border-color: var(--muted); }
+  .shot.on { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .shot img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: var(--panel2); }
+  .shot .cap { padding: 6px 9px 9px; font-size: 12px; color: var(--muted); line-height: 1.4; }
+  .shot .cap b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .shot .cap .what { color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .shot .pick { position: absolute; top: 0; left: 0; padding: 7px; line-height: 0; }
+  .shot .pick input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  #q { flex: 1 1 260px; font-size: 16px; padding: 11px 12px; }
+  .basket { position: sticky; bottom: 0; margin-top: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+  #preview video, #preview img { width: 100%; max-height: 56vh; object-fit: contain; background: #000; display: block; margin-top: 10px; }
+  button, a, input, select, textarea { touch-action: manipulation; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 var(--sans); }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 18px 80px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 22px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 14px; }
+  h1 { font: 600 28px/1.1 var(--serif); margin: 0; letter-spacing: -.02em; }
+  h2 { font: 600 19px/1.2 var(--serif); margin: 0 0 8px; }
+  .sub { color: var(--muted); margin: 4px 0 0; max-width: 60ch; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-top: 18px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  input[type=text], input[type=number], select, textarea {
+    background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 4px; padding: 10px 11px; font: inherit; min-width: 0; }
+  textarea { width: 100%; resize: vertical; min-height: 84px; }
+  input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { font: inherit; border-radius: 4px; padding: 9px 15px; cursor: pointer; background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button:hover:not(:disabled) { border-color: var(--text); }
+  button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.small { padding: 5px 10px; font-size: 13px; }
+  button.danger { color: var(--bad); }
+  a { color: inherit; text-decoration: none; }
+  label.f { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); flex: 1 1 150px; }
+  label.f > * { font-size: 14px; }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .drop { margin-top: 10px; border: 1.5px dashed var(--line); border-radius: var(--radius); padding: 26px 16px; text-align: center; color: var(--muted); cursor: pointer; }
+  .drop:hover, .drop.hover { border-color: var(--accent); color: var(--text); }
+  .bar { height: 5px; background: var(--panel2); border-radius: 0; overflow: hidden; margin: 12px 0 6px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .6s ease; }
+  .pill { font-size: 12px; padding: 1px 8px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .pill.ok { color: var(--good); } .pill.bad { color: var(--bad); } .pill.warn { color: var(--warn); }
+  .err { color: var(--bad); font-size: 13px; margin-top: 6px; white-space: pre-wrap; word-break: break-word; }
+  video { width: 100%; max-height: 62vh; background: #000; display: block; margin-top: 12px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .box { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .note { font-size: 13px; color: var(--muted); }
+  .rules { white-space: pre-wrap; font-size: 13px; color: var(--muted); }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 14px; padding: 4px 0; }
+  .tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--line); margin: 2px 0 14px; }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 0; color: var(--muted); }
+  .tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  #theme { padding: 3px 9px; font-size: 12px; }
+  .rv-step { border-top: 1px solid var(--line); padding: 12px 0 8px; }
+  .rv-head { display: flex; gap: 8px 12px; justify-content: space-between; align-items: baseline; flex-wrap: wrap; }
+  .rv-line { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; font-size: 14px; cursor: pointer; }
+  .rv-line input { margin: 2px 0 0; flex: none; width: 18px; height: 18px; accent-color: var(--accent); }
+  .rv-t { flex: none; min-width: 34px; padding-top: 2px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .rv-edge { display: block; width: 100%; text-align: left; border: 1px dashed var(--line); color: var(--muted); font-size: 13px; padding: 6px 9px; margin: 2px 0;
+    border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rv-pass { border-left: 2px solid var(--line); padding-left: 10px; margin: 8px 0; }
+  .rv-cand { border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; margin-top: 8px; font-size: 14px; }
+  .rv-cand .actions { margin-top: 6px; }
+</style>
+<script>try { const t = localStorage.getItem("theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); document.documentElement.dataset.theme = t; } catch (e) {}</script>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>AI Videos</h1>
+      <p class="sub">Give it your footage and tell it what you want. It cuts the takes, adds B-roll, captions and music, and hands you a Final Cut project.</p>
+    </div>
+    <div class="row"><span class="pill personal" id="usage" title="">OpenAI: …</span><span class="pill personal" id="chatgpt-plan">ChatGPT: …</span><span class="pill app-only" id="ai-who" title="Which AI decides the edit. Transcribing and looking at footage always run on this Mac."></span><a href="/" class="personal"><button class="small">Clipper</button></a><a href="/feed" class="personal"><button class="small">Swipe feed</button></a><a href="/longform" class="personal"><button class="small">Long-form</button></a><button class="small" id="theme" title="Switch light / dark"></button></div>
+  </header>
+  <div class="tabs app-only" id="app-tabs"><button id="t-make" class="on">Make a video</button><button id="t-find">Find footage</button></div>
+
+  <div id="pane-find" hidden>
+    <div class="card">
+      <div class="row">
+        <input id="q" type="text" placeholder="Describe the shot, e.g. students laughing in the library" autocomplete="off" aria-label="Describe the shot">
+        <select id="q-kind" aria-label="What to look for"><option value="">Videos and photos</option><option value="video">Videos</option><option value="photo">Photos</option></select>
+        <button class="primary" id="q-go">Search</button>
+      </div>
+      <div class="meta" id="cat-line"></div>
+      <div class="bar" id="cat-bar" hidden><i></i></div>
+      <div class="actions"><button class="small" id="cat-run">Catalogue now</button><button class="small" id="cat-stop" hidden>Stop</button><span class="note" id="cat-note"></span></div>
+    </div>
+    <div class="card" id="preview" hidden></div>
+    <div class="meta" id="q-msg"></div>
+    <div id="results" class="grid"></div>
+    <div class="basket" id="basket" hidden><span id="basket-n"></span><span class="row"><button class="small" id="basket-clear">Clear</button><button class="small primary" id="basket-send">Send to Final Cut</button></span></div>
+  </div>
+
+  <div id="pane-make">
+
+  <div class="card" id="local-form" style="display:none">
+    <h2>New video</h2>
+    <div class="tabs personal"><button id="tab-up" class="on">Upload videos</button><button id="tab-folder">Folder on this Mac</button></div>
+
+    <div id="pane-up">
+      <div class="drop" id="drop">Drop your videos here, or click to choose them<input id="files" type="file" accept="video/*,.mkv,.mov,.mp4,.m4v,.webm" multiple hidden></div>
+      <input id="folder" type="file" webkitdirectory multiple hidden>
+      <div class="meta"><span id="picked"></span> <a href="#" id="pick-folder" style="text-decoration:underline">or pick a whole folder</a></div>
+    </div>
+
+    <div id="pane-folder" style="display:none">
+      <div class="row">
+        <label class="f" style="flex:2 1 320px"><span>Folder path (the footage is read where it is, nothing is copied)</span><input id="l-path" type="text" placeholder="/Volumes/Work/My project"></label>
+        <button id="l-pick" style="align-self:flex-end">Choose…</button>
+      </div>
+      <div id="l-info" class="meta"></div>
+    </div>
+
+    <div class="row app-only" style="margin-top:12px">
+      <label class="f" style="flex:2 1 320px"><span>Save to (each video gets a folder of its own in here)</span><input id="l-out" type="text"></label>
+      <button id="l-out-pick" style="align-self:flex-end">Choose…</button>
+    </div>
+
+    <label class="f" style="margin-top:14px"><span>What should the video be? Hook, tone, what to keep or cut</span>
+      <textarea id="l-notes" style="min-height:96px" placeholder="e.g. A one-minute reel of the funniest moments. Open with the strongest line. Cut my restarts."></textarea></label>
+
+    <details style="margin-top:12px"><summary>Options</summary>
+      <div class="row" style="margin-top:10px">
+        <label class="f"><span>Title</span><input id="l-title" type="text" placeholder="taken from the file or folder name"></label>
+        <label class="f"><span>Music</span><select id="l-music"><option value="">None (recommended)</option><option value="auto">Match the content</option><option value="suspense">Suspense</option><option value="chill">Chill</option><option value="upbeat">Upbeat</option><option value="funny">Funny</option><option value="emotional">Emotional</option><option value="epic">Epic</option><option value="adventure">Adventure</option></select></label>
+        <label class="f"><span>Kind of video</span><select id="l-kind"></select></label>
+        <label class="f"><span>Captions</span><select id="l-caps"><option value="clean">Clean</option><option value="bold">Bold yellow</option><option value="pop">Pop green</option><option value="fire">Red karaoke</option><option value="sky">Sky blue</option><option value="none">None</option></select></label>
+        <label class="f"><span>Pauses</span><select id="l-pace"><option value="natural">Natural</option><option value="tight">Tight</option><option value="fast">Fast (+1.08x)</option></select></label>
+        <label class="f"><span>Length in minutes (0 = let it decide)</span><input id="l-min" type="number" min="0" max="600" step="0.5" value="0"></label>
+        <label class="f"><span>Graphics</span><select id="l-gfx"><option value="all">Where they help</option><option value="title">Title card only</option><option value="">None</option></select></label>
+        <label class="f app-only" id="l-lib-wrap"><span>B-roll from the footage library</span><select id="l-lib"><option value="true">Yes: search the whole drive</option><option value="false">No: only this folder</option></select></label>
+        <label class="f personal"><span>Transcribe with</span><select id="l-tr"><option value="parakeet">Parakeet on this Mac (free)</option><option value="openai">OpenAI (~$0.36 per hour of talking)</option></select></label>
+      </div>
+      <label class="f" style="margin-top:10px"><span>Separate audio recordings, one path per line (optional)</span>
+        <textarea id="l-audio" style="min-height:48px" placeholder="/Volumes/Work/My project/recording.WAV"></textarea></label>
+      <p class="note">In a folder: put cutaways in one named B-roll, songs in one named Music. Separate recordings are lined up with the picture automatically.</p>
+    </details>
+
+    <div class="row" style="margin-top:16px"><button class="primary" id="l-make" disabled>Make the video</button></div>
+    <div class="err" id="l-err"></div>
+  </div>
+
+  <div id="list"></div>
+
+  <div class="card">
+    <h2>Style rules</h2>
+    <p class="note">What the editor has learned from your feedback. It reads these before every edit; change them freely.</p>
+    <textarea id="rules" placeholder="No rules yet. After watching a video, type what you liked or hated and press Save what you learned."></textarea>
+    <div class="actions"><button class="small" id="save-rules">Save rules</button><span class="note" id="rules-msg"></span></div>
+  </div>
+  <div class="meta" id="where"></div>
+  </div>
+</div>
+
+<input id="resume-files" type="file" multiple webkitdirectory hidden>
+<script>
+let RESUME = null;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtTime = s => { s = Math.round(s || 0); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+const post = (path, body) => api(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+
+let PICKED = [], DATA = {projects: []}, DRAFT = {}, UPLOADING = {}, ARCHIVE_BUSY = {}, RV = {};   // RV: lines found for a step on the review screen
+const KINDS = `<option value="auto">Read it from my notes</option><option value="story">Story / interview</option><option value="promo">Upbeat promo / reel</option><option value="ad">Ad for a business</option><option value="business">Business video (calm, professional)</option><option value="youtube">YouTube video (energetic: punch-ins, fast cuts)</option>`;
+const draft = (k, d) => (k in DRAFT ? DRAFT[k] : d);
+
+// ---- new project -------------------------------------------------------------------------
+const drop = $("#drop"), filesIn = $("#files");
+drop.addEventListener("click", () => filesIn.click());
+["dragover", "dragenter"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("hover"); }));
+["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("hover"); }));
+drop.addEventListener("drop", ev => pick([...ev.dataTransfer.files]));
+filesIn.addEventListener("change", () => pick([...filesIn.files]));
+$("#pick-folder").addEventListener("click", () => $("#folder").click());
+$("#folder").addEventListener("change", async () => {
+  const all = [...$("#folder").files];
+  const rel = f => f.webkitRelativePath || f.name;
+  const note = all.find(f => /^notes\.(md|txt)$/i.test(f.name) && rel(f).split("/").length <= 2);
+  if (note) $("#l-notes").value = (await note.text()).trim().slice(0, 3000);
+  const vids = all.filter(f => /\.(mp4|mov|mkv|webm|m4v)$/i.test(f.name) && !/\/(Output|Final Cut|Notes)\//i.test(rel(f)) && !f.name.startsWith("."));
+  for (const f of vids) {                                          // a B-roll folder marks its files as B-roll
+    const dirs = rel(f).split("/").slice(0, -1);
+    const wanted = dirs.some(d => /b[\s_-]?roll/i.test(d)) && !/b[\s_-]?roll/i.test(f.name) ? "B-roll - " + f.name : f.name;
+    Object.defineProperty(f, "uploadName", {value: wanted});
+  }
+  pick(vids);
+  const top = (all[0] && rel(all[0]).split("/")[0]) || "";
+  if (top) $("#l-title").value = top;
+});
+function pick(fs) {
+  PICKED = fs.filter(f => /\.(mp4|mov|mkv|webm|m4v)$/i.test(f.name)).sort((a, b) => (a.lastModified - b.lastModified) || a.name.localeCompare(b.name));
+  $("#picked").textContent = PICKED.length ? PICKED.length + " file(s): " + PICKED.map(f => f.name).join(", ") + " · " + (PICKED.reduce((n, f) => n + f.size, 0) / 1e9).toFixed(2) + " GB" : "";
+  syncMake();
+  if (PICKED.length && !$("#l-title").value) $("#l-title").value = PICKED[0].name.replace(/\.[^.]+$/, "");
+}
+function formOptions() {
+  return {notes: $("#l-notes").value, music: $("#l-music").value, extra_audio: $("#l-audio").value, caption_style: $("#l-caps").value, pace: $("#l-pace").value,
+          long_minutes: +$("#l-min").value || 0, graphics: $("#l-gfx").value, transcriber: $("#l-tr").value, kind: $("#l-kind").value, fcp: true,
+          ...(DATA.app ? {library: $("#l-lib").value === "true"} : {})};
+}
+async function makeFromUpload() {
+  const proj = await post("/api/ai/projects", {title: $("#l-title").value, notes: $("#l-notes").value, names: PICKED.map(f => f.uploadName || f.name), auto_make: formOptions()});
+  const files = PICKED; PICKED = []; $("#picked").textContent = ""; $("#l-title").value = ""; $("#l-notes").value = "";
+  uploadAll(proj, files);
+  await refresh();
+}
+function uploadAll(proj, files) {
+  UPLOADING[proj.id] = {done: 0, total: files.length, frac: 0};
+  (async () => {
+    const info = await post(`/api/ai/projects/${proj.id}/resume`).catch(() => ({files: []}));
+    const have = Object.fromEntries((info.files || []).filter(f => f.size != null).map(f => [f.name, f.size]));
+    for (let k = 0; k < files.length; k++) {
+      if (have[files[k].uploadName || files[k].name] === files[k].size) { UPLOADING[proj.id].done = k + 1; continue; }   // already there
+      await new Promise((ok, no) => {
+        const x = new XMLHttpRequest();
+        x.open("POST", `/api/upload?job=${encodeURIComponent(proj.job)}&index=${k}&name=${encodeURIComponent(files[k].uploadName || files[k].name)}`);
+        x.upload.onprogress = e => { UPLOADING[proj.id].frac = e.lengthComputable ? e.loaded / e.total : 0; };
+        x.onload = () => (x.status < 300 ? ok() : no(new Error(JSON.parse(x.responseText || "{}").error || x.statusText)));
+        x.onerror = () => no(new Error("upload failed"));
+        x.send(files[k]);
+      }).catch(e => { UPLOADING[proj.id].error = e.message; });
+      UPLOADING[proj.id].done = k + 1; UPLOADING[proj.id].frac = 0;
+    }
+    refresh();
+  })();
+}
+
+// ---- project cards -----------------------------------------------------------------------
+function optionsHTML(p) {
+  const k = p.id;
+  return `<div class="row" style="margin-top:12px">
+    <label class="f"><span>Music</span><select data-k="${k}:music"><option value="">None (recommended)</option><option value="auto">Match the content</option><option value="suspense">Suspense</option><option value="chill">Chill</option><option value="upbeat">Upbeat</option><option value="epic">Epic</option></select></label>
+    <label class="f"><span>Captions</span><select data-k="${k}:caption_style"><option value="clean">Clean</option><option value="bold">Bold yellow</option><option value="pop">Pop green</option><option value="fire">Red karaoke</option><option value="sky">Sky blue</option><option value="none">No captions</option></select></label>
+    <label class="f"><span>Cut pauses</span><select data-k="${k}:pace"><option value="natural">Natural</option><option value="tight">Tight</option><option value="fast">Fast (+1.08x)</option></select></label>
+    ${p.mode === "local" ? `<label class="f"><span>Kind of video</span><select data-k="${k}:kind">${KINDS}</select></label>
+    ${DATA.app && DATA.library ? `<label class="f"><span>B-roll from the footage library</span><select data-k="${k}:library"><option value="true">Yes</option><option value="false">No</option></select></label>` : ""}
+    <label class="f personal"><span>Transcribe with</span><select data-k="${k}:transcriber"><option value="parakeet">Parakeet on this Mac (free)</option><option value="openai">OpenAI (~$0.36 per hour of talking)</option></select></label>` : ""}
+    <label class="f"><span>Graphics</span><select data-k="${k}:graphics"><option value="all">Where they help: slides, charts, stats, quotes, custom animated diagrams</option><option value="title">Animated title card only</option><option value="">No graphics</option></select></label>
+    <label class="f"><span>Target length (min, 0 = AI decides)</span><input type="number" min="0" max="120" step="1" data-k="${k}:long_minutes"></label>
+  </div>`;
+}
+function card(p) {
+  const js = p.job_state || {}, c = p.clip, st = js.status || "draft";
+  const up = UPLOADING[p.id];
+  const busy = ["queued", "transcribing", "finding", "rendering", "joining", "downloading"].includes(st);
+  const k = p.id, local = p.mode === "local";
+  let h = `<div class="card" data-p="${k}"><div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(p.title)}</h2>
+    <span class="pill ${st === "done" ? "ok" : st === "failed" ? "bad" : busy ? "warn" : ""}">${esc(st === "draft" ? "ready to make" : st)}</span></div>
+    <div class="meta">${local ? `Working in place on <b>${esc(p.folder)}</b>` : `${p.files.length} file(s): ${esc(p.files.join(", "))}`}${p.version ? ` · version ${p.version}` : ""}${p.cost_usd ? ` · OpenAI so far ~$${p.cost_usd.toFixed(2)}` : ""}</div>`;
+  if (st === "failed" && /paused|interrupted/i.test(js.stage || "") && !up) {
+    h += `<div class="meta">${esc(js.error || js.stage)}</div><div class="actions"><button class="small primary" data-act="resume" data-p="${k}">Resume upload</button></div>
+      <div class="note">Choose the same folder or files again; the ones that already arrived are skipped.</div>`;
+  }
+  if (st === "uploading" && !up) {
+    h += `<div class="meta">${esc(js.stage || "Uploading")} - this page isn't sending it (it was closed or reloaded).</div><div class="actions"><button class="small primary" data-act="resume" data-p="${k}">Resume upload</button></div>`;
+  }
+  if (st === "uploading" || (up && up.done < up.total)) {
+    const done = up ? up.done : 0, total = up ? up.total : p.files.length;
+    const frac = up ? (done + up.frac) / total : (js.progress || 0);
+    h += `<div class="bar"><i style="width:${Math.round(frac * 100)}%"></i></div><div class="meta">${esc(js.stage || "Uploading")} ${up && up.error ? `<span class="err">${esc(up.error)}</span>` : ""}${up ? "" : " (keep this page open; if it stalled, delete and re-add)"}</div>`;
+  }
+  if (st === "draft" || st === "failed" || st === "cancelled") {
+    if (st === "failed") h += `<div class="err">${esc(js.error || "failed")}</div>`;
+    const again = local && p.pending_render && st !== "draft";                    // the edit was decided; only its render didn't finish
+    if (again) h += `<div class="actions"><button class="primary" data-act="rerender" data-p="${k}">Render again (same edit)</button>
+      <span class="note">Makes the same cut again - nothing is re-chosen, no new AI decisions about what to keep.</span></div>`;
+    h += `${again ? `<details class="box"><summary>Or start over with a new edit</summary>` : ""}
+      <label class="f" style="margin-top:12px"><span>Notes for the AI</span><textarea data-k="${k}:notes">${esc(draft(k + ":notes", p.notes))}</textarea></label>${optionsHTML(p)}
+      <div class="actions"><button class="${again ? "small" : "primary"}" data-act="make" data-p="${k}">${st === "draft" ? "Make the video" : again ? "Start over (new edit)" : "Try again"}</button></div>${again ? "</details>" : ""}`;
+  } else if (st === "approval" && local && p.awaiting_approval) {
+    h += reviewHTML(p, k);
+  } else if (busy) {
+    h += `<div class="bar"><i style="width:${Math.round((js.progress || 0) * 100)}%"></i></div><div class="meta">${esc(js.stage || "")}</div>
+      <div class="actions"><button class="small danger" data-act="cancel" data-p="${k}">Stop</button></div>`;
+  } else if (st === "done" && c) {
+    const base = `/media/${p.job}/`, fcp = c.fcp, v = Date.now() % 1e6;
+    h += `<video controls playsinline preload="metadata" src="${base}${c.file}?v=${c.rendered_at}" poster="${base}${c.thumb}?v=${c.rendered_at}"></video>
+      <div class="meta">${fmtTime(c.duration)} · ${local && c.footage_s ? `${c.cuts} cuts, made from ${fmtTime(c.footage_s)} of footage` : `${Math.round(c.trimmed_s || 0)} s of dead air cut (${c.cuts} cuts)`}${c.music ? ` · music: ${esc(c.music.title)} (${esc(c.music.artist)})` : ""}</div>
+      ${c.story ? `<div class="meta">${esc(c.story.summary)}</div>` : ""}
+      <div class="actions">
+        ${local && DATA.app ? `<button class="small primary" data-act="open-fcp" data-p="${k}">Open in Final Cut</button><button class="small" data-act="reveal" data-p="${k}">Show the video in Finder</button>`
+          : `<a href="${base}${c.file}?dl=1"><button class="small primary">Download video</button></a>`}
+        ${c.srt ? `<a href="${base}${c.srt}?dl=1"><button class="small" title="The captions as a subtitle file">Subtitles (.srt)</button></a>` : ""}
+        ${fcp && !local ? `<a href="${base}fcp_project.zip?dl=1"><button class="small primary">Final Cut project (.zip)</button></a>` : ""}
+      </div>
+      ${fcp && local ? `<div class="meta">${DATA.app ? `“Open in Final Cut” imports it (or File &gt; Import &gt; XML… and pick <b>… v${p.version}.fcpxml</b> in ${esc(p.saved_to || p.folder)})` : `Final Cut Pro: File &gt; Import &gt; XML… and pick the <b>… v${p.version}.fcpxml</b> next to Output/ in your folder`} (it uses your original files). ${fcp.clips} clips, ${fcp.captions} caption titles${fcp.music ? ", music with volume keyframes" : ""}${fcp.valid ? " · checked against Final Cut's format ✓" : ""}.</div>` : ""}
+      ${fcp && !local ? `<div class="meta">Unzip into <b>${esc(fcp.unpack_to.replace(/\/[^/]*$/, ""))}</b>, then in Final Cut Pro: File &gt; Import &gt; XML… and pick <b>${esc(fcp.fcpxml)}</b>. ${fcp.clips} clips, ${fcp.captions} caption titles${fcp.music ? ", music with volume keyframes" : ""}${fcp.valid ? " · checked against Final Cut's format ✓" : ""}.</div>` : ""}
+      <div class="box"><b>Change something</b> <span class="note">${local ? `in plain words, several things at once: "slightly too long, cut it shorter, bend the cuts to the beat, switch the song, and add a better hook that says ..."` : `in plain words - "put the sentence about X first as the hook", "cut where I say ...", "trim the intro"`}</span>
+        ${c.restyling ? `<div class="meta">Working on it…</div>` : ""}
+        ${c.edit_note ? `<div class="${c.edit_note.ok ? "meta" : "err"}">${esc(c.edit_note.result || c.edit_note.instruction)}</div>` : ""}
+        <textarea data-k="${k}:instruction" placeholder="What should change?">${esc(draft(k + ":instruction", ""))}</textarea>
+        <div class="actions"><button class="small primary" data-act="revise" data-p="${k}" ${c.restyling ? "disabled" : ""}>Apply the change</button>
+          ${c.orig || p.can_revert ? `<button class="small" data-act="revert" data-p="${k}">Back to the first cut</button>` : ""}</div></div>
+      <div class="box"><b>How was it?</b> <span class="note">your reaction becomes a rule the editor follows next time</span>
+        <textarea data-k="${k}:feedback" placeholder="e.g. The cuts felt too slow in the middle; I loved the zoomed captions.">${esc(draft(k + ":feedback", ""))}</textarea>
+        <div class="actions"><button class="small" data-act="learn" data-p="${k}">Save what you learned</button><span class="note" id="learn-${k}"></span></div></div>
+      <details class="box"><summary>Start over from the raw footage with new notes</summary>
+        <textarea data-k="${k}:notes">${esc(draft(k + ":notes", p.notes))}</textarea>${optionsHTML(p)}
+        <div class="actions"><button class="small" data-act="make" data-p="${k}">Make it again</button></div></details>`;
+  }
+  const a = p.archive || {};
+  if (local) h += `<div class="meta">${st === "done" ? (p.saved_to && p.saved_to !== p.folder ? `Saved in <b>${esc(p.saved_to)}</b>` : `Saved in your folder: <b>Output/</b>, <b>Final Cut/</b>, <b>Notes/</b>`) : ""}
+    <button class="small danger" data-act="delete" data-p="${k}" title="Removes it from this page. Your folder and footage are never touched.">Delete</button></div></div>`;
+  else
+  h += `<div class="meta">${a.state === "done" ? `Saved on the drive: <b>${esc(a.path)}</b>${a.host ? ` (${esc(a.host)})` : ""}`
+    : a.state === "waiting" ? `Waiting for the drive - ${esc(a.why || "")}` : st === "done" ? "Will be copied to the drive shortly" : ""}
+    <button class="small danger" data-act="delete" data-p="${k}" title="Removes it from this page. The copy saved on the drive is kept.">Delete</button>
+    ${st === "done" ? ` <button class="small" data-act="archive" data-p="${k}" ${ARCHIVE_BUSY[k] ? "disabled" : ""}>Copy to drive now</button>` : ""}</div></div>`;
+  return h;
+}
+
+// ---- the plan review: every line the video will say, under the script step it tells ------------------------
+const ft = t => fmtTime(t);
+function reviewHTML(p, k) {
+  const rv = p.review || {}, steps = p.script_map || [];
+  let h = `<div class="box"><b>Check the plan before it renders</b>
+    <div class="note">These are the exact lines the video will say, under the script step each one tells. Untick a line to remove it; nothing renders until you press the button.</div>
+    <div class="meta">About <b>${ft(rv.length_s)}</b> of speech${rv.target_s ? ` · you asked for ${ft(rv.target_s)}` : ""}${rv.edited ? ` · <span class="pill">edited by you</span>` : ""}</div>`;
+  for (const step of steps) {
+    const gone = step.missing || [], never = step.not_in_footage || [], ideas = step.ideas || [], any = step.passages.length > 0;
+    const chip = !any ? `<span class="pill bad">No line yet</span>` : gone.length ? `<span class="pill warn">Check: ${esc(gone.join(", "))} not said here</span>`
+      : never.length ? `<span class="pill warn">Not said anywhere in the interview: ${esc(never.join(", "))}</span>`
+      : ideas.length ? `<span class="pill warn">Check: a point may be missing</span>` : `<span class="pill ok">Told</span>`;
+    h += `<div class="rv-step"><div class="rv-head"><b>${step.n}. ${esc(step.step)}</b>${chip}</div>`;
+    if (ideas.length) h += `<div class="note">The AI thinks these are not told yet: ${esc(ideas.join("; "))}</div>`;
+    if (!any) h += `<div class="note">Use “Find a line” below to pick one from the interview.</div>`;
+    for (const ps of step.passages) {
+      h += `<div class="rv-pass">`;
+      if (ps.before) h += `<button class="rv-edge" data-act="rv-more" data-p="${k}" data-first="${ps.first}" data-last="${ps.last}" data-edge="start" title="Add this line before the passage">+ earlier: ${esc(ps.before.text)}</button>`;
+      for (const ln of ps.lines) h += `<label class="rv-line"><input type="checkbox" checked data-act="rv-drop" data-p="${k}" data-first="${ps.first}" data-last="${ps.last}" data-s="${ln.sentence}" aria-label="Use this line"><span class="rv-t">${ft(ln.start)}</span><span>${esc(ln.text)}</span></label>`;
+      if (ps.after) h += `<button class="rv-edge" data-act="rv-more" data-p="${k}" data-first="${ps.first}" data-last="${ps.last}" data-edge="end" title="Add this line after the passage">+ later: ${esc(ps.after.text)}</button>`;
+      h += `</div>`;
+    }
+    const found = RV[k + ":" + step.n];
+    h += `<details ${found ? "open" : ""}><summary>Find a line for this step</summary>
+      <div class="row" style="margin-top:6px"><input type="text" style="flex:1 1 220px" data-k="${k}:rv-q${step.n}" placeholder="Describe it, e.g. the part about the recliner" value="${esc(draft(k + ":rv-q" + step.n, ""))}">
+      <button class="small" data-act="rv-find" data-p="${k}" data-step="${step.n}">Search the interview</button></div>`;
+    if (found) h += found.length ? found.map(c => `<div class="rv-cand">${c.lines.map(l => `<div><span class="rv-t">${ft(l.start)}</span> ${esc(l.text)}</div>`).join("")}
+        <div class="actions"><button class="small primary" data-act="rv-add" data-p="${k}" data-step="${step.n}" data-first="${c.first}" data-last="${c.last}">Use this in step ${step.n}</button></div></div>`).join("")
+      : `<div class="note" style="margin-top:6px">Nothing in the interview tells that.</div>`;
+    h += `</details></div>`;
+  }
+  if (rv.edited) h += `<div class="note">After your changes, only names, numbers and quotes are checked here; the AI re-checks every point once the video is rendered.</div>`;
+  h += `<div class="actions"><button class="primary" data-act="approve-plan" data-p="${k}">Approve and render</button></div>
+    <details class="box"><summary>Or ask the editor to change it in words</summary>
+      <textarea data-k="${k}:map-instruction" placeholder="For example: use a different line for step 4">${esc(draft(k + ":map-instruction", ""))}</textarea>
+      <div class="actions"><button class="small" data-act="revise-plan" data-p="${k}">Revise the plan</button></div></details></div>`;
+  return h;
+}
+let LAST = "";
+function render() {
+  const sig = JSON.stringify(DATA.projects) + JSON.stringify(UPLOADING) + JSON.stringify(ARCHIVE_BUSY) + JSON.stringify(RV);
+  if (sig === LAST) return;                                       // nothing changed: don't reload the video players
+  LAST = sig;
+  const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.k : null;
+  const pos = focused ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
+  $("#list").innerHTML = DATA.projects.map(card).join("") || `<div class="card note">No videos yet. Add some footage above.</div>`;
+  document.querySelectorAll("[data-k]").forEach(el => {
+    const [pid, f] = el.dataset.k.split(":"), p = DATA.projects.find(x => x.id === pid);
+    if (el.dataset.k in DRAFT) el.value = DRAFT[el.dataset.k];
+    else if (p && el.tagName !== "TEXTAREA") {
+      const defaults = {music: "", caption_style: "clean", pace: "natural", long_minutes: 0, graphics: "all", transcriber: "parakeet", kind: "auto", library: "true"};
+      if (f in defaults) el.value = (p.options && p.options[f] !== undefined && p.options[f] !== null) ? String(p.options[f]) : defaults[f];
+    }
+    el.oninput = () => { DRAFT[el.dataset.k] = el.value; };
+    if (el.dataset.k === focused) { el.focus(); if (pos && el.setSelectionRange) try { el.setSelectionRange(pos[0], pos[1]); } catch {} }
+  });
+  const cp = DATA.chatgpt_plan || {}, plan = $("#chatgpt-plan");
+  if (cp.status === "connected" && cp.sharing) {
+    plan.className = "pill personal ok"; plan.innerHTML = `ChatGPT plan: ${esc(cp.email || "connected")} <button class="small" data-act="disconnect-plan">Disconnect</button> <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a>`;
+  } else if (cp.status === "connecting") {
+    plan.className = "pill personal warn"; plan.textContent = "ChatGPT: finish sign-in in your browser…";
+  } else if (cp.status === "error") {
+    plan.className = "pill personal bad"; plan.innerHTML = `ChatGPT: ${esc(cp.error || "sign-in failed")} <button class="small" data-act="connect-plan">Try again</button>`;
+  } else {
+    plan.className = "pill personal"; plan.innerHTML = `Use your ChatGPT plan <button class="small" data-act="connect-plan">Continue with ChatGPT</button>`;
+  }
+}
+function val(k, f, d) { return (k + ":" + f) in DRAFT ? DRAFT[k + ":" + f] : d; }
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-act]"); if (!b) return;
+  const pid = b.dataset.p, p = DATA.projects.find(x => x.id === pid), act = b.dataset.act;
+  b.disabled = true;
+  try {
+    if (act === "connect-plan") await post("/api/ai/chatgpt-plan/connect");
+    else if (act === "disconnect-plan") await post("/api/ai/chatgpt-plan/disconnect");
+    else if (act === "make") {
+      const was = (f, d) => (p.options && p.options[f] !== undefined && p.options[f] !== null) ? p.options[f] : d;     // what you chose last time is the default
+      await post(`/api/ai/projects/${pid}/make`, {notes: val(pid, "notes", p.notes), music: val(pid, "music", was("music", "auto")),
+        caption_style: val(pid, "caption_style", was("caption_style", "clean")), pace: val(pid, "pace", was("pace", "natural")),
+        long_minutes: +val(pid, "long_minutes", was("long_minutes", 0)) || 0, graphics: val(pid, "graphics", was("graphics", "all")),
+        transcriber: val(pid, "transcriber", was("transcriber", "parakeet")), kind: val(pid, "kind", was("kind", "auto")), fcp: true,
+        ...(DATA.app ? {library: String(val(pid, "library", String(was("library", true)))) === "true"} : {})});
+    } else if (act === "rerender") await post(`/api/ai/projects/${pid}/rerender`);
+    else if (act === "open-fcp" || act === "reveal") { await post(`/api/ai/projects/${pid}/${act}`); b.disabled = false; return; }
+    else if (act === "approve-plan") await post(`/api/ai/projects/${pid}/approve-plan`);
+    else if (act === "rv-drop") await post(`/api/ai/projects/${pid}/plan-edit`, {op: "drop", first: +b.dataset.first, last: +b.dataset.last, sentence: +b.dataset.s});
+    else if (act === "rv-more") await post(`/api/ai/projects/${pid}/plan-edit`, {op: "extend", first: +b.dataset.first, last: +b.dataset.last, edge: b.dataset.edge});
+    else if (act === "rv-add") { await post(`/api/ai/projects/${pid}/plan-edit`, {op: "add", step: +b.dataset.step, first: +b.dataset.first, last: +b.dataset.last}); delete RV[pid + ":" + b.dataset.step]; }
+    else if (act === "rv-find") {
+      const q = val(pid, "rv-q" + b.dataset.step, "").trim();
+      if (!q) { alert("Say what you are looking for."); b.disabled = false; return; }
+      RV[pid + ":" + b.dataset.step] = (await post(`/api/ai/projects/${pid}/plan-find`, {step: +b.dataset.step, query: q})).candidates;
+    }
+    else if (act === "revise-plan") await post(`/api/ai/projects/${pid}/revise-plan`, {instruction: val(pid, "map-instruction", "")});
+    else if (act === "cancel") await post(`/api/ai/projects/${pid}/cancel`);
+    else if (act === "revise" || act === "revert") {
+      const text = val(pid, "instruction", "");
+      await post(`/api/ai/projects/${pid}/revise`, {instruction: act === "revert" ? "back to the first cut" : text, revert: act === "revert"});
+      delete DRAFT[pid + ":instruction"];
+    } else if (act === "learn") {
+      const r = await post(`/api/ai/projects/${pid}/feedback`, {feedback: val(pid, "feedback", "")});
+      delete DRAFT[pid + ":feedback"]; $("#rules").value = r.rules;
+      const m = $("#learn-" + pid); if (m) m.textContent = r.added.length ? "Saved: " + r.added.join(" · ") : "Nothing new to learn from that.";
+      return;
+    } else if (act === "resume") {
+      RESUME = p; $("#resume-files").value = ""; $("#resume-files").click();
+    } else if (act === "delete") {
+      if (!confirm("Remove this project from the page? The copy saved on the drive stays.")) { b.disabled = false; return; }
+      await api(`/api/ai/projects/${pid}`, {method: "DELETE"});
+    } else if (act === "archive") { ARCHIVE_BUSY[pid] = true; await post(`/api/ai/projects/${pid}/archive`); ARCHIVE_BUSY[pid] = false; }
+  } catch (e) { alert(e.message); b.disabled = false; ARCHIVE_BUSY[pid] = false; }
+  refresh();
+});
+$("#resume-files").addEventListener("change", () => {
+  const p = RESUME; if (!p) return;
+  const rel = f => f.webkitRelativePath || f.name;
+  const files = [...$("#resume-files").files].filter(f => /\.(mp4|mov|mkv|webm|m4v)$/i.test(f.name) && !f.name.startsWith("."));
+  for (const f of files) {
+    const dirs = rel(f).split("/").slice(0, -1);
+    Object.defineProperty(f, "uploadName", {value: dirs.some(d => /b[\s_-]?roll/i.test(d)) && !/b[\s_-]?roll/i.test(f.name) ? "B-roll - " + f.name : f.name});
+  }
+  const byName = Object.fromEntries(files.map(f => [f.uploadName || f.name, f]));
+  const ordered = p.files.map(n => byName[n]).filter(Boolean);
+  if (ordered.length !== p.files.length) { alert(`${p.files.length - ordered.length} of this project's files weren't in what you chose.`); return; }
+  uploadAll(p, ordered); refresh();
+});
+$("#save-rules").addEventListener("click", async () => {
+  try { await post("/api/ai/rules", {text: $("#rules").value}); $("#rules-msg").textContent = "Saved."; } catch (e) { $("#rules-msg").textContent = e.message; }
+});
+let L_OK = false;
+async function lCheck() {
+  const path = $("#l-path").value.trim();
+  $("#l-err").textContent = ""; L_OK = false; $("#l-make").disabled = true;
+  if (!path) { $("#l-info").textContent = ""; return; }
+  $("#l-info").textContent = "Looking at the folder…";
+  try {
+    const r = await api("/api/ai/estimate?path=" + encodeURIComponent(path) + "&transcriber=" + encodeURIComponent($("#l-tr").value));
+    const e = r.estimate, cp = DATA.chatgpt_plan || {};
+    const pricing = DATA.app ? `Edit decisions: <b>${esc(DATA.ai || "…")}</b>. Transcribing and looking at footage run on this Mac.` : cp.sharing ? `ChatGPT plan is connected: eligible text editing requests use your plan instead of API billing. ${$("#l-tr").value === "openai" ? `OpenAI transcription is still estimated at <b>$${e.transcription_usd.toFixed(2)}</b>; choose Parakeet to keep transcription local.` : "Parakeet transcription stays on this Mac at no API cost."}`
+      : `Estimated OpenAI cost: about <b>$${e.total_usd.toFixed(2)}</b> ($${e.transcription_usd.toFixed(2)} transcribing + $${e.llm_usd.toFixed(2)} for the AI, ${esc(e.model)}), plus a few cents per change you ask for. A forecast, not a quote.`;
+    $("#l-info").innerHTML = `<b>${r.files}</b> videos · <b>${r.gb} GB</b> · <b>${r.hours} h</b> of footage (${r.talk_hours} h with talking) · ${r.broll_files} B-roll file(s) · ${r.music} song(s) in Music/${r.audio_files ? ` · ${r.audio_files} separate audio recording(s) to sync` : ""}<br>${pricing}`;
+    L_OK = r.files > 0; $("#l-make").disabled = !L_OK;
+    if (!$("#l-title").value) $("#l-title").placeholder = path.split("/").filter(Boolean).pop();
+  } catch (e) { $("#l-err").textContent = e.message; $("#l-info").textContent = ""; }
+}
+$("#l-path").addEventListener("change", lCheck);
+$("#l-tr").addEventListener("change", lCheck);
+$("#l-pick").addEventListener("click", async () => {
+  $("#l-err").textContent = "";
+  try {
+    const r = await post("/api/ai/pick-folder");
+    if (r.path) { $("#l-path").value = r.path; lCheck(); }
+  } catch (e) { $("#l-err").textContent = e.message; }
+});
+$("#l-make").addEventListener("click", async () => {
+  $("#l-err").textContent = ""; $("#l-make").disabled = true;
+  try {
+    if (TAB === "up") { await makeFromUpload(); return; }
+    const path = $("#l-path").value.trim();
+    const proj = await post("/api/ai/projects", {local_path: path, title: $("#l-title").value, notes: $("#l-notes").value, extra_audio: $("#l-audio").value,
+                                                 ...(DATA.app ? {out_dir: $("#l-out").value.trim()} : {})});
+    await post(`/api/ai/projects/${proj.id}/make`, {...formOptions(), title: $("#l-title").value || proj.title});
+    $("#l-notes").value = ""; $("#l-title").value = ""; $("#l-path").value = ""; $("#l-info").textContent = ""; L_OK = false;
+    await refresh();
+  } catch (e) { $("#l-err").textContent = e.message; } finally { syncMake(); }
+});
+let TAB = "up", TABSET = false;
+function syncMake() { $("#l-make").disabled = TAB === "up" ? !PICKED.length : !L_OK; }
+function setTab(t) {
+  TAB = t; try { localStorage.setItem("ai_tab", t); } catch (e) {}
+  $("#tab-up").classList.toggle("on", t === "up"); $("#tab-folder").classList.toggle("on", t === "folder");
+  $("#pane-up").style.display = t === "up" ? "" : "none"; $("#pane-folder").style.display = t === "folder" ? "" : "none";
+  $("#l-make").textContent = t === "up" ? "Upload and make the video" : "Make the video"; syncMake();
+}
+$("#tab-up").addEventListener("click", () => setTab("up"));
+$("#tab-folder").addEventListener("click", () => setTab("folder"));
+function paintTheme() { $("#theme").textContent = document.documentElement.dataset.theme === "dark" ? "Light" : "Dark"; }
+$("#theme").addEventListener("click", () => {
+  const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = t; try { localStorage.setItem("theme", t); } catch (e) {} paintTheme();
+});
+paintTheme();
+
+$("#l-kind").innerHTML = KINDS;
+let rulesLoaded = false;
+async function refresh() {
+  try {
+    DATA = await api("/api/ai/projects");
+    if (!rulesLoaded) { $("#rules").value = DATA.rules; rulesLoaded = true; }
+    $("#where").textContent = `Projects are saved to ${DATA.dir}` + (DATA.drive_host ? ` on ${DATA.drive_host}` : "");
+    const u = DATA.usage;
+    if (u) {
+      const mins = s => (s / 60).toFixed(1);
+      const y = DATA.has_own_key ? u.yours_total : u.total, yt = DATA.has_own_key ? u.yours_today : u.today;
+      $("#usage").textContent = `OpenAI ${DATA.has_own_key ? "(your key)" : ""}: $${yt.usd.toFixed(2)} today · $${y.usd.toFixed(2)} total`;
+      $("#usage").title = `Today: ${yt.calls} AI calls, ${(yt.in / 1000).toFixed(0)}k tokens in, ${(yt.out / 1000).toFixed(0)}k out, ${yt.images} images, ${mins(yt.whisper_s)} min of speech transcribed.\n` +
+        `Total since ${u.since || "the start"}: ${y.calls} calls, ${(y.in / 1000).toFixed(0)}k tokens in, ${(y.out / 1000).toFixed(0)}k out, ${y.images} images, ${mins(y.whisper_s)} min transcribed.\n` +
+        `Prices are OpenAI's list prices for the model, so this is an estimate to compare with your OpenAI usage page.`;
+    }
+    $("#local-form").style.display = "";
+    $("#tab-folder").style.display = DATA.local_enabled ? "" : "none";
+    if (DATA.app && !document.body.classList.contains("app")) startApp();
+    if (!TABSET) { TABSET = true; let t = "up"; try { t = localStorage.getItem("ai_tab") || "up"; } catch (e) {} setTab(DATA.app ? "folder" : DATA.local_enabled ? t : "up"); }
+    if (DATA.app) paintApp();
+    render();
+  } catch (e) { $("#where").textContent = e.message; }
+}
+refresh(); setInterval(refresh, 3000);
+
+// ---- the work app: Video Builder (Make a video / Find footage) -------------------------------------
+let SHOTS = [], BASKET = new Map(), PREV = null, LASTQ = "";
+function startApp() {
+  document.body.classList.add("app");
+  document.title = "Video Builder";
+  $("h1").textContent = "Video Builder";
+  $(".sub").textContent = "Point it at an interview and press one button: it cuts the talking, adds B-roll from your footage library and gives you a Final Cut project. Or find a shot yourself.";
+  $("#l-caps").value = "none"; $("#l-gfx").value = "";                       // a plain cut to finish in Final Cut, unless you ask for more
+  if (!$("#l-out").value) $("#l-out").value = DATA.out_dir || "";
+  let t = "make"; try { t = localStorage.getItem("vb_tab") || "make"; } catch (e) {}
+  appTab(t);
+}
+function appTab(t) {
+  try { localStorage.setItem("vb_tab", t); } catch (e) {}
+  $("#t-make").classList.toggle("on", t === "make"); $("#t-find").classList.toggle("on", t === "find");
+  $("#pane-make").hidden = t !== "make"; $("#pane-find").hidden = t !== "find";
+  if (t === "find") setTimeout(() => $("#q").focus(), 0);
+}
+window.vbDropFolder = p => { appTab("make"); $("#l-path").value = p; lCheck(); };       // the Mac app: a folder dropped on the window
+$("#t-make").addEventListener("click", () => appTab("make"));
+$("#t-find").addEventListener("click", () => appTab("find"));
+$("#l-out-pick").addEventListener("click", async () => {
+  try { const r = await post("/api/ai/pick-folder", {prompt: "Choose where to save the videos", start: $("#l-out").value}); if (r.path) $("#l-out").value = r.path; }
+  catch (e) { $("#l-err").textContent = e.message; }
+});
+const n0 = n => (n || 0).toLocaleString();
+function paintApp() {
+  $("#ai-who").textContent = "AI: " + (DATA.ai || "…");
+  $("#ai-who").className = "pill app-only " + (/^no AI/.test(DATA.ai || "") ? "bad" : /local/i.test(DATA.ai || "") ? "warn" : "ok");
+  $("#l-lib-wrap").hidden = !DATA.library;
+  const L = DATA.library;
+  if (!L) { $("#cat-line").textContent = "There is no footage catalog on this Mac."; $("#cat-run").hidden = true; return; }
+  const st = L.status || {}, off = (L.roots || []).filter(r => !r.mounted);
+  const many = (n, one) => `<b>${n0(n)}</b> ${one}${n === 1 ? "" : "s"}`;
+  let line = `${many(L.videos, "video")} and ${many(L.photos, "photo")} catalogued (${n0(L.hours)} h of footage, ${n0(L.described)} described)`;
+  if (off.length) line += ` · <span class="err" style="display:inline">not plugged in: ${off.map(r => esc(r.path)).join(", ")}</span>`;
+  $("#cat-line").innerHTML = line;
+  $("#cat-bar").hidden = !st.running;
+  if (st.running) $("#cat-bar > i").style.width = (st.total ? Math.round(100 * st.done / st.total) : 2) + "%";
+  $("#cat-note").textContent = st.running ? `${st.stage || "Working"}${st.total ? ` (${n0(st.done)} of ${n0(st.total)})` : ""}` : st.error ? "Last run failed: " + st.error : (st.stage || "Catalogues by itself at night; new footage shows up the next morning.");
+  $("#cat-run").hidden = !!st.running; $("#cat-stop").hidden = !st.running;
+}
+$("#cat-run").addEventListener("click", async () => { try { await post("/api/library/start"); refresh(); } catch (e) { alert(e.message); } });
+$("#cat-stop").addEventListener("click", async () => { try { await post("/api/library/stop"); refresh(); } catch (e) { alert(e.message); } });
+const tc = s => Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
+const keyOf = s => s.id + "@" + s.start;
+async function search() {
+  const q = $("#q").value.trim();
+  if (!q) return;
+  LASTQ = q; $("#q-msg").textContent = "Searching…"; $("#q-go").disabled = true;
+  try {
+    const r = await api(`/api/library/search?q=${encodeURIComponent(q)}&kind=${encodeURIComponent($("#q-kind").value)}&n=60`);
+    SHOTS = r.shots || [];
+    $("#q-msg").textContent = SHOTS.length ? `Best matches first. Click a shot to watch it; tick shots to send them to Final Cut.` : "Nothing in the catalog looks like that.";
+    paintShots();
+  } catch (e) { $("#q-msg").textContent = e.message; }
+  finally { $("#q-go").disabled = false; }
+}
+function paintShots() {
+  $("#results").innerHTML = SHOTS.map((s, i) => {
+    const name = s.rel.split("/").slice(-2).join(" / ");
+    const when = s.kind === "photo" ? "Photo" : `${tc(s.start)}–${tc(s.end)}`;
+    return `<div class="shot ${BASKET.has(keyOf(s)) ? "on" : ""}" data-i="${i}" title="${esc(s.rel)}">
+      <img loading="lazy" alt="" src="/api/library/thumb/${s.id}/${s.k}">
+      ${s.kind === "video" ? `<label class="pick" title="Send to Final Cut"><input type="checkbox" data-pick="${i}" ${BASKET.has(keyOf(s)) ? "checked" : ""} aria-label="Pick this shot"></label>` : ""}
+      <div class="cap"><b>${when}</b> · ${esc(name)}${s.what ? `<div class="what">${esc(s.what)}</div>` : ""}</div></div>`;
+  }).join("");
+  paintBasket();
+}
+function paintBasket() {
+  $("#basket").hidden = !BASKET.size;
+  $("#basket-n").textContent = `${BASKET.size} shot${BASKET.size === 1 ? "" : "s"} picked`;
+}
+function preview(s) {
+  PREV = s;
+  const box = $("#preview");
+  box.hidden = false;
+  box.innerHTML = `<div class="row" style="justify-content:space-between"><b>${esc(s.rel.split("/").pop())}</b><button class="small" id="pv-close">Close</button></div>
+    <div class="meta">${esc(s.rel)}${s.kind === "video" ? ` · ${tc(s.start)}–${tc(s.end)} of ${tc(s.dur)}` : ""}</div>
+    ${s.kind === "video" ? `<video controls autoplay playsinline preload="metadata" src="/api/library/preview/${s.id}?s=${s.start}&e=${s.end}"></video>`
+      : `<img alt="" src="/api/library/thumb/${s.id}/0">`}
+    ${s.what ? `<div class="meta">${esc(s.what)}</div>` : ""}
+    <div class="actions">${s.kind === "video" ? `<button class="small primary" id="pv-pick">${BASKET.has(keyOf(s)) ? "Picked ✓" : "Pick for Final Cut"}</button>` : ""}<button class="small" id="pv-reveal">Show in Finder</button></div>`;
+  $("#pv-close").onclick = () => { box.hidden = true; box.innerHTML = ""; PREV = null; };
+  $("#pv-reveal").onclick = () => post("/api/library/reveal", {id: s.id}).catch(e => alert(e.message));
+  if ($("#pv-pick")) $("#pv-pick").onclick = () => { toggle(s); preview(s); };
+  box.scrollIntoView({behavior: "smooth", block: "start"});
+}
+function toggle(s) { const k = keyOf(s); BASKET.has(k) ? BASKET.delete(k) : BASKET.set(k, {...s, query: LASTQ}); paintShots(); }
+$("#q").addEventListener("keydown", e => { if (e.key === "Enter") search(); });
+$("#q-go").addEventListener("click", search);
+$("#q-kind").addEventListener("change", () => { if ($("#q").value.trim()) search(); });
+$("#results").addEventListener("click", e => {
+  const pick = e.target.closest("[data-pick]");
+  if (pick) { toggle(SHOTS[+pick.dataset.pick]); return; }
+  if (e.target.closest(".pick")) return;
+  const tile = e.target.closest(".shot"); if (tile) preview(SHOTS[+tile.dataset.i]);
+});
+$("#basket-clear").addEventListener("click", () => { BASKET.clear(); paintShots(); });
+$("#basket-send").addEventListener("click", async () => {
+  const b = $("#basket-send"); b.disabled = true;
+  try {
+    const shots = [...BASKET.values()].map(s => ({id: s.id, start: s.start, end: s.end, what: s.what || s.query}));
+    const r = await post("/api/library/fcpxml", {shots, name: "Found footage - " + (LASTQ || "picked shots"), open: true});
+    $("#q-msg").textContent = r.problems && r.problems.length ? `Saved ${r.path}, but Final Cut's format check failed: ${r.problems[0]}` : `Sent ${r.clips} shot(s) to Final Cut (saved as ${r.path}).`;
+    if (!(r.problems && r.problems.length)) { BASKET.clear(); paintShots(); }
+  } catch (e) { $("#q-msg").textContent = e.message; } finally { b.disabled = false; }
+});
+</script>
+</body>
+</html>
