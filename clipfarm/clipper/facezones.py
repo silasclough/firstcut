@@ -26,7 +26,9 @@ def zones(video: Path, start: float, dur: float, models_dir: Path, aspect: float
     """The head zones of everyone seen in video[start : start + dur]. [] if nobody (or the detector is unavailable)."""
     try:
         from . import reframe as R
-        samples, _n = R.detect_faces(Path(video), max(0.0, start), max(0.5, dur), models_dir, rate, width=480)
+        # (960 px wide and faces down to 1.2 % of the width: in a wide shot of a stairwell every student is about 2 % wide, and the old 480 px / 3 %
+        #  check saw only the nearest one, so a logo card landed on the others)
+        samples, _n = R.detect_faces(Path(video), max(0.0, start), max(0.5, dur), models_dir, rate, width=960, min_w=0.012)
     except Exception as e:  # noqa: BLE001 - no faces known: graphics keep their usual places
         log.warning(f"face check failed: {e}")
         return []

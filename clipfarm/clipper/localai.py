@@ -48,7 +48,7 @@ TASK_WORDS = {
     "speaker_roles": "Working out who is speaking", "speaker_check": "Checking who is speaking", "broll_describe": "Looking at your footage",
     "photo_describe": "Looking at your photos", "catalog_describe": "Describing your footage library", "stock_queries": "Finding better stock searches", "broll_plan": "Choosing B-roll", "broll_pick": "Choosing B-roll", "broll_queries": "Choosing B-roll",
     "broll_suitable": "Choosing B-roll", "highlight_candidates": "Finding the best moments", "highlight_assemble": "Putting the story together",
-    "video_kind": "Deciding what kind of video this is", "video_length": "Deciding how long it should be", "multicam_director": "Choosing camera angles",
+    "video_title": "Naming the video", "video_kind": "Deciding what kind of video this is", "video_length": "Deciding how long it should be", "multicam_director": "Choosing camera angles",
     "graphics_plan": "Planning the graphics", "gfx_place": "Placing the graphics", "hook_text": "Writing the opening line", "music_vibe": "Choosing the music",
     "video_title": "Writing the title", "video_chapters": "Writing the chapters", "clip_title": "Writing the titles", "key_points": "Finding the key points", "story_edit": "Shaping the story",
     "edit_style": "Reading how you like it edited", "style_merge": "Remembering how you like it edited", "revise_request": "Reading your changes",

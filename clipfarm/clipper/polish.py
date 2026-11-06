@@ -221,6 +221,7 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
     pts: list[tuple[dict, Path]] = []
     glass_items: list[dict] = []                              # where each graphic has glass (the picture behind it is blurred)
     cards_done: list[dict] = []                               # the planned graphics that rendered: Final Cut gets these as clips
+    title_clips: dict = {}                                    # hook / key point -> the panel it was drawn in: its editable Final Cut title is placed there
     bug = None                                                # the corner logo, when one is asked for
     if not opts.get("no_overlays"):
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -269,10 +270,15 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
                         gfx = mov
                         if rects:
                             glass_items.append({"at": 0.0, "len": 3.2, "rects": rects})
+                        title_clips["hook"] = {"rect": _rect_of(rects)}
+                        cards_done.append({"at": 0.0, "len": 3.2, "src": Path(mov), "kind": "hook", "style": "hook"})      # (the exact look, for Final Cut)
                     else:
                         pts.append((who, mov))
                         if rects:
                             glass_items.append({"at": float(who["at"]), "len": float(secs), "rects": rects})
+                        if kind == "point":
+                            title_clips[round(float(who["at"]), 2)] = {"rect": _rect_of(rects)}
+                            cards_done.append({"at": float(who["at"]), "len": float(secs), "src": Path(mov), "kind": "point", "style": "point"})
                         if kind in ("card", "folder"):
                             cards_done.append({"at": float(who["at"]), "len": float(secs), "src": Path(mov), "kind": who.get("kind"), "style": who.get("style")})
         bug = opts.get("logo_bug")                            # your logo small in a corner (only when your notes ask for it)
@@ -423,7 +429,7 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
         fcp_meta = write_bundle(cfg, d, title, src, info, fps, W, H, intervals, groups, track,
                                 MU.duck_points(cap_words, out_len, -14.0 if len(cap_words) / max(1, out_len) >= 0.6 else -8.0,
                                                -24.0 if len(cap_words) / max(1, out_len) >= 0.6 else -16.0),
-                                music_start if track else 0.0, ccfg, cutaways=cutaways, mc=mc, titles=fcp_titles(opts, title), music_xf=music_xf,
+                                music_start if track else 0.0, ccfg, cutaways=cutaways, mc=mc, titles=fcp_titles(opts, title, title_clips), music_xf=music_xf,
                                 overlays=cards_done, subs=subs)
     clip = {"index": 1, "file": out.name, "thumb": "clip_01.jpg", "srt": "clip_01.srt" if caps else None,
             "title": title, "hook": "", "caption": (d / "clip_01.txt").read_text().strip(), "score": None,
@@ -510,6 +516,17 @@ def make_sound(src: Path, intervals, reordered: bool, whole: bool, expr: str, ha
          "-t", f"{out_len:.3f}", *ffmpeg.audio_encode_args(vcfg), str(afile)], "the sound")
 
 
+def _rect_of(rects) -> tuple | None:
+    """(x, y, w, h) of the panel a lower third was drawn in, from what render_card returned."""
+    pn = getattr(rects, "panel", None) or (rects[0] if rects else None)
+    return (pn["x"], pn["y"], pn["w"], pn["h"]) if pn else None
+
+
+class _PanelRects(list):
+    """The glass rectangles of a card, and (.panel) the rectangle of its panel even when the look has no glass."""
+    panel: dict | None = None
+
+
 def render_card(cfg, kind: str, text: str, secs: float, f: Path, extra: dict | None, W: int, H: int, spec: dict | None = None,
                 avoid: list | None = None) -> tuple[Path | None, list]:
     """One animated graphic -> (a transparent .mov, the glass rectangles to blur behind it). The native renderer (gfxcards: no browser, any machine)
@@ -522,7 +539,12 @@ def render_card(cfg, kind: str, text: str, secs: float, f: Path, extra: dict | N
         sp = {**(spec or {"kind": "hook" if kind == "title" else "point", "text": text}), "len": secs}
         r = gfxcards.render(cfg, sp, W, H, f, theme, avoid=avoid)
         if r:
-            return r["file"], r["glass"]
+            glass = r["glass"]
+            if r.get("panel"):                                    # (where a lower third really sits: Final Cut's editable title goes there)
+                px, py, pw, ph = r["panel"]
+                glass = _PanelRects(glass)
+                glass.panel = {"x": px, "y": py, "w": pw, "h": ph}
+            return r["file"], glass
     if kind == "card":
         return None, []
     made = graphics.render_title(cfg, text, secs, W, H, f, 300.0, kind, extra)
@@ -634,12 +656,21 @@ def overlay_track(items: list[tuple[float, float, Path]], total: float, W: int, 
     return out
 
 
-def fcp_titles(opts: dict, title: str) -> list[dict]:
-    """The graphics of the finished video as Final Cut titles (so they can be edited there): hook card, key points, end card."""
+def fcp_titles(opts: dict, title: str, clips: dict | None = None) -> list[dict]:
+    """The graphics of the finished video as Final Cut titles (so they can be edited there): hook card, key points, end card.
+    `clips`: the ones that were also rendered as a clip (their exact look goes to Final Cut as that clip: the editable title is then switched
+    off, and placed on the panel the renderer drew)."""
+    clips = clips or {}
+    theme = opts.get("gfx_theme")
     out: list[dict] = []
     if opts.get("graphics") in ("title", "all") and (opts.get("hook_text") or title) and not opts.get("folder_title"):
-        out.append({"at": 0.0, "len": 3.2, "text": str(opts.get("hook_text") or title), "kind": "hook"})
-    out += [{"at": float(c["at"]), "len": float(c["len"]), "text": str(c["text"]), "kind": "point"} for c in opts.get("callouts") or []]
+        c = clips.get("hook")
+        out.append({"at": 0.0, "len": 3.2, "text": str(opts.get("hook_text") or title), "kind": "hook", "theme": theme,
+                    "rect": c.get("rect") if c else None, "off": bool(c)})
+    for c in opts.get("callouts") or []:
+        k = clips.get(round(float(c["at"]), 2))
+        out.append({"at": float(c["at"]), "len": float(c["len"]), "text": str(c["text"]), "kind": "point", "theme": theme,
+                    "rect": k.get("rect") if k else None, "off": bool(k)})
     e = opts.get("endcard")
     if e and e.get("text"):
         out.append({"at": float(e["at"]), "len": float(e["len"]), "text": str(e["text"]), "kind": "end"})

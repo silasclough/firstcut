@@ -254,6 +254,7 @@ def test_a_drive_unplugged_mid_run_is_catalogued_when_it_comes_back(tmp_path):
     for k in range(5):
         _clip(root / f"clip{k}.mp4", secs=2)
     cat = C.Catalog(_cfg(tmp_path, [root]), embedder=FakeEmbedder())
+    cat.workers = 1                                                      # (one file at a time: the unplug is timed by the progress calls)
     away = tmp_path / "Drive" / "Video-unplugged"
 
     def unplug(k, n, what):
@@ -292,7 +293,7 @@ def test_a_long_gop_export_is_catalogued_to_its_end(tmp_path):
     root.mkdir(parents=True)
     subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=320x180:d=6:r=25", "-f", "lavfi", "-i",
                     "color=c=blue:s=320x180:d=6:r=25", "-filter_complex", "[0][1]concat=n=2:v=1[v]", "-map", "[v]", "-c:v", "libx264",
-                    "-pix_fmt", "yuv420p", str(root / "export.mp4")], check=True)
+                    "-pix_fmt", "yuv420p", str(root / "clip.mp4")], check=True)
     cat = C.Catalog(_cfg(tmp_path, [root]), embedder=FakeEmbedder())
     cat.index()
     rec = next(cat.records())

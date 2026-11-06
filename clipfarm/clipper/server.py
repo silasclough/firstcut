@@ -564,6 +564,20 @@ def make_handler(engine: Engine, store: Store, worker: Worker, feed: Feed, max_u
         # -------------------------------------------------------------- FirstCut (the app)
         def _studio_post(self, rest: list[str]):
             from ..core.llm import LLMUnavailable
+            if rest[:2] == ["dictate", "live"] and len(rest) in (3, 4):   # words while they are said: start / a piece of the recording / end
+                try:
+                    if rest[2] == "start":
+                        return self._json(studio_api.dictate_live("start"))
+                    if len(rest) == 4 and rest[3] == "end":
+                        return self._json(studio_api.dictate_live("end", rest[2]))
+                    n = int(self.headers.get("Content-Length") or 0)
+                    if not 0 < n <= 4_000_000:
+                        return self._err(400, "a piece of a recording")
+                    return self._json(studio_api.dictate_live("push", rest[2], self.rfile.read(n)))
+                except KeyError:
+                    return self._err(404, "that dictation is over")
+                except (ValueError, RuntimeError) as e:
+                    return self._err(409, str(e))
             if rest == ["dictate"]:                                       # a recording from the page's microphone button (raw audio)
                 n = int(self.headers.get("Content-Length") or 0)
                 if not 0 < n <= 40_000_000:

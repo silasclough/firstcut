@@ -670,6 +670,30 @@ class StudioAPI:
         raise KeyError(what)
 
     # ------------------------------------------------------------------ dictation (the composer's microphone)
+    def _live(self):
+        if getattr(self, "_live_dictation", None) is None:
+            from . import parakeet
+            self._live_dictation = parakeet.LiveDictation(self.cfg, Path(self.settings.get()["places"]["work"]) / "dictation")
+        return self._live_dictation
+
+    def _dictation_text(self, text: str) -> str:
+        text = re.sub(r"\s+([,.!?;:])", r"\1", " ".join(str(text or "").split()))
+        for wrong, right in DICTATION_WORDS:                              # an editor's words, spelled the way editors write them
+            text = re.sub(wrong, right, text, flags=re.I)
+        return text
+
+    def dictate_live(self, op: str, sid: str = "", piece: bytes = b"") -> dict:
+        """Words while they are said (a preview only: the ordinary dictate() on stop gives the final text). start -> {id}; push a piece of
+        the recording -> {stable, tail, capped}; end. Any problem raises, and the page then simply waits for the final text."""
+        live = self._live()
+        if op == "start":
+            return {"id": live.start()}
+        if op == "end":
+            live.end(sid)
+            return {"ok": True}
+        out = live.push(sid, piece)
+        return {"stable": self._dictation_text(out["stable"]), "tail": self._dictation_text(out["tail"]), "capped": bool(out.get("capped"))}
+
     def dictate(self, audio: bytes, ctype: str = "") -> dict:
         """What was said, as text: the recording from the page, transcribed by Parakeet on this Mac (nothing leaves it)."""
         from . import parakeet
@@ -685,10 +709,7 @@ class StudioAPI:
         finally:
             f.unlink(missing_ok=True)
         text = " ".join(str(w.get("text") or w.get("word") or "").strip() for w in words).strip()
-        text = re.sub(r"\s+([,.!?;:])", r"\1", " ".join(text.split()))
-        for wrong, right in DICTATION_WORDS:                              # an editor's words, spelled the way editors write them
-            text = re.sub(wrong, right, text, flags=re.I)
-        return {"text": text}
+        return {"text": self._dictation_text(text)}
 
     # ------------------------------------------------------------------ the music library (songs the person licensed: Artlist, Soundstripe...)
     def keys_state(self) -> dict:
@@ -1200,6 +1221,30 @@ class StudioAPI:
                 return 200, self.transcripts.get(rest[1])
             except ValueError as e:
                 return 404, {"error": str(e)}
+        if len(rest) == 3 and rest[0] == "long" and rest[2] == "quality" and self.runner:         # the quality check as rows (older videos: read from the report file)
+            from . import notes as NT
+            try:
+                ni = self.projects.get(rest[1]).get("notes_info") or {}
+            except (KeyError, OSError, ValueError):
+                return 404, {"error": "no such video"}
+            rows = ni.get("issues")
+            if rows is None:
+                try:
+                    rows = NT.rows_from_md(Path(ni.get("report") or "").read_text())
+                except (OSError, ValueError):
+                    rows = []
+            return 200, {"issues": rows}
+        if len(rest) == 3 and rest[0] == "long" and rest[2] == "avoid" and self.runner:           # shots ruled out with "Don't use this"
+            try:
+                return 200, {"shots": self.runner.avoided(rest[1])}
+            except KeyError:
+                return 404, {"error": "no such video"}
+        if len(rest) == 3 and rest[0] == "long" and rest[2] == "transcript" and self.runner:    # the words of a long video and which are in it (transcript_edit.py)
+            from . import transcript_edit as TE
+            try:
+                return 200, TE.view(self.runner, rest[1])
+            except KeyError:
+                return 404, {"error": "no such video"}
         if len(rest) in (3, 5) and rest[0] == "long" and rest[2] == "shots" and self.runner:    # the B-roll strip under a finished video
             try:
                 if len(rest) == 3:
@@ -1242,6 +1287,31 @@ class StudioAPI:
             return 200, self.music_download(b)
         if len(rest) == 2 and rest[0] == "stock":
             return 200, self.stock_action(rest[1], b)
+        if len(rest) == 3 and rest[0] == "long" and rest[2] == "avoid":    # "Don't use this" on a shot in the live view: {shot, undo?}
+            if not self.runner:
+                return 404, {"error": "not found"}
+            try:
+                return 200, self.runner.avoid_shot(rest[1], dict(b.get("shot") or {}), bool(b.get("undo")))
+            except KeyError:
+                return 404, {"error": "no such video"}
+        if len(rest) == 4 and rest[0] == "long" and rest[2] == "transcript" and self.runner:    # edit from the transcript: cut | add {first, last}; undo-staged | clear | apply | undo
+            from . import transcript_edit as TE
+            pid, what = rest[1], rest[3]
+            try:
+                if what in ("cut", "add"):
+                    return 200, TE.stage(self.runner, pid, what, int(b.get("first", -1)), int(b.get("last", -1)))
+                if what == "undo-staged":
+                    return 200, TE.undo_staged(self.runner, pid)
+                if what == "clear":
+                    return 200, TE.clear(self.runner, pid)
+                if what == "apply":
+                    return 200, TE.request_apply(self.runner, pid)
+                if what == "undo":
+                    return 200, TE.request_undo(self.runner, pid)
+            except (ValueError, TypeError) as e:
+                return 409, {"error": str(e)}
+            except KeyError:
+                return 404, {"error": "no such video"}
         if len(rest) == 4 and rest[0] == "long" and rest[2] == "shots" and rest[3].isdigit():    # swap one B-roll shot: {choice}
             # (choice: a pool number, "speaker", or "lib:<id>:<start>:<end>" from the search box: that library shot joins the project)
             if not self.runner:

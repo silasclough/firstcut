@@ -68,6 +68,20 @@ STEP_SCHEMA = {"type": "object", "properties": {"covered": {"type": "boolean"}, 
 TITLE_SCHEMA = {"type": "object", "properties": {"title": {"type": "string"}, "summary": {"type": "string"}}, "required": ["title", "summary"]}
 
 
+def name_it(ai, sents, notes: str = "") -> str:
+    """A short title (3-8 words, no quotes) for a video that is kept as it is, from what is said in it: "" when there is nothing to go on."""
+    text = " ".join(s.text for s in sents)[:6000].strip()
+    if len(text.split()) < 8:
+        return ""
+    prompt = ((f"The creator's notes: {notes[:600]}\n\n" if notes.strip() else "") + f"What is said in the video:\n{text}\n\n"
+              "Write a short, specific title for this video (3 to 8 words, plain words, no quotes, no clickbait) and a one-sentence summary.")
+    try:
+        res = ai.complete_json("video_title", "You name finished videos for a college marketing team.", prompt, TITLE_SCHEMA)
+        return " ".join(str(res.data.get("title") or "").replace('"', "").split())[:90]
+    except Exception:  # noqa: BLE001 - the file's name is a fine fallback
+        return ""
+
+
 def plan(ai, sents: list[M.Sentence], outline: list[str], notes: str, budget_s: float, title: str = "") -> tuple[list[dict], str, str, list[dict]]:
     """-> (items, title, summary, report) where items are talk items in outline order and report lists each step and what covers it.
     The model assigns all passages in ONE pass, so it can split an idea where it changes steps instead of letting an earlier step claim it."""

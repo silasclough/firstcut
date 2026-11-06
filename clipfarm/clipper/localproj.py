@@ -62,6 +62,8 @@ from . import music as MU
 from . import story
 from . import photos as PH
 from . import tighten as TI
+from . import transcript_edit as TE
+from . import avoid as AV
 from .engine import PACES, Cancelled, Engine, remap_words, repace
 from .library import safe
 from .localai import LocalAI, estimate_cost
@@ -84,7 +86,7 @@ def skipped(rel_parts) -> bool:
 # using it as footage brings in repeats. Told apart by its name, unless it sits in a folder of camera files.
 EDIT_NAME = re.compile(r"(?<![a-z0-9])(drafts?|v\d{1,2}|ver(?:sion)?[ -]*\d+|final|export(?:ed)?|rough[ -]*cut|first[ -]*cut|fine[ -]*cut|master|rendered|"
                        r"bounce|for (?:youtube|instagram|web))(?![a-z])", re.I)
-CAMERA_DIR = re.compile(r"raw|footage|clip|a[ _-]?roll|b[ _-]?roll|camera|^cam\b|^cam[ _-]?[a-z0-9]$|card|dcim|private|interview", re.I)
+CAMERA_DIR = re.compile(r"raw|footage|clip|a[ _-]?roll|b[ _-]?roll|camera|^cam\b|^cam[ _-]?[a-z0-9]$|^[a-z0-9][ _-]?cam$|card|dcim|private|interview", re.I)
 
 
 def earlier_edit(rel: Path, folder: Path) -> bool:
@@ -459,10 +461,12 @@ class LocalRunner:
         def run():
             stop = threading.Event()
             threading.Thread(target=self._tick, args=(job, stop), daemon=True, name=f"local-tick-{pid}").start()
+            ok = False
             try:
                 self.store.update(job, status="transcribing", stage="Starting", error=None, cancel=False, detail="", progress=0.0)
                 getattr(self, kind)(pid, **kw)
                 self.store.update(job, run=None)
+                ok = True
             except Cancelled:
                 self.store.update(job, status="cancelled", stage="Stopped", run=None)
             except Exception as e:  # noqa: BLE001 - shown on the page; finished steps are cached for the next try
@@ -477,7 +481,15 @@ class LocalRunner:
                 self.cur_ai = None
                 self.running = None
                 self.lock.release()
+                TE.after_run(self, pid, kind, ok)               # (a transcript edit queued while this was being made starts now)
         threading.Thread(target=run, daemon=True, name=f"local-{pid}").start()
+
+    def transcript_edit(self, pid: str) -> None:
+        """Runner action: the edits staged in the transcript panel are applied to the plan and the video renders again (transcript_edit.py)."""
+        TE.run_apply(self, pid)
+
+    def transcript_undo(self, pid: str) -> None:
+        TE.run_undo(self, pid)
 
     TICK_S = 3.0
     CREEP_S = 240.0                     # a long step's bar moves 63% of the way to its creep limit in this many seconds
@@ -588,8 +600,21 @@ class LocalRunner:
                         pic = ""
                 elif f and f.get("path"):
                     pic = live.frame(self.store, job, path=f["path"], t=max(0.0, float(sc.get("start", f["start"])) - float(f["start"]) + 0.5))
+                # (what "Don't use this" files it under: the file as the edit calls it, and the stretch in that file; a library shot also carries
+                #  what the page's player needs to play it)
+                off = float(f["start"]) if f and not sc.get("photo") else 0.0
+                a0, b0 = round(float(sc.get("start", 0)) - off, 2), round(float(sc.get("end", 0)) - off, 2)
+                lib = {}
+                if f and f.get("library") and not sc.get("photo") and f.get("path"):
+                    try:
+                        from .catalog import rid
+                        rec = (self.catalog.load(rid(f["path"])) if self.catalog is not None else None) or {}
+                        lib = {"id": rid(f["path"]), "dur": f.get("dur"), "step": rec.get("step"), "frames": rec.get("frames"), "rel": f.get("rel")}
+                    except Exception:  # noqa: BLE001 - the picture alone still opens
+                        lib = {}
                 live.emit(self.store, job, "broll", f=pic, at=round(float(c.get("at") or 0), 1), length=round(float(c.get("length") or 0), 1),
-                          what=str(sc.get("what") or "")[:160], of=str(sc.get("file") or "").replace("Library - ", "Library: ").replace("Stock - ", "Stock: "))
+                          what=str(sc.get("what") or "")[:160], of=str(sc.get("file") or "").replace("Library - ", "Library: ").replace("Stock - ", "Stock: "),
+                          name=str(sc.get("file") or ""), start=a0, end=b0, photo=bool(sc.get("photo")), lib=lib or None)
         live.later(run)
 
     def library(self):
@@ -606,7 +631,7 @@ class LocalRunner:
         cat = self.library()
         if cat is None:
             return files, scenes
-        shots = cat.shots_for(ai, seg(words), brief, limit=LIB_SHOTS, progress=progress)
+        shots = AV.drop_found(AV.load(st), cat.shots_for(ai, seg(words), brief, limit=LIB_SHOTS, progress=progress))   # (shots ruled out stay out)
         if getattr(self, "live_job", None):
             def show(found=list(shots[:24])):
                 for s in found:
@@ -614,8 +639,10 @@ class LocalRunner:
                         pic = live.frame(self.store, self.live_job, cat.thumb(s["id"], int(s.get("k") or 0)).read_bytes())
                     except (OSError, KeyError, TypeError, ValueError):
                         pic = ""
+                    # (what the page's player needs to open it: the catalog id, the stretch, the stills; and the name "Don't use this" files it under)
                     live.emit(self.store, self.live_job, "libshot", f=pic, what=str(s.get("what") or "")[:160], rel=s.get("rel"),
-                              query=s.get("query"), kind=s.get("kind"))
+                              query=s.get("query"), media=s.get("kind"), id=s.get("id"), start=s.get("start"), end=s.get("end"), k=s.get("k"),   # (not kind=: that is the event's own)
+                              dur=s.get("dur"), step=s.get("step"), frames=s.get("frames"), name=f"Library - {s.get('rel')}")
             live.later(show)
         lib, by_id, lib_scenes, photos = [], {}, {}, []
         t = LIB_BASE
@@ -967,6 +994,11 @@ class LocalRunner:
             pool = pool + ((st.get("stock.json") or {}).get("photos") or [])
         old = st.get("plan.json", {}) or {}
         title = " ".join(str(proj.get("title") or "").split()) or Path(a_file["name"]).stem
+        if title.lower() in {Path(a_file["name"]).stem.lower(), Path(str(proj.get("folder") or "")).name.lower()}:     # (still the file's or folder's name: name it from what is said)
+            earlier = " ".join(str(old.get("title") or "").split())
+            title = earlier if earlier and earlier.lower() != title.lower() else (FL.name_it(ai, sents, notes) or title)
+            if title.lower() != Path(a_file["name"]).stem.lower():
+                self.projects.update(pid, title=title)                      # (the sidebar shows the project's name)
         plan = {"style": style, "keep_cut": {"file": a_file["name"], "start": a_file["start"], "end": a_file["end"]},
                 "items": [{"kind": "visual", "start": a_file["start"], "end": a_file["end"]}], "pool": pool, "title": title,
                 "summary": " ".join(s.text for s in sents[:6])[:400], "gap": 0.0, "hook_text": old.get("hook_text", ""),
@@ -1123,8 +1155,9 @@ class LocalRunner:
             except Exception as e:  # noqa: BLE001 - the words alone still rank them
                 log.warning(f"picture search for the B-roll choices failed: {e}")
         ranked = []
+        ruled_out = AV.bad_pool(AV.load(s["st"]), s["pool"], s["files"])        # ("Don't use this": never offered again)
         for i, sc in enumerate(s["pool"]):
-            if i in used:
+            if i in used or i in ruled_out:
                 continue
             src = self._shot_source(s, sc)
             if src is None:
@@ -1157,10 +1190,12 @@ class LocalRunner:
         want = {w for w in re.findall(r"[a-z]{3,}", q.lower())}
         used = {x.get("scene") for x in s["placed"]}
         mine = []
+        avoid = AV.load(s["st"])
+        ruled_out = AV.bad_pool(avoid, s["pool"], s["files"])
         for i, sc in enumerate(s["pool"]):
             text = str(sc.get("what") or "").lower()
             hit = len(want & set(re.findall(r"[a-z]{3,}", text))) + (2 if q.lower() in text else 0)
-            if i in used or not hit:
+            if i in used or i in ruled_out or not hit:
                 continue
             src = self._shot_source(s, sc)
             if src is None:
@@ -1187,6 +1222,8 @@ class LocalRunner:
                 a, b = float(r.get("start") or 0), float(r.get("end") or 0)
                 if any(x0 < b and x1 > a for x0, x1 in here.get(str(r.get("path")), [])):
                     continue                                                # (already one of this project's shots)
+                if AV.is_avoided(avoid, f"Library - {r.get('rel')}", a, b, r.get("kind") == "photo"):
+                    continue                                                # (ruled out with "Don't use this")
                 photo = r.get("kind") == "photo"
                 lib.append({"choice": f"lib:{r['id']}:{a:.2f}:{b:.2f}", "what": str(r.get("what") or Path(str(r.get("rel") or "")).stem),
                             "photo": photo, "where": "library", "folder": str(Path(str(r.get("rel") or "")).parent),
@@ -1287,6 +1324,45 @@ class LocalRunner:
         s["st"].put("plan.json", {**s["plan"], "pending_note": note})
         live.stage(self.store, s["job"], note + (f": {placed[k]['what'][:80]}" if choice != "speaker" and k < len(placed) else ""))
         self.rerender(pid)
+
+    # -- "Don't use this" on a B-roll shot in the live view (avoid.py) ---------------------------------------------------------------
+    def avoided(self, pid: str) -> list[dict]:
+        return AV.load(State(home_of(self.projects.get(pid))))
+
+    def avoid_shot(self, pid: str, shot: dict, undo: bool = False) -> dict:
+        """Rule a shot out for this video -> {"result": "excluded" | "swapped" | "removed" | "next" | "noted" | "undone", "message"}.
+        The shot is remembered, so the footage search, the B-roll picker and the Replace sheet never offer it again. What happens to it now
+        depends on how far the video has come: before the B-roll is placed it is simply never picked ("excluded"); in a finished video it is
+        swapped for the next best shot, or taken out when nothing fits, and the video renders again; while the render is already past
+        placing B-roll nothing is changed under it - the shot goes out the next time it renders ("next")."""
+        proj = self.projects.get(pid)
+        st = State(home_of(proj))
+        if undo:
+            AV.forget(st, shot)
+            return {"result": "undone", "message": "OK, it can be used again (the next time the B-roll is placed)."}
+        avoid = AV.record(st, shot)
+        if self.running == pid:
+            job = self.store.get(proj["job"])
+            if job.get("status") in ("transcribing", "finding") or (job.get("status") == "rendering" and float(job.get("progress") or 0) < 0.57):
+                return {"result": "excluded", "message": "It won't be used in this video. The editor picks something else."}
+            return {"result": "next", "message": "This video is already placing its B-roll, so it can't change under the render. "
+                                                  "That shot will be left out the next time the video renders."}
+        try:
+            s = self._shot_state(pid)
+        except ValueError:
+            return {"result": "noted", "message": "It won't be used when this video is made."}
+        bad = AV.bad_pool(avoid, s["pool"], s["files"])
+        _, did = AV.swap(s["placed"], s["pool"], bad)
+        if not (did["swapped"] or did["removed"]):
+            return {"result": "noted", "message": "It isn't in the video, and it won't be offered again."}
+        try:
+            self.start(pid, "rerender")
+        except ValueError:
+            return {"result": "next", "message": "Another video is being made right now, so this one isn't rendered again yet. "
+                                                  "The shot is left out the next time it renders."}
+        if did["removed"] and not did["swapped"]:
+            return {"result": "removed", "message": "Taken out of the video (no other shot fitted there). Rendering again."}
+        return {"result": "swapped", "message": "Swapped for the next best shot. Rendering again."}
 
     def _review_state(self, pid: str):
         """(project, state, ai, sentences, plan) of a plan that is waiting for the creator's approval."""
@@ -1852,18 +1928,20 @@ class LocalRunner:
         starts = [w["start"] for w in ref]
         out: list[tuple[float, float]] = []
         bounds: list[tuple[float, float]] = []
+        hand_cuts = TE.cut_spans(plan, ref) if plan.get("te_cuts") else []
         for it in plan["items"]:
             if it["kind"] == "visual":
                 out.append((it["start"], it["end"]))
                 bounds.append((-1e9, 1e9))
             elif it["a"] in by and it["b"] in by:
-                s0, s1 = by[it["a"]].start, by[it["b"]].end
+                s0, s1 = float(it.get("t0", by[it["a"]].start)), float(it.get("t1", by[it["b"]].end))    # (t0/t1: words added by hand, transcript_edit.py)
                 for a, b in repace(words, s0, s1, float(plan.get("gap", 0.75))):
                     lo, hi = word_limits(ref, starts, words, max(a, s0), min(b, s1))    # its own words: inside its sentences only
                     a2, b2 = max(a, lo), min(b, hi)
-                    if b2 - a2 > 0.05:
-                        out.append((a2, b2))
-                        bounds.append((lo, hi))
+                    for a3, b3 in (TE.subtract(a2, b2, hand_cuts) if hand_cuts else [(a2, b2)]):    # (words taken out in the transcript panel)
+                        if b3 - a3 > 0.05:
+                            out.append((a3, b3))
+                            bounds.append(word_limits(ref, starts, words, a3, b3) if hand_cuts and (a3, b3) != (a2, b2) else (lo, hi))   # (a piece beside a hand cut: held clear of the cut words)
         return (out, bounds) if with_bounds else out
 
     def render(self, pid: str, plan: dict, files, words, scenes, ai: LocalAI, engine: LocalEngine, st: State, folder: Path, note: str,
@@ -1978,9 +2056,12 @@ class LocalRunner:
             hashlib.sha1(json.dumps(iv_fp + pool_fp[:n0]).encode()).hexdigest() == rc.get("sig")
         # An ad's B-roll is placed afresh on each render (its rhythm is the point), unless someone swapped a shot by hand: then it stays.
         reuse = (not ad or bool(rc.get("pinned"))) and (rc.get("sig") == rsig or grown) and rc.get("planned") is not None
+        carried = False
         if reuse:
             cutaways = [dict(c) for c in rc["planned"]]
-        if pool and not reuse:
+        elif pool and not ad and rc.get("te_carry"):                        # a transcript edit: the shots whose stretch is still there stay (transcript_edit.py)
+            cutaways, carried = TE.carry_cutaways(rc["te_carry"], intervals), True
+        if pool and not reuse and not carried:
             P("rendering", "Placing B-roll cutaways", 0.58)
             cutaways = BR.plan_cutaways(ai, seg(remap_words(words, intervals, 1.0)), pool,
                                         bbrief, out_len, ad=ad, per_s=per_s)                  # (fast-paced: more often; take it slow: less)
@@ -2056,8 +2137,17 @@ class LocalRunner:
         if nopic:                                                           # (an older saved placement: cover what no camera filmed now)
             cutaways, _ = cover_spans(cutaways, [(out_time(intervals, a), out_time(intervals, b)) for a, b in nopic], pool,
                                       exclude={outro["scene"]} if outro else set())
+        bad = AV.bad_pool(AV.load(st), pool or [], files)                   # shots the person ruled out ("Don't use this"): never kept, even in a saved placement
+        if bad:
+            cutaways, did = AV.swap(cutaways, pool or [], bad, exclude={outro["scene"]} if outro else set())
+            if did["swapped"] or did["removed"]:
+                log.info(f"B-roll ruled out by the editor: {did['swapped']} swapped for another shot, {did['removed']} taken out")
+                NT.note("info", f"{did['swapped']} B-roll shot{'s' if did['swapped'] != 1 else ''} you ruled out swapped for another"
+                        + (f", {did['removed']} taken out (nothing else fitted)" if did["removed"] else ""))
+                if not fresh and rc.get("final") is not None:               # (a saved placement keeps the swap)
+                    st.put("render_cache.json", {**rc, "final": {**rc["final"], "cutaways": cutaways}})
         cutaways = no_flash_gaps(cutaways, pool or [], out_len)             # never a half-second flash of the speaker between two shots
-        if fresh:                                                           # (an ad's too, so a shot can be swapped; it is only reused once pinned)
+        if fresh:                                                          # (an ad's too, so a shot can be swapped; it is only reused once pinned)
             st.put("render_cache.json", {"sig": rsig, "planned": planned, "csig": csig, "final": {"cutaways": cutaways, "cuts": cuts}})
         plan.pop("stock_credits", None)
         if any(f.get("stock") for f in files) or (st.get("stock.json") or {}).get("photos"):
@@ -2635,12 +2725,13 @@ class LocalRunner:
             (notes / "quality.md").unlink(missing_ok=True)                  # (its old name)
             (notes / "Quality check.md").write_text(NT.quality_md(issues, report, f"{title} v{version}"))
             qa_counts = NT.counts(issues)
+            qa_rows = NT.issue_rows(issues)[:60]
             for i in report["issues"]:
                 if i["level"] != "info":
                     log.warning(f"quality check ({title} v{version}): {i['what']}")
         except Exception as e:  # noqa: BLE001 - the check is a bonus, never a reason to fail a render
             log.warning(f"quality check failed: {e}")
-            qa_counts = None
+            qa_counts, qa_rows = None, []
         if plan.get("flow"):
             (notes / "flow.md").write_text("# Your script, checked point by point\n\n" + "\n".join(
                 f"{r['n']}. {r['step']}\n   " + ("TOLD: " + r["text"] if r.get("text") else
@@ -2674,7 +2765,7 @@ class LocalRunner:
                                                                              "\n\n".join(credit_lines)) if x) + "\n")
         except Exception as e:  # noqa: BLE001 - chapters are a bonus, never a reason to fail a render
             log.warning(f"chapters failed: {e}")
-        self.projects.update(pid, notes_info={"chapters": chapters_text, "qa": qa_counts,
+        self.projects.update(pid, notes_info={"chapters": chapters_text, "qa": qa_counts, "issues": qa_rows,
                                               "report": str(notes / "Quality check.md"), "folder": str(notes)})
 
     def _log_note(self, folder: Path) -> list[dict]:

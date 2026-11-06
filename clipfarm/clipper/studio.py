@@ -392,7 +392,7 @@ def overlay(s: dict, root: Path) -> dict:
                        "models": {"script": s["ai"].get("claude_edit") or "sonnet", "default": s["ai"].get("claude_edit") or "sonnet",
                                   "cheap": s["ai"].get("claude_quick") or "haiku"},
                        "efforts": {"script": "medium", "default": "low", "cheap": "low"},
-                       "cheap_tasks": ["broll_pick", "broll_queries", "video_kind", "video_length", "hook_text", "key_points", "music_vibe",
+                       "cheap_tasks": ["broll_pick", "broll_queries", "video_title", "video_kind", "video_length", "hook_text", "key_points", "music_vibe",
                                        "broll_suitable", "clip_title", "style_merge", "broll_describe", "photo_describe", "gfx_place",
                                        "catalog_describe", "stock_queries", "video_chapters"],
                        "fallback": fallback, "fallback_on_limit": fallback},

@@ -71,7 +71,7 @@ def mouth_motion(prev: np.ndarray | None, cur: np.ndarray, box: tuple[float, flo
 
 
 def detect_faces(src: Path, start: float, dur: float, models_dir: Path, rate: float = 2.0,
-                 width: int = 640, mouths: bool = False) -> tuple[list[list[Face]], int]:
+                 width: int = 640, mouths: bool = False, min_w: float = 0.03) -> tuple[list[list[Face]], int]:
     """Returns (faces per sample, number of samples). With mouths=True every face also gets `act` (lip movement) and a
     `track` id, which is what lets the framing follow whoever is TALKING (use rate >= 5 for that)."""
     try:
@@ -104,7 +104,7 @@ def detect_faces(src: Path, start: float, dur: float, models_dir: Path, rate: fl
         row = []
         for f in (faces if faces is not None else []):
             x, y, fw, fh, score = float(f[0]), float(f[1]), float(f[2]), float(f[3]), float(f[-1])
-            if fw / w < 0.03:                     # ignore tiny background faces
+            if fw / w < min_w:                    # ignore tiny background faces (graphics ask for every face: a group of students in a wide shot)
                 continue
             face = Face(k / rate, (x + fw / 2) / w, (y + fh / 2) / h, fw / w, score)
             if mouths:

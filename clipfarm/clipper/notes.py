@@ -202,14 +202,36 @@ def _where(i: dict) -> str:
     return clock(a) if b is None or abs(float(b) - float(a)) < 1 else f"{clock(a)}–{clock(b)}"
 
 
+def issue_rows(issues: list[dict]) -> list[dict]:
+    """The quality check as data for the page (worst first): level Fix / Look / Info, where, what, and what to do."""
+    order = {"Fix": 0, "Look": 1, "Info": 2}
+    rows = sorted(issues, key=lambda i: (order[LEVELS.get(i.get("level"), "Info")], float(i.get("start") or 0)))
+    return [{"level": LEVELS.get(i.get("level"), "Info"), "where": _where(i), "start": i.get("start"),
+             "what": str(i.get("what") or "")[:1].upper() + str(i.get("what") or "")[1:], "do": str(i.get("do") or "")} for i in rows]
+
+
+def rows_from_md(text: str) -> list[dict]:
+    """Quality check.md back into issue_rows() (for a video rendered before the page kept the rows)."""
+    out, cur = [], None
+    for line in str(text or "").splitlines():
+        m = re.match(r"^- \*\*(Fix|Look|Info)\*\* · (.*?) · (.*)$", line)
+        if m:
+            cur = {"level": m.group(1), "where": m.group(2), "start": None, "what": m.group(3), "do": ""}
+            out.append(cur)
+        elif cur is not None and line.strip().startswith("What to do:"):
+            cur["do"] = line.strip()[len("What to do:"):].strip()
+    return out
+
+
 def quality_md(issues: list[dict], stats: dict, title: str = "") -> str:
     order = {"Fix": 0, "Look": 1, "Info": 2}
     rows = sorted(issues, key=lambda i: (order[LEVELS.get(i.get("level"), "Info")], float(i.get("start") or 0)))
     c = counts(issues)
     lines = [f"# Quality check{': ' + title if title else ''}", "", f"**{headline(c)}.**" + (f" ({c['info']} note{'s' if c['info'] != 1 else ''})" if c["info"] else ""), ""]
     for i in rows:
-        lines.append(f"- **{LEVELS.get(i.get('level'), 'Info')}** · {_where(i)} · {i['what'][:1].upper() + i['what'][1:]}"
-                     + (f"\n  What to do: {i['do']}" if i.get("do") else ""))
+        what, do = " ".join(str(i["what"]).split()), " ".join(str(i.get("do") or "").split())
+        lines.append(f"- **{LEVELS.get(i.get('level'), 'Info')}** · {_where(i)} · {what[:1].upper() + what[1:]}"
+                     + (f"\n  What to do: {do}" if do else ""))
     if stats:
         lines += ["", "Length {duration} s · loudness {lufs} LUFS · true peak {peak} dBTP · {cuts} picture changes · longest unchanged picture {longest_hold} s."
                   .format(**{k: stats.get(k, "?") for k in ("duration", "lufs", "peak", "cuts", "longest_hold")})]

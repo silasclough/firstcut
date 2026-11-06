@@ -258,6 +258,9 @@
   .mic.rec svg { animation: none; }
   .mic.busy { color: var(--accent); }
   .mic-t { font-size: 12px; font-variant-numeric: tabular-nums; }
+  .mic-hint { position: fixed; z-index: 70; max-width: min(560px, calc(100vw - 16px)); padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px;
+              background: var(--panel); color: var(--muted); font-size: 13px; pointer-events: none; overflow-wrap: anywhere; }
+  .mic-hint[hidden] { display: none; }
   .mic.mic-in { position: static; flex: none; }
   .notes-row { gap: 10px; flex-wrap: nowrap; align-items: center; min-width: 0; }
   .mic:disabled { opacity: .4; pointer-events: none; }
@@ -302,6 +305,32 @@
   .player .ppick { position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 7px; padding: 5px 9px 5px 7px; border-radius: 8px;
                    background: rgba(0,0,0,.55); color: #fff; font-size: 12px; cursor: pointer; }
   .player .ppick input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+  /* Edit from the transcript (te*): a collapsed row; open, a scrolling box of the words. In the video = green marker AND underline (never colour alone). */
+  .te { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .te-toggle { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text); text-align: left; font: inherit; cursor: pointer; }
+  .te-toggle:hover { background: var(--sel); }
+  .te-toggle b { font-weight: 600; }
+  .te-toggle .grow { flex: 1; min-width: 0; }
+  .te-badge { font-size: 12px; font-weight: 600; color: var(--accent); }
+  .te-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+  .te-box { max-height: 340px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; font-size: 14px; line-height: 1.85; user-select: text; -webkit-user-select: text; cursor: text; outline: none; }
+  .te-box:focus-visible { border-color: var(--accent); }
+  .te-box p { margin: 0 0 12px; }
+  .te-box p:last-child { margin-bottom: 0; }
+  .te-w { padding: 1px 0; border-bottom: 2px solid transparent; border-radius: 2px; }
+  .te-w.f0 { color: var(--muted); }
+  .te-w.f1 { color: var(--text); background: color-mix(in srgb, var(--good) 15%, transparent); border-bottom-color: var(--good); }
+  .te-w.f2 { color: var(--muted); text-decoration: line-through; background: color-mix(in srgb, var(--bad) 15%, transparent); border-bottom-color: var(--bad); }
+  .te-w.f3 { color: var(--text); background: color-mix(in srgb, var(--accent) 18%, transparent); border-bottom: 2px dashed var(--accent); }
+  .te-box ::selection { background: color-mix(in srgb, var(--accent) 38%, transparent); }
+  .te-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .te-bar .grow { flex: 1; min-width: 120px; }
+  .te-staged { padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+  .qa-card { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; margin: 6px 0 2px; }
+  .qa-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .qa-row { display: flex; gap: 10px; align-items: baseline; font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
+  .qa-lv { width: 34px; flex: none; font-weight: 600; font-size: 12px; }
+  .qa-at { width: 84px; flex: none; font-variant-numeric: tabular-nums; color: var(--muted); }
   .player .pframe { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; pointer-events: none; }
   .player .pbar { flex-wrap: wrap; }
   .player .scrub { pointer-events: auto; position: relative; flex: 1; min-width: 120px; height: 38px; cursor: pointer; touch-action: none;
@@ -395,6 +424,20 @@
   .lv-strip img, .lv-grid img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--thumb); display: block; }
   .lv-strip figcaption, .lv-grid figcaption { font-size: 11px; color: var(--muted); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .lv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  /* thumbnails in the live view open a bigger look (and, for B-roll, "Don't use this") */
+  .lv-click { cursor: zoom-in; border-radius: 8px; outline-offset: 3px; }
+  .lv-click:hover img, .lv-click:focus-visible img { box-shadow: 0 0 0 2px var(--accent); }
+  .lv-out img { opacity: .35; filter: grayscale(1); }
+  .lv-out figcaption::before { content: "Won't use · "; color: var(--bad); font-weight: 600; }
+  .lv-big .btn { background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.3); }
+  .lv-big .btn:disabled { opacity: .7; }
+  .lv-big { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.86); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; }
+  .lv-big img { width: min(92vw, 1100px); max-height: 74vh; object-fit: contain; border-radius: 10px; background: #000; display: block; cursor: zoom-out; }
+  .lv-big .lvbar { display: flex; gap: 12px; align-items: center; width: min(92vw, 1100px); color: #fff; font-size: 13px; }
+  .lv-big .note { color: #fff; font-size: 13px; }
+  .player .pavoid { position: absolute; top: 10px; left: 10px; padding: 6px 11px; color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
+  .player .pavoid:disabled { cursor: default; opacity: .85; }
+  .player .pnote { position: absolute; top: 46px; left: 10px; right: 10px; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,.6); color: #fff; font-size: 12px; pointer-events: none; }
   .lv-grid figure { margin: 0; min-width: 0; }
   .lv-grid.tall { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
   .lv-grid.tall img { aspect-ratio: 9 / 16; }
@@ -446,11 +489,11 @@
   #missing:not([hidden]) { margin-top: 56px !important; }                  /* (the warning sits under the top bar, and the page under it) */
   #missing:not([hidden]) ~ .view { padding-top: 8px; }
   /* the shot player's controls: glass pills over the picture */
-  .player .pp, .player .cap, .player .ptime, .player .best, .player .ppick, .player .scrub {
+  .player .pp, .player .cap, .player .ptime, .player .best, .player .ppick, .player .pavoid, .player .scrub {
     background: rgba(24,26,30,.34); -webkit-backdrop-filter: blur(16px) saturate(180%); backdrop-filter: blur(16px) saturate(180%);
     border: 1px solid rgba(255,255,255,.18); box-shadow: inset 0 1px 0 rgba(255,255,255,.18); }
   .player .pp:hover, .player .best:hover { background: rgba(24,26,30,.55); }
-  .player .cap, .player .ptime, .player .best, .player .ppick { border-radius: 999px; }
+  .player .cap, .player .ptime, .player .best, .player .ppick, .player .pavoid { border-radius: 999px; }
   .player .scrub { border-radius: 12px; background: rgba(24,26,30,.5); }        /* (a little darker: the heat curve reads on any picture) */
   /* the top bar: when the buttons don't fit beside the title (a narrow window), they wrap under it and the page moves down (--top-h) */
   .top { flex-wrap: wrap; height: auto; min-height: 58px; row-gap: 8px; }
@@ -1004,7 +1047,7 @@ function route(fromRefresh) {
   if (fromRefresh && page === "find") paintFindStatus();
   if (fromRefresh && page === "music") return paintMusicStatus();
   const typing = document.activeElement && document.activeElement.closest("#view") && document.activeElement.matches("input, textarea, select");
-  if (fromRefresh && (sig === LAST || page === "find" || MIC || ((page === "home" || page === "new") && typing))) return;
+  if (fromRefresh && (sig === LAST || page === "find" || MIC || teHolding() || ((page === "home" || page === "new") && typing))) return;
   LAST = sig;
   if (page === "long" && arg) return paintLong(arg);
   if (page === "short" && arg) return paintShort(arg);
@@ -1432,13 +1475,16 @@ function liveReset(job, kind) {
   LIVE.el.className = "card live"; LIVE.el.id = "live";
   LIVE.el.innerHTML = `<div id="lv-head"></div><div class="lv-now" id="lv-now"><div class="small muted">Getting started…</div></div>
     <ol class="lv-log" id="lv-log" aria-label="Everything it has done"></ol>`;
+  LIVE.avoided = [];                                          // shots ruled out with "Don't use this": [{name, start, end, photo}]
+  LIVE.el.addEventListener("click", liveClick);
+  LIVE.el.addEventListener("keydown", e => { if ((e.key === "Enter" || e.key === " ") && e.target.closest && e.target.closest("[data-lv]")) { e.preventDefault(); liveClick(e); } });
   LIVE.stick = true;                                          // the log follows the newest line until you scroll up in it
   lvq("#lv-log").addEventListener("scroll", e => { const o = e.target; if (document.body.contains(o)) LIVE.stick = o.scrollHeight - o.scrollTop - o.clientHeight < 30; });
 }
 // the page puts <div id="live-slot"></div> where the panel goes; the same panel (with what it has shown so far) is moved back in on every redraw
 function liveMount(job, kind, st) {
   const slot = $("#live-slot"); if (!slot) return;
-  if (LIVE.job !== job || !LIVE.el) liveReset(job, kind);
+  if (LIVE.job !== job || !LIVE.el) { liveReset(job, kind); liveLoadAvoided(); }
   slot.replaceWith(LIVE.el);
   liveHead(st);
   const ol = lvq("#lv-log"), strip = lvq("#lv-strip");                 // (moving the panel back in loses its scroll positions)
@@ -1518,27 +1564,85 @@ function liveWords() {
   box.innerHTML = `<div>${t.slice(0, last).map(esc).join(" ")} <b>${esc(t[last] || "")}</b></div>`;
   const h = lvq("#lv-words-of"); if (h) h.textContent = LIVE.of;
 }
+// ---- thumbnails you can click: any frame bigger (Esc closes); B-roll shots also play, with "Don't use this" (avoid.py on the engine
+//      remembers it for this video: the library search and the B-roll picker leave it out, and a render swaps it or takes it out)
+const lvPid = () => { const h = location.hash.replace(/^#/, "").split("/"); return h[0] === "long" ? h[1] : ""; };
+const lvPhoto = x => !!(x && (x.photo || x.media === "photo"));
+function lvOut(x) {                                           // ruled out already? (the engine matches the same way: same file, an overlapping stretch)
+  if (!x || !x.name) return false;
+  return (LIVE.avoided || []).some(a => a.name === x.name && (lvPhoto(x) || a.photo || Math.min(+x.end || 0, +a.end || 0) - Math.max(+x.start || 0, +a.start || 0) > 0.3));
+}
+function liveLoadAvoided() {
+  const pid = lvPid(); if (!pid || LIVE.kind !== "long") return;
+  api(`/api/app/long/${pid}/avoid`).then(r => { LIVE.avoided = r.shots || []; liveNow(); }).catch(() => {});
+}
+function liveClick(e) {
+  const el = e.target.closest && e.target.closest("[data-lv]"); if (!el || !LIVE.d) return;
+  const what = el.dataset.lv, n = +el.dataset.n, d = LIVE.d;
+  const x = (what === "libshot" ? d.libshots : what === "broll" ? d.broll : what === "sheet" ? d.sheets : d.frames).find(v => v.n === n);
+  if (!x) return;
+  if (what === "frame" || what === "sheet") return liveBig(x, null, what);
+  const L = x.lib || (x.id ? x : null);
+  if (L && L.id && !lvPhoto(x) && x.start != null && x.end != null) return liveShot(x, L, el);   // a library video: play the original
+  liveBig(x, x.name ? x : null, what);                                                                  // a photo, or a shot the catalog doesn't know: the picture
+}
+function liveShot(x, L, tile) {
+  const s = {id: L.id, kind: "video", start: +x.start, end: +x.end, dur: +L.dur || 0, step: +L.step || 0, frames: +L.frames || 0, k: x.k, what: x.what || "", rel: L.rel || x.rel || ""};
+  openPlayer(-1, {s, tile, main: $("#view").getBoundingClientRect(), avoid: x});
+}
+function liveBigClose() { const o = $("#lv-big"); if (o) o.hidden = true; }
+function liveBig(x, avoid, what) {
+  let o = $("#lv-big");
+  if (!o) {
+    o = document.createElement("div"); o.id = "lv-big"; o.className = "lv-big"; o.hidden = true; o.setAttribute("role", "dialog"); o.setAttribute("aria-label", "A bigger look");
+    o.addEventListener("click", e => { if (e.target === o || e.target.tagName === "IMG") liveBigClose(); });
+    document.addEventListener("keydown", e => { if (e.key === "Escape" && !o.hidden) { e.preventDefault(); liveBigClose(); } });
+    document.body.appendChild(o);
+  }
+  const cap = what === "frame" ? `${mmss(x.t || 0)} · ${x.what || x.of}` : what === "sheet" ? `Looking at ${x.of}` : x.what || x.rel || x.of || "";   // (x.t is a frame's second only for a frame)
+  o.innerHTML = `<img alt="" src="${lvImg(x.f)}"><div class="lvbar"><span class="grow">${esc(cap)}</span>
+      ${avoid ? `<button class="btn" id="lv-big-no" ${lvOut(avoid) ? "disabled" : ""}>${lvOut(avoid) ? "Won't be used" : "Don't use this"}</button>` : ""}<button class="btn" id="lv-big-x">Close</button></div>
+    <div class="note" id="lv-big-note" hidden></div>`;
+  o.hidden = false;
+  $("#lv-big-x").onclick = liveBigClose;
+  const no = $("#lv-big-no");
+  if (no) no.onclick = async () => { no.disabled = true; try { await liveAvoid(avoid, $("#lv-big-note")); no.textContent = "Won't be used"; } catch (err) { no.disabled = false; alert(err.message); } };
+  (no || $("#lv-big-x")).focus();
+}
+async function liveAvoid(x, note) {                           // -> what the engine did, in plain words (also written into the log)
+  const pid = lvPid(); if (!pid) throw new Error("Open the video's page first.");
+  const L = x.lib || x;
+  const r = await post(`/api/app/long/${pid}/avoid`, {shot: {name: x.name, start: x.start, end: x.end, photo: lvPhoto(x), what: x.what || "", id: L.id || ""}});
+  (LIVE.avoided = LIVE.avoided || []).push({name: x.name, start: x.start, end: x.end, photo: lvPhoto(x)});
+  if (note) { note.textContent = r.message; note.hidden = false; }
+  liveLog(`Not using “${String(x.what || x.rel || "that shot").slice(0, 70)}”: ${r.message}`, Date.now() / 1000);
+  liveNow();
+  if (r.result === "swapped" || r.result === "removed") setTimeout(refresh, 400);
+  return r;
+}
 function liveNow() {                                          // the latest three things it worked on, newest first
   const d = LIVE.d, now = lvq("#lv-now"); if (!now) return;
   const anim = n => n > LIVE.seen ? "lv-in" : "";
-  const fig = (x, cap) => `<figure class="${anim(x.n)}"><img alt="" loading="lazy" src="${lvImg(x.f)}"><figcaption>${esc(cap)}</figcaption></figure>`;
+  // (a thumbnail is a button: click it for a bigger look; B-roll also gets "Don't use this". liveClick finds the event again by data-n)
+  const fig = (x, cap, what) => `<figure class="${anim(x.n)} lv-click ${what && lvOut(x) ? "lv-out" : ""}" data-lv="${what || "frame"}" data-n="${x.n}" tabindex="0" role="button"
+      aria-label="${what === "frame" || !what ? "Look at this frame bigger" : "Look at this shot"}"><img alt="" loading="lazy" src="${lvImg(x.f)}"><figcaption>${esc(cap)}</figcaption></figure>`;
   const S = {
     source: () => d.source && `<div class="lv-src">${d.source.thumb ? `<img alt="" src="${esc(d.source.thumb)}" onerror="this.remove()">` : ""}<div style="min-width:0">
         <b class="ell" style="display:block;font-size:14px">${esc(d.source.title || "The video")}</b><div class="meta">${esc([d.source.uploader, d.source.duration ? mmss(d.source.duration) : "", d.source.site].filter(Boolean).join(" · "))}</div>
         ${d.dl && d.dl.total ? `<div class="meta" style="margin-top:6px">${(d.dl.got / 1e6).toFixed(1)} of ${(d.dl.total / 1e6).toFixed(0)} MB${d.dl.speed ? ` · ${(d.dl.speed / 1e6).toFixed(1)} MB/s` : ""}${d.dl.eta != null ? ` · ${mmss(d.dl.eta)} left` : ""}</div>` : ""}</div></div>`,
     words: () => d.words && `<h3>Hearing the words <span class="ell" id="lv-words-of">${esc(LIVE.of)}</span><span>${d.words.toLocaleString()} words so far</span></h3><div class="lv-words" id="lv-words"></div>`,
-    frames: () => d.frames.length && `<h3>Frames it is looking at</h3><div class="lv-strip" id="lv-strip">${d.frames.map(x => fig(x, `${mmss(x.t || 0)} · ${x.what || x.of}`)).join("")}</div>`,
+    frames: () => d.frames.length && `<h3>Frames it is looking at</h3><div class="lv-strip" id="lv-strip">${d.frames.map(x => fig(x, `${mmss(x.t || 0)} · ${x.what || x.of}`, "frame")).join("")}</div>`,
     sheets: () => d.sheets.length && (() => { const sh = d.sheets[d.sheets.length - 1], sc = d.scenes.filter(x => x.of === sh.of).slice(-8);
-      return `<h3>Looking at <span class="ell">${esc(sh.of)}</span></h3><div class="lv-sheet"><img class="${anim(sh.n)}" alt="" src="${lvImg(sh.f)}">
+      return `<h3>Looking at <span class="ell">${esc(sh.of)}</span></h3><div class="lv-sheet"><img class="${anim(sh.n)} lv-click" data-lv="sheet" data-n="${sh.n}" tabindex="0" role="button" aria-label="Look at these frames bigger" alt="" src="${lvImg(sh.f)}">
         <div class="lv-list">${sc.length ? sc.map(x => `<div class="lv-item ${anim(x.n)}"><span class="meta">${mmss(x.start)}–${mmss(x.end)}${x.quality ? ` · quality ${x.quality}` : ""}</span><span>${esc(x.what)}</span></div>`).join("") : `<span class="small muted">Describing what is in each shot…</span>`}</div></div>`; })(),
-    libshots: () => d.libshots.length && `<h3>Found in your footage library</h3><div class="lv-grid">${d.libshots.slice(-12).map(x => fig(x, x.what || x.rel)).join("")}</div>`,
+    libshots: () => d.libshots.length && `<h3>Found in your footage library</h3><div class="lv-grid">${d.libshots.slice(-12).map(x => fig(x, x.what || x.rel, "libshot")).join("")}</div>`,
     moments: () => d.moments.length && `<h3>Moments it found <span>${d.moments.length}</span></h3><div class="lv-list">${d.moments.slice().reverse().map(x => {
         const on = d.picked && d.picked.has(x.start + ":" + x.end);
         return `<div class="lv-item ${on ? "picked" : ""} ${anim(x.n)}"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><b class="ell">${esc(x.title)}</b>
           <span class="meta" style="white-space:nowrap">${on ? "Picked · " : ""}${mmss(x.start)}–${mmss(x.end)} · ${Math.round(x.end - x.start)} s · ${x.score}</span></div>
           ${x.quote ? `<span class="q">“${esc(x.quote)}”</span>` : ""}<div class="lv-score"><i style="width:${Math.max(0, Math.min(100, x.score * 10))}%"></i></div></div>`; }).join("")}</div>`,
     lines: () => d.lines.length && `<h3>Lines it keeps <span>${d.lines.length}</span></h3><div class="lv-list">${d.lines.map(x => `<div class="lv-item ${anim(x.n)}"><span class="meta">${mmss(x.start)}–${mmss(x.end)}</span><span>“${esc(x.text)}”</span></div>`).join("")}</div>`,
-    broll: () => d.broll.length && `<h3>B-roll it places over the talking <span>${d.broll.length}</span></h3><div class="lv-grid">${d.broll.map(x => fig(x, `at ${mmss(x.at)} · ${x.length} s · ${x.what || x.of}`)).join("")}</div>`,
+    broll: () => d.broll.length && `<h3>B-roll it places over the talking <span>${d.broll.length}</span></h3><div class="lv-grid">${d.broll.map(x => fig(x, `at ${mmss(x.at)} · ${x.length} s · ${x.what || x.of}`, "broll")).join("")}</div>`,
     clips: () => d.render && `<h3>Making the clips <span>${d.clips.length} of ${d.render.of} done</span></h3>      ${/* (the finished ones are listed under this panel) */ ""}
       <div class="lv-item ${anim(d.render.n)}"><span class="meta">Clip ${d.render.index} of ${d.render.of} · ${mmss(d.render.start)}–${mmss(d.render.end)} of the video</span><b>${esc(d.render.title)}</b></div>`,
   };
@@ -1552,6 +1656,121 @@ function liveNow() {                                          // the latest thre
 }
 
 // ---- a long video
+// ---- Edit from the transcript (transcript_edit.py).
+// 1. North star: "Read your video's words; take out what you don't want, bring back what you do."
+// 2. User: an editor who has just watched (or is waiting for) a long cut; wants to fix a line without describing it in words.
+// 3. Principles: progressive disclosure (a collapsed row under the video, the words only when asked for), speed (select, then one of two
+//    buttons; Delete works), reassure (nothing changes until "Render the changes", and it says what would: "Cut 12 s (3 sentences)").
+// 4. Words in the video: green marker AND underline (not colour alone); will be cut: struck through and red; will be added: dashed blue.
+//    The box scrolls; the page repaints around a selection are held off (teHolding) so a selection is never lost mid-way.
+const TE = {pid: null, open: false, data: null, at: 0, loading: false, sel: null, scroll: 0, busy: false};
+function teHolding() {                                                     // a selection in the words: the page doesn't repaint under it
+  const s = getSelection(), box = $("#te-box");
+  return !!(TE.open && box && s && !s.isCollapsed && s.anchorNode && box.contains(s.anchorNode));
+}
+function teLoad(pid, force) {
+  if (TE.pid !== pid) Object.assign(TE, {pid, open: false, data: null, at: 0, loading: false, sel: null, scroll: 0});
+  const age = Date.now() - TE.at;
+  if (TE.loading || (!force && TE.data && age < (TE.busy ? (TE.open ? 6000 : 20000) : 60000))) return;
+  if (!force && !TE.data && TE.at && age < 8000) return;                   // (a failed fetch is tried again later, not at once)
+  TE.loading = true;
+  api(`/api/app/long/${pid}/transcript`).then(d => { TE.data = d; }, () => {}).finally(() => {
+    TE.loading = false; TE.at = Date.now();
+    if (TE.pid === pid && $("#te-slot")) paintTranscriptEdit(pid);
+  });
+}
+function teSelection() {                                                   // the words the selection touches: [first, last] or null
+  const box = $("#te-box"), s = getSelection();
+  if (!box || !s || s.isCollapsed || !s.rangeCount) return null;
+  const r = s.getRangeAt(0);
+  if (!box.contains(r.commonAncestorContainer)) return null;
+  const up = n => { n = n && (n.nodeType === 3 ? n.parentElement : n); return n && n.closest ? n.closest(".te-w") : null; };
+  const a = up(r.startContainer), b = up(r.endContainer);
+  let i = a ? +a.dataset.i : null, j = b ? +b.dataset.i : null;
+  if (a && r.startContainer.nodeType === 3 && r.startOffset >= r.startContainer.length && b !== a) i += 1;     // (starts at the very end of a word: from the next one)
+  if (b && r.endContainer.nodeType === 3 && r.endOffset === 0 && b !== a) j -= 1;                              // (ends at the very start of a word: not that one)
+  if (i === null || j === null) {                                          // started or ended between words / on a paragraph: whichever words the range touches
+    let lo = Infinity, hi = -1;
+    box.querySelectorAll(".te-w").forEach(sp => { if (r.intersectsNode(sp)) { const k = +sp.dataset.i; lo = Math.min(lo, k); hi = Math.max(hi, k); } });
+    if (hi < 0) return null;
+    if (i === null) i = lo;
+    if (j === null) j = hi;
+  }
+  const n = (TE.data && TE.data.words.length) || 0;
+  i = Math.max(0, Math.min(i, j)); j = Math.min(n - 1, Math.max(i, j));
+  return j >= i ? [i, j] : null;
+}
+function teSelUI() {                                                       // buttons follow the selection (no repaint)
+  const d = TE.data, cut = $("#te-cut"), add = $("#te-add"), info = $("#te-selinfo"); if (!d || !cut) return;
+  const f = d.flags || "", s = TE.sel, can = d.state === "plan";
+  const part = s ? f.slice(s[0], s[1] + 1) : "";
+  cut.disabled = !(can && s && /[13]/.test(part)); add.disabled = !(can && s && /[02]/.test(part));
+  info.textContent = s ? `${s[1] - s[0] + 1} word${s[1] > s[0] ? "s" : ""} selected` : can ? "Select words to cut them, or words that aren't in the video to add them." : "";
+}
+function teRestoreSel() {                                                  // after a repaint that could not be held off
+  const box = $("#te-box"); if (!box || !TE.sel) return;
+  const a = box.querySelector(`.te-w[data-i="${TE.sel[0]}"]`), b = box.querySelector(`.te-w[data-i="${TE.sel[1]}"]`); if (!a || !b) return;
+  const r = document.createRange(); r.setStartBefore(a); r.setEndAfter(b);
+  const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+}
+let teTimer = null;
+document.addEventListener("selectionchange", () => {
+  if (!TE.open) return;
+  clearTimeout(teTimer);
+  teTimer = setTimeout(() => { if ($("#te-box")) { TE.sel = teSelection(); teSelUI(); } }, 90);       // (a click elsewhere clears it)
+});
+function paintTranscriptEdit(pid, busy) {
+  const slot = $("#te-slot"); if (!slot) return;
+  if (busy !== undefined) TE.busy = !!busy;
+  teLoad(pid);
+  const d = TE.data;
+  if (!d || d.state === "none" || !d.words.length) { slot.innerHTML = ""; return; }   // (no words yet: nothing to show while it is still listening)
+  const can = d.state === "plan", st = d.staged || {ops: []}, n = (st.ops || []).length, open = TE.open;
+  const old = $("#te-box"); if (old) TE.scroll = old.scrollTop;
+  const brk = new Set(d.breaks || []), f = d.flags || "";
+  let body = "";
+  if (open) {
+    const parts = ["<p>"];
+    d.words.forEach((w, k) => { if (k && brk.has(k)) parts.push("</p><p>"); parts.push(`<span class="te-w f${f[k] || 0}" data-i="${k}">${esc(w[0])}</span> `); });
+    parts.push("</p>");
+    body = `<div class="te-legend small muted"><span class="te-w f1">In the video</span><span class="te-w f0">Not in it</span>${n ? `<span class="te-w f2">Will be cut</span><span class="te-w f3">Will be added</span>` : ""}</div>
+      <div class="te-box" id="te-box" tabindex="0" role="textbox" aria-readonly="true" aria-label="The words of the video. Select some, then press Delete to cut them.">${parts.join("")}</div>
+      <div class="te-bar"><span class="small muted grow" id="te-selinfo"></span>
+        <button class="btn" id="te-cut" disabled>Cut from the video</button><button class="btn" id="te-add" disabled>Add to the video</button></div>
+      ${n ? `<div class="card te-staged"><b>${esc(st.summary || "")}</b><span class="small muted grow">Nothing changes until you render it.</span>
+          <button class="btn quiet" id="te-undo">Undo</button><button class="btn quiet" id="te-clear">Discard</button>
+          ${st.queued ? `<span class="small" style="font-weight:600">Queued</span>` : `<button class="btn primary" id="te-go">${d.busy ? "Apply when it's finished" : "Render the changes"}</button>`}</div>` : ""}
+      ${st.queued ? `<div class="small muted">Waiting: it renders by itself as soon as this video is finished. <button class="btn quiet" id="te-clear">Discard</button></div>` : ""}
+      ${d.undo && !n && !d.busy ? `<div class="small"><button class="btn quiet" id="te-prev">Undo the last transcript edit</button></div>` : ""}`;
+  }
+  slot.innerHTML = `<section class="te" aria-label="Edit from the transcript"><button class="te-toggle" id="te-toggle" aria-expanded="${open}">
+      <b>Transcript</b><span class="small muted grow">${can ? "Cut or add words" : "The words in the video show once the plan is made"}</span>
+      ${n ? `<span class="te-badge">${n} change${n === 1 ? "" : "s"} waiting</span>` : ""}<span class="muted" aria-hidden="true">${open ? "Hide" : "Show"}</span></button>${body}</section>`;
+  $("#te-toggle").onclick = () => { TE.open = !TE.open; if (TE.open) teLoad(pid, true); paintTranscriptEdit(pid); };
+  if (!open) return;
+  const box = $("#te-box"); box.scrollTop = TE.scroll || 0;
+  box.onscroll = () => { TE.scroll = box.scrollTop; };                       // (remembered as it moves: the whole page may be redrawn around it)
+  const act = async (path, body) => {
+    try {
+      const r = await post(`/api/app/long/${pid}/transcript/${path}`, body);
+      if (r && r.words) TE.data = r; else teLoad(pid, true);
+      if (r && r.queued) toast("Queued: it renders when this video is finished.");
+      if (r && r.started) { toast("Rendering the changes."); refresh(); }
+    } catch (e) { toast(e.message); }
+    TE.sel = null; try { getSelection().removeAllRanges(); } catch (e) { /* none */ }
+    paintTranscriptEdit(pid);
+  };
+  const cut = () => { if (TE.sel) act("cut", {first: TE.sel[0], last: TE.sel[1]}); };
+  ["#te-cut", "#te-add"].forEach(id => $(id).onmousedown = e => e.preventDefault());      // (pressing a button keeps the selection)
+  $("#te-cut").onclick = cut;
+  $("#te-add").onclick = () => { if (TE.sel) act("add", {first: TE.sel[0], last: TE.sel[1]}); };
+  box.onkeydown = e => {
+    if ((e.key === "Delete" || e.key === "Backspace") && TE.sel && can) { e.preventDefault(); cut(); }
+    else if (e.key === "Escape") { getSelection().removeAllRanges(); TE.sel = null; teSelUI(); }
+  };
+  [["#te-undo", "undo-staged"], ["#te-clear", "clear"], ["#te-go", "apply"], ["#te-prev", "undo"]].forEach(([id, path]) => { const el = $(id); if (el) el.onclick = () => { el.disabled = true; act(path, {}); }; });
+  teSelUI(); teRestoreSel();
+}
 function paintLong(pid) {
   const p = PROJECTS.find(x => x.id === pid);
   if (!p) { $("#view").innerHTML = `<div class="page muted">That video isn't here any more.</div>`; return; }
@@ -1560,7 +1779,7 @@ function paintLong(pid) {
   $("#top-left").innerHTML = `<h2 class="ell">${esc(p.title)}</h2><span class="muted small">${kept ? `B-roll added to ${esc(p.options.aroll || "your video")}` : "Long form"}</span>`;
   $("#top-right").innerHTML = st === "done" && c ? `<button class="btn quiet" id="l-song">${p.options && p.options.song ? "Change the song" : "Add a song"}</button><button class="btn quiet" id="l-reveal">Show in Finder</button>${openInButtons("l", true)}` : "";
   let h = `<div class="page">`;
-  if (busy) h += `<div id="live-slot"></div>`;                       // the live view (filled by liveMount below)
+  if (busy) h += `<div id="live-slot"></div><div id="te-slot"></div>`;     // the live view (filled by liveMount below), and the transcript under it
   else if (st === "failed" || st === "cancelled") h += `<div class="card" style="padding:18px"><b>${st === "failed" ? "It didn't finish" : "Stopped"}</b><div class="err small" style="margin-top:6px">${esc(js.error || "")}</div>
       <div class="row" style="margin-top:12px">${p.pending_render ? `<button class="btn primary" id="l-rerender">Render the same edit again</button>` : ""}<button class="btn ${p.pending_render ? "" : "primary"}" id="l-again">Try again</button><button class="btn danger" id="l-delete">Remove from the list</button></div></div>`;
   else if (st === "approval" && p.awaiting_approval) h += `<div class="card" style="padding:18px"><b>The plan is ready for you to check</b><div class="small muted" style="margin-top:4px">It follows your outline step by step; approve it to render.</div><div class="row" style="margin-top:12px"><button class="btn primary" id="l-approve">Approve and render</button></div></div>`;
@@ -1569,10 +1788,12 @@ function paintLong(pid) {
     h += `<video class="lf-video" controls playsinline preload="metadata" src="${base}${c.file}?v=${c.rendered_at}" poster="${base}${c.thumb}?v=${c.rendered_at}"></video>
       <div class="row small muted"><span>${mmss(c.duration)}</span>${c.footage_s ? `<span>· made from ${mmss(c.footage_s)} of footage, ${c.cuts} cuts</span>` : ""}<span class="grow"></span><span class="ell">Saved in ${esc(p.saved_to || p.folder)}</span></div>
       ${(() => { const n = p.notes_info || {}, q = n.qa;                       // Notes: YouTube chapters, and the quality check
-        const qa = q ? (q.fix || q.look ? [q.fix ? `${q.fix} to fix` : "", q.look ? `${q.look} to look at` : ""].filter(Boolean).join(", ") : "Nothing to fix") : "";
+        const qa = q ? (q.fix || q.look ? [q.fix ? `${q.fix} to fix` : "", q.look ? `${q.look} to look at` : ""].filter(Boolean).join(", ") : "No issues found") : "", qaMore = !!(q && (q.fix || q.look));
         return n.chapters || qa ? `<div class="row small notes-row">${n.chapters ? `<span class="muted">Chapters</span><span class="ell muted grow" title="${esc(n.chapters)}">${esc(n.chapters.trim().split("\n").slice(0, 3).join(" · "))}${n.chapters.trim().split("\n").length > 3 ? " …" : ""}</span><button class="btn quiet" id="l-chap">Copy</button>` : `<span class="grow"></span>`}
-          ${qa ? `<span class="${q && q.fix ? "err" : "muted"}" style="white-space:nowrap">Quality check: ${esc(qa)}</span><button class="btn quiet" id="l-qa">Open the report</button>` : ""}</div>` : ""; })()}
+          ${qa ? `<span class="${q && q.fix ? "err" : "muted"}" style="white-space:nowrap">Quality check: ${esc(qa)}</span>${qaMore ? `<button class="btn quiet" id="l-qa" aria-expanded="false">See what it found</button>` : ""}` : ""}</div>
+          <div id="l-qa-box" hidden></div>` : ""; })()}
       <div id="l-shots" class="shots-wrap"></div>
+      <div id="te-slot"></div>
       ${c.edit_note ? `<div class="small ${c.edit_note.ok ? "muted" : "err"}">${esc(c.edit_note.result || c.edit_note.instruction)}</div>` : ""}
       <div class="card ask"><input id="l-change" placeholder="Change something in plain words, e.g. “cut the part about parking” or “make it 90 seconds”" aria-label="Change something" ${c.restyling ? "disabled" : ""}>
         <button class="mic mic-in" id="l-mic" aria-label="Dictate: say what you want" title="Say it instead of typing (the words are worked out on this Mac)"${c.restyling ? " disabled" : ""}><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg><span class="mic-t" hidden></span></button>
@@ -1583,11 +1804,31 @@ function paintLong(pid) {
   } else h += `<div class="card" style="padding:18px"><b>Ready to make</b><div class="row" style="margin-top:12px"><button class="btn primary" id="l-again">Make the video</button></div></div>`;
   $("#view").innerHTML = h + `</div>`;
   if (busy) liveMount(p.job, "long", {status: st, stage: js.stage, detail: js.detail, progress: js.progress, stopId: "l-stop", note: "You can close the window: it keeps going."});
+  paintTranscriptEdit(pid, busy);
   const on = (id, f) => { const el = $(id); if (el) el.onclick = async () => { el.disabled = true; try { await f(); } catch (e) { alert(e.message); } el.disabled = false; refresh(); }; };
   on("#l-stop", () => post(`/api/ai/projects/${pid}/cancel`));
   on("#l-rerender", () => post(`/api/ai/projects/${pid}/rerender`));
   if ($("#l-chap")) $("#l-chap").onclick = async () => { try { await navigator.clipboard.writeText((p.notes_info || {}).chapters || ""); toast("Chapters copied: paste them into the YouTube description."); } catch (e) { alert(e.message); } };
-  if ($("#l-qa")) $("#l-qa").onclick = () => openPath((p.notes_info || {}).report);
+  if ($("#l-qa")) $("#l-qa").onclick = async () => {                        // the report, in the app: what it found, and one button to send it back through the editor
+    const box = $("#l-qa-box"), open = box.hidden;
+    box.hidden = !open; $("#l-qa").setAttribute("aria-expanded", String(open)); $("#l-qa").textContent = open ? "Hide" : "See what it found";
+    if (!open) return;
+    let all = (p.notes_info || {}).issues;
+    if (!all) { try { all = (await api(`/api/app/long/${pid}/quality`)).issues || []; } catch (e) { all = []; } }       // (a video made before the rows were kept: read from its report)
+    const rows = all.filter(r => r.level !== "Info"), info = all.filter(r => r.level === "Info");
+    const row = r => `<li class="qa-row"><span class="qa-lv ${r.level === "Fix" ? "err" : "muted"}">${r.level}</span><span class="qa-at">${esc(r.where)}</span><span class="grow">${esc(r.what)}${r.do ? `<span class="small muted" style="display:block">${esc(r.do)}</span>` : ""}</span></li>`;
+    box.innerHTML = `<div class="card qa-card">${rows.length ? `<ul class="qa-list">${rows.map(row).join("")}</ul>` : `<div class="muted">Nothing needs fixing or a second look.</div>`}
+      ${info.length ? `<details><summary class="small muted">${info.length} note${info.length === 1 ? "" : "s"}</summary><ul class="qa-list">${info.map(row).join("")}</ul></details>` : ""}
+      <div class="row">${rows.length ? `<button class="btn primary" id="l-qa-fix">Fix these and re-render</button>` : ""}<span class="grow"></span>
+        <button class="btn quiet" id="l-qa-file" title="The same report as a text file in the project's Notes folder">Show the file in Finder</button></div></div>`;
+    if ($("#l-qa-fix")) $("#l-qa-fix").onclick = async e => {
+      e.target.disabled = true;
+      const todo = rows.map(r => `${r.where}: ${r.what}${r.do ? ` (${r.do})` : ""}`).join("\n");
+      try { await post(`/api/ai/projects/${pid}/revise`, {instruction: "Fix these problems the quality check found in the finished video:\n" + todo}); toast("Working on it: a second pass over those spots."); } catch (err) { alert(err.message); e.target.disabled = false; }
+      refresh();
+    };
+    $("#l-qa-file").onclick = () => reveal((p.notes_info || {}).report);
+  };
   on("#l-again", () => post(`/api/ai/projects/${pid}/make`, {notes: p.notes, ...(p.options || {}), fcp: true}));
   on("#l-approve", () => post(`/api/ai/projects/${pid}/approve-plan`));
   on("#l-delete", async () => { if (confirm("Remove this video from the list? Its folder and your footage are kept.")) { await api(`/api/ai/projects/${pid}`, {method: "DELETE"}); location.hash = "#home"; } });
@@ -2087,18 +2328,19 @@ function shotMenu(e, s) {
 const PP_PAUSE = `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h3v11H4zM9 2.5h3v11H9z" fill="currentColor"/></svg>`;
 const PP_PLAY = `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10l8.5-5z" fill="currentColor"/></svg>`;
 let PLAYER = null;                                                        // {i}: the shot that is open
-function openPlayer(i) {
-  const s = FIND.shots[i], tile = document.querySelector(`#shots .shot[data-i="${i}"] .t`);
+function openPlayer(i, ext) {                                              // (ext: a shot opened from the live view of a video being made: {s, tile, main, avoid})
+  const s = ext ? ext.s : FIND.shots[i], tile = ext ? ext.tile : document.querySelector(`#shots .shot[data-i="${i}"] .t`);
   if (!s || !tile) return;
   if (PLAYER) closePlayer(true);
-  const from = tile.getBoundingClientRect(), main = $(".find-main").getBoundingClientRect();
+  const from = tile.getBoundingClientRect(), main = ext ? ext.main : $(".find-main").getBoundingClientRect();
   const img = tile.querySelector("img"), ar = img && img.naturalWidth ? img.naturalWidth / img.naturalHeight : 16 / 9;
   let w = Math.min(main.width * 0.64, innerHeight * 0.66 * ar), h = w / ar;                // about half the window
   const to = {left: main.left + (main.width - w) / 2, top: Math.max(56, (innerHeight - h) / 2), width: w, height: h};
-  const video = s.kind === "video", picked = FIND.basket.has(keyOf(s));
+  const video = s.kind === "video", picked = !ext && FIND.basket.has(keyOf(s));
   const p = $("#player"), sc = $("#pscrim");
-  p.innerHTML = (video ? `<video src="/api/library/preview/${s.id}?s=${s.start}&e=${s.end}" autoplay playsinline></video>` : `<img class="full" alt="" src="/api/library/thumb/${s.id}/0">`)
-    + (video ? `<label class="ppick"><input type="checkbox" ${picked ? "checked" : ""} aria-label="Pick this shot">${picked ? "Picked" : "Pick"}</label>` : "")
+  p.innerHTML = (video ? `<video src="/api/library/media/${s.id}#t=${s.start}" poster="/api/library/thumb/${s.id}/0" autoplay playsinline></video>` : `<img class="full" alt="" src="/api/library/thumb/${s.id}/0">`)
+    + (ext ? `<button class="pavoid" id="pavoid" ${lvOut(ext.avoid) ? "disabled" : ""}>${lvOut(ext.avoid) ? "Won't be used" : "Don't use this"}</button><div class="pnote" id="pnote" hidden></div>`
+       : video ? `<label class="ppick"><input type="checkbox" ${picked ? "checked" : ""} aria-label="Pick this shot">${picked ? "Picked" : "Pick"}</label>` : "")
     + (video ? `<img class="pframe" alt="" hidden>` : "")
     + `<div class="pbar"><span class="capwrap"><span class="cap ell" id="pcap">${video ? `${mmss(s.start)}–${mmss(s.end)} · ` : ""}${esc(s.what || s.rel.split("/").pop())}</span></span>
        ${video ? `<button class="pp" aria-label="Pause">${PP_PAUSE}</button>
@@ -2108,11 +2350,16 @@ function openPlayer(i) {
   p.classList.remove("anim");
   p.style.transform = `translate(${from.left - to.left}px, ${from.top - to.top}px) scale(${from.width / to.width}, ${from.height / to.height})`;
   p.hidden = false; sc.hidden = false;
-  PLAYER = {i, moment: s};
+  PLAYER = ext ? {i, tile, moment: s, live: ext} : {i, moment: s};
   requestAnimationFrame(() => requestAnimationFrame(() => { p.classList.add("anim"); p.style.transform = "none"; sc.classList.add("on"); }));
   const v = p.querySelector("video"), pp = p.querySelector(".pp");
   const sync = () => { if (pp) { pp.innerHTML = v.paused ? PP_PLAY : PP_PAUSE; pp.setAttribute("aria-label", v.paused ? "Play" : "Pause"); } };
   if (v) bindScrub(p, s, v);
+  const no = p.querySelector("#pavoid");
+  if (no) no.onclick = async e => {                                        // "Don't use this" (a shot from the live view): the engine says what it did
+    e.stopPropagation(); no.disabled = true;
+    try { await liveAvoid(ext.avoid, p.querySelector("#pnote")); no.textContent = "Won't be used"; } catch (err) { no.disabled = false; alert(err.message); }
+  };
   if (v) {
     v.onplay = sync; v.onpause = sync; v.onended = sync;
     v.onclick = () => closePlayer();                                       // click the picture: pause and shrink back
@@ -2132,7 +2379,41 @@ function bindScrub(p, s, v) {
   const bar = p.querySelector(".scrub"), head = bar.querySelector(".head"), tip = bar.querySelector(".tip"), band = bar.querySelector(".shotband");
   const frame = p.querySelector(".pframe"), time = p.querySelector("#ptime"), cap = p.querySelector("#pcap"), pick = p.querySelector(".ppick input");
   const dur = +s.dur || 0, step = +s.step || 2, nFrames = +s.frames || 0, len = Math.max(2, (s.end - s.start) || 4);
-  let seg = [s.start, s.end], dragging = false;
+  // The original plays as it is, the way Quick Look plays it (macOS decodes camera files: 4K 10-bit 4:2:2 and all). Only a file the
+  // page can't show (no picture, or an error: MXF, AVCHD...) falls back to a small copy made on the spot.
+  let direct = true, free = false, seg = [0, dur || s.end], dragging = false;
+  const fallbackAt = t => {                                               // (from the moment it was at when it struggled)
+    if (!direct) return;
+    direct = false; free = true; seg = [Math.max(0, t - 1), Math.min(dur || t + 30, t + 30)];
+    time.textContent = "Smoother copy loading…";
+    v.src = `/api/library/preview/${s.id}?s=${seg[0].toFixed(2)}&e=${seg[1].toFixed(2)}`;
+    v.oncanplay = () => { v.oncanplay = null; if (v.isConnected) { frame.hidden = true; v.play().catch(() => {}); } };
+    v.addEventListener("error", () => { time.textContent = "Couldn't play this one"; }, {once: true});
+  };
+  const fallback = () => {
+    if (!direct) return;
+    direct = false; seg = [s.start, s.end];
+    time.textContent = "Preparing a playable copy…";
+    v.src = `/api/library/preview/${s.id}?s=${s.start}&e=${s.end}`;
+    v.addEventListener("error", () => { time.textContent = "Couldn't play this one"; toast("That shot couldn't be played. Is the drive still plugged in?"); }, {once: true});
+  };
+  v.addEventListener("error", fallback, {once: true});
+  let watch = 0;                                                           // (a heavy original on a busy Mac drops frames: watch the first seconds, then use the small copy from where it is)
+  v.addEventListener("playing", () => {
+    if (!direct || watch || !v.getVideoPlaybackQuality) return;
+    let n = 0;
+    watch = setInterval(() => {
+      const q = v.getVideoPlaybackQuality(), bad = q.totalVideoFrames > 30 && q.droppedVideoFrames / q.totalVideoFrames > 0.2;
+      if (!v.isConnected || !direct || ++n > 6) { clearInterval(watch); return; }
+      if (bad) { clearInterval(watch); const t = seg[0] + v.currentTime; fallbackAt(t); }
+    }, 1000);
+  });
+  v.addEventListener("loadedmetadata", () => {
+    if (!direct) return;
+    if (!v.videoWidth) return fallback();                                  // (sound but no picture: this page can't decode the video)
+    if (Math.abs(v.currentTime - s.start) > 1) v.currentTime = s.start;
+  });
+  time.textContent = "Loading…";
   const pct = t => (dur ? Math.max(0, Math.min(1, t / dur)) * 100 : 0) + "%";
   band.style.left = pct(s.start); band.style.width = `calc(${pct(s.end)} - ${pct(s.start)})`;
   const stills = [];                                                      // the file's stills, fetched once: scrubbing shows them instantly
@@ -2151,28 +2432,35 @@ function bindScrub(p, s, v) {
   };
   const playFrom = t => {                                                  // inside the copy we have: jump; else a new copy from there
     setMoment(t);
+    free = true;
     if (t >= seg[0] && t < seg[1] - 0.3) { v.currentTime = t - seg[0]; frame.hidden = true; v.play().catch(() => {}); return; }
     seg = [t, Math.min(dur, t + 30)];
     time.textContent = "Loading…";
     v.src = `/api/library/preview/${s.id}?s=${seg[0].toFixed(2)}&e=${seg[1].toFixed(2)}`;
-    v.oncanplay = () => { v.oncanplay = null; frame.hidden = true; v.play().catch(() => {}); };
+    v.oncanplay = () => { v.oncanplay = null; if (!v.isConnected) return; frame.hidden = true; v.play().catch(() => {}); };
   };
-  v.addEventListener("timeupdate", () => { if (!dragging) paintHead(seg[0] + v.currentTime); });
-  api(`/api/library/heat/${s.id}?q=${encodeURIComponent(FIND.q || "")}`).then(h => {          // like YouTube's "most replayed"
+  v.addEventListener("timeupdate", () => {
+    if (direct && !free && v.currentTime >= s.end) v.currentTime = s.start;      // (the shot, again, until you scrub)
+    if (!dragging) paintHead(seg[0] + v.currentTime);
+  });
+  const loadHeat = (tries) => api(`/api/library/heat/${s.id}?q=${encodeURIComponent(FIND.q || "")}`).then(h => {          // like YouTube's "most replayed"
+    if (h.motion === "pending" && tries < 8 && bar.isConnected) setTimeout(() => loadHeat(tries + 1), 6000);     // (an older file's camera movement is being worked out)
     if (!h.heat || h.heat.length < 2 || !dur || !bar.isConnected) return;
+    bar.querySelectorAll(".heatdot").forEach(x => x.remove());
     const svg = bar.querySelector(".heat"), W = 1000, H = 20, hs = h.step || step;
     const pts = h.heat.map((y, k) => [Math.min(W, (k * hs + hs / 2) / dur * W), H - 1 - y * (H - 3)]);
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("preserveAspectRatio", "none");
     const line = pts.map((q, k) => (k ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ");
     svg.innerHTML = `<path d="M0 ${H} L0 ${pts[0][1].toFixed(1)} ${line.slice(1)} L${W} ${pts[pts.length - 1][1].toFixed(1)} L${W} ${H} Z"/>`;
-    const tPeak = Math.min(dur - 0.5, h.peak * hs);
-    const dot = document.createElement("span");                            // (a dot in HTML: an SVG circle would stretch with the bar)
+    const tPeak = Math.max(0, Math.min(dur - 0.5, h.peak_t != null ? h.peak_t : h.peak * hs));      // (peak_t: the second the camera's smooth move starts)
+    const dot = document.createElement("span"); dot.className = "heatdot";                            // (a dot in HTML: an SVG circle would stretch with the bar)
     dot.style.cssText = `position:absolute;top:${(pts[h.peak][1] / H * 20 + 2 - 4).toFixed(1)}px;left:${pct(tPeak)};width:8px;height:8px;margin-left:-4px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 1.5px #fff;pointer-events:none`;
     bar.appendChild(dot);
     const best = p.querySelector("#pbest");
     best.hidden = false; best.textContent = `Best part ${mmss(tPeak)}`;
     best.onclick = e => { e.stopPropagation(); paintHead(tPeak); showStill(tPeak); playFrom(Math.max(0, tPeak - 1)); };
   }).catch(() => {});
+  loadHeat(0);
   paintHead(s.start);
   bar.onpointerdown = e => { e.stopPropagation(); dragging = true; bar.setPointerCapture(e.pointerId); v.pause(); const t = at(e); paintHead(t); showStill(t); };
   bar.onpointermove = e => {
@@ -2367,11 +2655,48 @@ function bindStockScrub(p, v) {                                            // ov
 }
 // ---- dictation: the microphone button records, Parakeet (on this Mac) writes it down into the box. Click again to stop, Escape cancels.
 let MIC = null;
+// Live words: while the recording runs the engine sends back what it has heard so far ("stable" words go into the box for good, the
+// "tail" is shown muted in a small note over the box). It is only a preview: when the person stops, the ordinary whole-recording pass
+// replaces it, and if the engine can't do live words (no model yet, an error, too long) nothing breaks, the final text still arrives.
+function micLive(box, onText) {
+  const base = box.value, hint = document.createElement("div");
+  hint.className = "mic-hint"; hint.setAttribute("aria-live", "off"); hint.textContent = "Listening…"; document.body.appendChild(hint);
+  let id = null, dead = false, shown = base, q = Promise.resolve();
+  const ready = api("/api/app/dictate/live/start", {method: "POST"}).then(r => { id = r.id; }).catch(() => { dead = true; });
+  const place = () => { const r = box.getBoundingClientRect(); hint.style.left = Math.max(8, r.left) + "px"; hint.style.top = Math.max(8, r.top - hint.offsetHeight - 6) + "px"; };
+  const off = () => { dead = true; hint.remove(); removeEventListener("scroll", place, true); removeEventListener("resize", place); };
+  addEventListener("scroll", place, true); addEventListener("resize", place);          // (the page may scroll while it listens: the note stays over the box)
+  place();
+  const paint = (stable, tail) => {
+    if (dead) return;
+    if (box.value !== shown) return off();                               // the person typed in the box: their text is theirs
+    const head = base.replace(/\s+$/, ""), t = stable ? (head ? head + " " : "") + stable : base;
+    if (t !== shown) { box.value = shown = t; onText(t); }
+    hint.textContent = tail || (stable ? "" : "Listening…"); hint.hidden = !hint.textContent; place();
+  };
+  return {
+    push(blob) {                                                       // pieces go one after the other, so they arrive in order
+      q = q.then(() => ready).then(async () => {
+        if (dead || !id) return;
+        try {
+          const r = await api(`/api/app/dictate/live/${id}`, {method: "POST", headers: {"Content-Type": blob.type || "application/octet-stream"}, body: blob});
+          if (r.capped) off(); else paint(r.stable, r.tail);
+        } catch (e) { off(); }
+      });
+    },
+    stop() { const was = id; off(); if (was) api(`/api/app/dictate/live/${was}/end`, {method: "POST"}).catch(() => {}); },
+    revert() { if (box.value === shown && shown !== base) { box.value = base; onText(base); } },
+    finish(text) {                                                     // the final words replace the preview
+      const cur = (box.value === shown ? base : box.value).trim();
+      box.value = (cur ? cur + (/[.!?]$/.test(cur) ? " " : ". ") : "") + text; onText(box.value); box.focus();
+    },
+  };
+}
 function bindMic(btn, box, onText) {
   if (!btn) return;
   if (!(navigator.mediaDevices && window.MediaRecorder)) { btn.hidden = true; return; }
   const label = btn.querySelector(".mic-t");
-  const done = () => { if (MIC) { clearInterval(MIC.tick); MIC.stream.getTracks().forEach(t => t.stop()); } MIC = null; btn.classList.remove("rec"); label.hidden = true; };
+  const done = () => { if (MIC) { clearInterval(MIC.tick); MIC.stream.getTracks().forEach(t => t.stop()); if (MIC.live) MIC.live.stop(); } MIC = null; btn.classList.remove("rec"); label.hidden = true; };
   btn.onclick = async () => {
     if (MIC && MIC.btn === btn) { MIC.rec.stop(); return; }                // second click: stop and write it down
     if (MIC) return;
@@ -2379,22 +2704,23 @@ function bindMic(btn, box, onText) {
       const stream = await navigator.mediaDevices.getUserMedia({audio: true});
       const type = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "";
       const rec = new MediaRecorder(stream, type ? {mimeType: type} : {}), chunks = [], t0 = Date.now();
-      MIC = {btn, rec, stream, cancelled: false, tick: setInterval(() => { label.textContent = mmss((Date.now() - t0) / 1000); }, 250)};
+      const live = micLive(box, onText);
+      MIC = {btn, rec, stream, live, cancelled: false, tick: setInterval(() => { label.textContent = mmss((Date.now() - t0) / 1000); }, 250)};
       btn.classList.add("rec"); label.hidden = false; label.textContent = "0:00"; btn.setAttribute("aria-label", "Stop and write it down");
-      rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+      rec.ondataavailable = e => { if (e.data.size) { chunks.push(e.data); live.push(e.data); } };
       rec.onstop = async () => {
         const cancelled = MIC && MIC.cancelled; done(); btn.setAttribute("aria-label", "Dictate: say what you want");
-        if (cancelled || !chunks.length) return;
+        if (cancelled || !chunks.length) { live.revert(); return; }
         btn.classList.add("busy"); label.hidden = false; label.textContent = "Writing…";
         try {
           const blob = new Blob(chunks, {type: rec.mimeType || type || "audio/webm"});
           const r = await api("/api/app/dictate", {method: "POST", headers: {"Content-Type": blob.type}, body: blob});
-          if (r.text) { const cur = box.value.trim(); box.value = (cur ? cur + (/[.!?]$/.test(cur) ? " " : ". ") : "") + r.text; onText(box.value); box.focus(); }
-          else toast("Didn't catch any words. Try again a little closer to the microphone.");
-        } catch (e) { toast(e.message); }
+          if (r.text) live.finish(r.text);
+          else { live.revert(); toast("Didn't catch any words. Try again a little closer to the microphone."); }
+        } catch (e) { live.revert(); toast(e.message); }
         btn.classList.remove("busy"); label.hidden = true;
       };
-      rec.start();
+      rec.start(1000);                                                     // a piece every second: the live words come from these
     } catch (e) { done(); toast(/denied|not allowed|permission/i.test(e.message) ? "FirstCut isn't allowed to use the microphone: System Settings › Privacy & Security › Microphone." : e.message); }
   };
 }
@@ -2744,8 +3070,9 @@ async function songForProject(kind, id, song) {                          // a fi
 function closePlayer(instant) {
   const p = $("#player"), sc = $("#pscrim");
   if (!PLAYER || p.hidden) return;
-  const v = p.querySelector("video"); if (v) v.pause();
-  const tile = document.querySelector(PLAYER.si !== undefined ? `.shot[data-si="${PLAYER.si}"] .t` : `#shots .shot[data-i="${PLAYER.i}"] .t`);
+  const v = p.querySelector("video");
+  if (v) { v.pause(); v.oncanplay = null; v.removeAttribute("src"); v.load(); }          // (also stops a copy still being prepared: it must not start playing later, unseen)
+  const tile = PLAYER.live ? (PLAYER.tile.isConnected ? PLAYER.tile : null) : document.querySelector(PLAYER.si !== undefined ? `.shot[data-si="${PLAYER.si}"] .t` : `#shots .shot[data-i="${PLAYER.i}"] .t`);
   PLAYER = null;
   sc.classList.remove("on");
   const done = () => { p.hidden = true; sc.hidden = true; p.innerHTML = ""; p.classList.remove("anim"); };

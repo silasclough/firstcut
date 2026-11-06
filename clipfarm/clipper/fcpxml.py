@@ -67,31 +67,50 @@ def file_url(path: Path | str) -> str:
     return "file://" + quote(str(Path(path).resolve() if not str(path).startswith("/") else path))
 
 
-def graphic_position(text: str, kind: str, seq_w: int, seq_h: int) -> tuple[tuple[float, float], float]:
-    """Where the finished video shows a graphic (graphics._layout: a lower third, bottom left, above the captions), as a Final Cut title
-    Position (pixels from the centre, y up) and font size, so the project looks like the video. The end card is centred."""
-    from .graphics import _layout
-    L = _layout(seq_w, seq_h)
+def graphic_title(text: str, kind: str, seq_w: int, seq_h: int, rect=None, theme: str | None = None) -> dict:
+    """Where the finished video shows a graphic, as a Final Cut Basic Title: {"pos": (x, y) pixels from the centre with y up, "size", "lines",
+    "text" (the wrapped lines, joined by newlines), "color", "bg"}.
+    The hook and the key points are the app's lower third (gfxcards.scene_lower): a frosted panel bottom left with the words wrapped to about half the
+    frame. A Basic Title has no panel and does not wrap by itself, so the words are wrapped HERE with the renderer's own measurements and the title is
+    centred on the middle of that text block: `rect` is the panel the renderer really drew (x, y, w, h in pixels of the frame, from its glass
+    rectangle; the default is the bottom-left spot); the text starts 38 design units inside it and 22 below its top, as the renderer lays it out.
+    The end card is centred."""
+    from . import gfxcards as G
+    look = G.Look(theme, seq_w, seq_h)
     if kind == "end":
-        return (0.0, 0.0), L["size"] * 1.4
-    size = L["size"] * (1.0 if kind == "hook" else 0.82)
-    width = min(L["max_w"], len(str(text)) * size * 0.56 + 2.6 * L["pad"])
-    return (-seq_w / 2 + L["left"] + width / 2, -seq_h / 2 + L["bottom"] + size * 0.75), size
+        L = {"size": int(min(seq_w, seq_h) * 0.056)}
+        return {"pos": (0.0, 0.0), "size": L["size"] * 1.4, "lines": [str(text)], "text": str(text), "color": "1 1 1 1", "bg": "0.05 0.06 0.09 0.82"}
+    mt = G.lower_metrics(look, {"text": text}, "hook" if kind == "hook" else "point")
+    size, lines, text_w, line_h = mt["size"], mt["lines"], mt["text_w"], mt["line_h"]
+    text_h = line_h * len(lines)
+    layer_h = text_h + 2 * 2 + 6 + int(size * 0.3)                       # (the renderer's text layer: shadow and room for the tails of g, y, p)
+    px, py, _pw, _ph = rect if rect else G.lower_panel_at(look, text_w, layer_h)
+    cx = px + look.px(38) + text_w / 2
+    cy = py + look.px(22) + text_h / 2
+    fg = "{:.3f} {:.3f} {:.3f} 1".format(*(c / 255 for c in look.fg))
+    bg = "0.055 0.063 0.086 0.78" if not look.light else "1 1 1 0.85"
+    return {"pos": (cx - seq_w / 2, seq_h / 2 - cy), "size": size, "lines": lines, "text": "\n".join(lines), "color": fg, "bg": bg}
 
 
-def _title_lines(clk, ref: str, lane: int, offset_s: str, dur_s: str, text: str, kind: str, seq_w: int, seq_h: int, style: "CaptionStyle", ts: int) -> list[str]:
-    """One editable Basic Title in Final Cut for a graphic of the finished video (hook card, key point, end card), where the video has it."""
-    pos, size = graphic_position(text, kind, seq_w, seq_h)
-    if kind == "hook":
-        color, bg, name = "0.07 0.07 0.07 1", ' backgroundColor="1 1 1 1"', "Hook title"
-    elif kind == "end":
-        color, bg, name = "1 1 1 1", ' backgroundColor="0.05 0.06 0.09 0.82"', "End card"
-    else:
-        color, bg, name = "1 1 1 1", ' backgroundColor="0.055 0.063 0.086 0.9"', "Key point"
-    return [f'              <title ref="{ref}" lane="{lane}" offset="{offset_s}" name="{name}" duration="{dur_s}">',
-            f'                <param name="Position" key="{TITLE_POSITION_KEY}" value="{_fmt(pos[0])} {_fmt(pos[1])}"/>',
-            f'                <text><text-style ref="ts{ts}">{escape(text)}</text-style></text>',
-            f'                <text-style-def id="ts{ts}"><text-style font="Arial Black" fontSize="{_fmt(size)}" fontColor="{color}"{bg} bold="1" alignment="center"/></text-style-def>',
+def graphic_position(text: str, kind: str, seq_w: int, seq_h: int) -> tuple[tuple[float, float], float]:
+    """(Position, font size) of a graphic's Final Cut title: see graphic_title."""
+    g = graphic_title(text, kind, seq_w, seq_h)
+    return g["pos"], g["size"]
+
+
+def _title_lines(clk, ref: str, lane: int, offset_s: str, dur_s: str, text: str, kind: str, seq_w: int, seq_h: int, style: "CaptionStyle", ts: int,
+                 rect=None, theme: str | None = None, off: bool = False) -> list[str]:
+    """One editable Basic Title in Final Cut for a graphic of the finished video (hook card, key point, end card), where the video has it.
+    `off`: the graphic is also a rendered clip (the exact look of the app) laid over the picture, so this editable copy is switched off (enabled="0"):
+    turn it on in Final Cut, and turn the clip off, to change the words."""
+    g = graphic_title(text, kind, seq_w, seq_h, rect, theme)
+    name = {"hook": "Hook title", "end": "End card"}.get(kind, "Key point") + (" (editable copy, switched off)" if off else "")
+    enabled = ' enabled="0"' if off else ""
+    return [f'              <title ref="{ref}" lane="{lane}" offset="{offset_s}" name="{escape(name)}" duration="{dur_s}"{enabled}>',
+            f'                <param name="Position" key="{TITLE_POSITION_KEY}" value="{_fmt(g["pos"][0])} {_fmt(g["pos"][1])}"/>',
+            f'                <text><text-style ref="ts{ts}">{escape(g["text"])}</text-style></text>',
+            f'                <text-style-def id="ts{ts}"><text-style font="Helvetica Neue" fontFace="Bold" fontSize="{_fmt(g["size"])}" fontColor="{g["color"]}" '
+            f'backgroundColor="{g["bg"]}" bold="1" alignment="center"/></text-style-def>',
             "              </title>"]
 
 
@@ -335,7 +354,7 @@ def build(name: str, source: Media, segments: list[tuple[float, float]], seq_w: 
             if seg_a <= t_f < seg_b:
                 ts += 1
                 out.extend(_title_lines(clk, "r5", hook_lane + (0 if t["kind"] == "hook" else 1), clk.at(start_f + (t_f - seg_a)),
-                                        clk.t(t["len"]), t["text"], t["kind"], seq_w, seq_h, style, ts))
+                                        clk.t(t["len"]), t["text"], t["kind"], seq_w, seq_h, style, ts, t.get("rect"), t.get("theme"), bool(t.get("off"))))
         for (c0, c1, text) in captions:               # captions that START inside this clip ride on it
             c0f, c1f = clk.frames(c0), clk.frames(c1)
             if not (seg_a <= c0f < seg_b):
@@ -654,7 +673,7 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
             if off_f <= t_f < off_f + d_f:
                 ts += 1
                 out.extend(_title_lines(clk, "rt", hook_lane + (0 if t["kind"] == "hook" else 1), clk.at(start_inner + (t_f - off_f)),
-                                        clk.t(t["len"]), t["text"], t["kind"], seq_w, seq_h, style, ts))
+                                        clk.t(t["len"]), t["text"], t["kind"], seq_w, seq_h, style, ts, t.get("rect"), t.get("theme"), bool(t.get("off"))))
         for (c0, c1, text) in captions:
             c0f, c1f = clk.frames(c0), clk.frames(c1)
             if not (off_f <= c0f < off_f + d_f):

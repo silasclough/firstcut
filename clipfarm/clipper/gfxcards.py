@@ -311,6 +311,7 @@ class Scene:
         self.look, self.seconds = look, seconds
         self.layers: list[dict] = []
         self.glass: list[dict] = []
+        self.panel: tuple | None = None                    # a lower third: its panel (x, y, w, h), whatever the look (flat looks have no glass rectangle)
         self.custom = False                                # a full-screen card does its own transition in and out (frame_at then leaves its frames as drawn)
         self.draw_fns: list = []                          # per-frame drawing (charts, counters): fn(t) -> Image | None placed at (x, y)
 
@@ -332,16 +333,35 @@ def _fit_size(base: int, text: str, f_weight: str, max_w: int, max_lines: int, m
     return min_size
 
 
-def scene_lower(look: Look, spec: dict, seconds: float, kind: str = "lower", wf: float = 1.0) -> Scene | None:
-    """Bottom-left: a name + role, the title card (the hook) or a key point."""
-    sc = Scene(look, seconds)
+def lower_metrics(look: Look, spec: dict, kind: str = "lower", wf: float = 1.0) -> dict:
+    """The words of a lower third and how they sit: size, wrapped lines, the width of the text block, and the default (bottom-left) panel."""
     hook = kind == "hook"
     main = look.case(" ".join(str(spec.get("text") or spec.get("name") or "").split())[:(90 if hook else 70)])
-    sub = " ".join(str(spec.get("role") or "").split())[:60]
     max_w = int(look.W * (0.84 if look.portrait else 0.52) * wf)
     size = _fit_size(look.px(64 if look.portrait else 52) if hook else look.px(52 if look.portrait else 42), main, "bold", max_w - look.px(80), 3 if hook else 2, look.px(26))
     f1 = font("heavy" if hook else "bold", size)
     lines = _wrap(main, f1, max_w - look.px(80), 3)
+    d = ImageDraw.Draw(Image.new("RGBA", (4, 4)))
+    text_w = max((int(d.textlength(ln, font=f1)) for ln in lines), default=1) + 2 * 2 + 4
+    return {"main": main, "size": size, "lines": lines, "text_w": text_w, "line_h": int(size * 1.12), "f1": f1}
+
+
+def lower_panel_at(look: Look, text_w: int, text_h: int) -> tuple[int, int, int, int]:
+    """The default panel (x, y, w, h) of a lower third with a text block this big: bottom left, above the captions."""
+    pw, ph = text_w + look.px(76), text_h + look.px(44)
+    lx = int(look.W * (0.06 if not look.portrait else 0.07))
+    ly = int(look.H * (1 - (0.22 if not look.portrait else 0.33))) - ph
+    return lx, ly, pw, ph
+
+
+def scene_lower(look: Look, spec: dict, seconds: float, kind: str = "lower", wf: float = 1.0) -> Scene | None:
+    """Bottom-left: a name + role, the title card (the hook) or a key point."""
+    sc = Scene(look, seconds)
+    hook = kind == "hook"
+    sub = " ".join(str(spec.get("role") or "").split())[:60]
+    mt = lower_metrics(look, spec, kind, wf)
+    main, size, f1, lines = mt["main"], mt["size"], mt["f1"], mt["lines"]
+    max_w = int(look.W * (0.84 if look.portrait else 0.52) * wf)
     t1 = text_layer(lines, f1, look.fg, line_h=1.12, shadow=2)
     parts = [t1]
     if sub:
@@ -368,6 +388,7 @@ def scene_lower(look: Look, spec: dict, seconds: float, kind: str = "lower", wf:
         sc.add(p, x + m + look.px(38), y + yy, 0.14 + 0.08 * k_, slide_x=side * 0.56, pop=0.95, dur=0.5, exit_x=away)
         yy += p.height + gap
     sc.glass.append({"x": x + m, "y": y + m, "w": pw, "h": ph, "r": min(ph // 2, look.px(36)), "dim": 0.0})
+    sc.panel = (pos[0], pos[1], pw, ph)
     return sc
 
 
@@ -791,6 +812,24 @@ def _rounded(img: Image.Image, r: int) -> Image.Image:
     return out
 
 
+def fit_label(label: str, look: Look, width: int, base: int) -> Image.Image:
+    """A centred name that is never wider than its card: the size goes down (to about 60 %) until it fits on one line, then it goes on two lines
+    (a long name used to be cut off at both ends)."""
+    d = ImageDraw.Draw(Image.new("RGBA", (4, 4)))
+    inner = max(8, width - 8)
+    size = base
+    lf = font("bold", size)
+    while d.textlength(label, font=lf) > inner and size > int(base * 0.62):
+        size = max(int(base * 0.62), int(size * 0.93))
+        lf = font("bold", size)
+    lines = [label] if d.textlength(label, font=lf) <= inner else _wrap(label, lf, inner, 2)
+    while any(d.textlength(ln, font=lf) > inner for ln in lines) and size > 10:      # (one long word: smaller still)
+        size = int(size * 0.92)
+        lf = font("bold", size)
+        lines = _wrap(label, lf, inner, 2)
+    return text_layer(lines, lf, look.fg, align="center", line_h=1.1, shadow=1, width=width)
+
+
 def _tile(look: Look, it: dict, th: int, pad: int | None = None) -> tuple[Image.Image, int, int, int] | None:
     """One picture of a named thing on its own card: a logo mark, a flag or a photo, with its name underneath. -> (layer, card width, card height, margin)."""
     pad = look.px(22) if pad is None else pad
@@ -799,9 +838,8 @@ def _tile(look: Look, it: dict, th: int, pad: int | None = None) -> tuple[Image.
     except (OSError, KeyError):
         return None
     w = th if it.get("type") == "logo" else int(th * (1.5 if it.get("type") == "flag" else 1.38))
-    lf = font("bold", max(look.px(20), int(th * 0.15)))
-    label = look.case(" ".join(str(it.get("name") or "").split())[:26])
-    lab = text_layer([label], lf, look.fg, align="center", line_h=1.1, shadow=1, width=w + 2 * pad - 10)
+    label = look.case(" ".join(str(it.get("name") or "").split())[:40])
+    lab = fit_label(label, look, w + 2 * pad - 10, max(look.px(20), int(th * 0.15)))
     ph = th + 2 * pad + lab.height + look.px(10)
     body, m = panel(w + 2 * pad, ph, look.px(34), look)
     tile = body.copy()
@@ -2212,5 +2250,5 @@ def render(cfg, spec: dict, W: int, H: int, out: Path, theme: str | None = None,
         log.warning(f"graphic {kind} failed: {e}")
         return None
     k = W / cw
-    return {"file": out, "glass": [{"x": int(g["x"] * k), "y": int(g["y"] * k), "w": int(g["w"] * k), "h": int(g["h"] * k), "r": int(g["r"] * k), "dim": g["dim"], "tone": g.get("tone", "dark"), "t0": g.get("t0", 0.0)}
+    return {"file": out, "panel": tuple(int(v * k) for v in sc.panel) if sc.panel else None, "glass": [{"x": int(g["x"] * k), "y": int(g["y"] * k), "w": int(g["w"] * k), "h": int(g["h"] * k), "r": int(g["r"] * k), "dim": g["dim"], "tone": g.get("tone", "dark"), "t0": g.get("t0", 0.0)}
                                    for g in sc.glass]}

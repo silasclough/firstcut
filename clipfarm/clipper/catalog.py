@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..core import ffmpeg
+from . import cameramotion as CM
 from ..core.log import get_logger
 from ..core.state import atomic_write_json
 
@@ -84,6 +85,26 @@ class NotTheFile(RuntimeError):
 
 
 COMPILE_S = 45.0                         # during a run, the search index is refreshed at least this often
+
+
+BACKGROUND = ["nice", "-n", "15"] if shutil.which("nice") else []       # (cataloguing yields to whatever you are doing in the app: a 4K shot playing was dropping frames)
+FINISHED_DIR = re.compile(r"^(finals?|finished( videos?)?|exports?|exported|deliverables?|delivered|renders?|rendered|published|masters?)$", re.I)
+
+
+# Named like an export only when the name ENDS that way ("Fall Recap FINAL", "Fall Recap v2", "Fall Recap (rough cut)"), so "Final Four game" and "V8 engine" stay footage.
+FINISHED_NAME = re.compile(r"(?:[ \-(]|^)(?:finals?|export(?:ed)?|rough[ -]*cut|fine[ -]*cut|first[ -]*cut|master|rendered|final[ -]*export)(?:[ -]*v?\d{1,2})?\)?$"
+                           r"|[ \-]v\d{1,2}\)?$|[ \-]draft(?:[ -]*\d{1,2})?\)?$", re.I)
+
+
+def finished_video(rel: Path) -> bool:
+    """True for a finished video, not footage: in a folder called Final/Exports/Delivered..., or named like an export (final, V2, rough cut,
+    master...). A folder of camera files (raw, footage, B-roll...) is never judged by the file's name (localproj.earlier_edit)."""
+    from .localproj import CAMERA_DIR
+    if any(FINISHED_DIR.match(part) for part in rel.parts[:-1]):
+        return True
+    if any(CAMERA_DIR.search(part) for part in rel.parts[:-1]):
+        return False
+    return bool(FINISHED_NAME.search(re.sub(r"[_.]+", " ", rel.stem).strip()))
 
 
 def rid(path: str | Path) -> str:
@@ -164,6 +185,7 @@ class SigLIP:
 class Catalog:
     def __init__(self, cfg, embedder=None, vision=None):
         c = cfg.get("catalog") or {}
+        self.workers = int(c.get("workers") or 3)                 # (files read at once: see index())
         d = Path(os.path.expanduser(str(c.get("dir", "data/catalog"))))
         self.dir = d if d.is_absolute() else cfg.root / d
         self.roots = [Path(os.path.expanduser(str(r))) for r in (c.get("roots") or [])]
@@ -260,6 +282,7 @@ class Catalog:
     def forget(self, i: str) -> None:
         self._rec_path(i).unlink(missing_ok=True)
         (self.dir / "emb" / f"{i}.npy").unlink(missing_ok=True)
+        (self.dir / "motion" / f"{i}.npy").unlink(missing_ok=True)
         shutil.rmtree(self.dir / "thumbs" / i, ignore_errors=True)
         self._changed()
 
@@ -314,6 +337,8 @@ class Catalog:
                         continue
                     if st.st_size < 1024:
                         continue
+                    if kind == "video" and finished_video(p.relative_to(root)):
+                        continue                                  # (an export or a final: edited pictures, with graphics and captions on them)
                     if rid(p) in seen:
                         continue
                     seen.add(rid(p))
@@ -355,27 +380,42 @@ class Catalog:
         from . import logcolor
         return logcolor.vf_prefix(path, getattr(self, "cfg", None))
 
-    def _grab(self, path: Path, step: float, dur: float, keyframes: bool) -> list[bytes]:
+    def _lut_after(self, path) -> str:
+        """The same colour change, written to go after the scale: a 3D LUT on a 4K 10-bit frame is slow, on a 384 px one it is free."""
+        f = self._lut(path).rstrip(",")
+        return ("," + f) if f else ""
+
+    def _grab(self, path: Path, step: float, dur: float, keyframes: bool, motion: list | None = None) -> list[bytes]:
+        """The stills. With `motion` (a list) the same ffmpeg call also writes tiny gray frames of every decoded keyframe to a second output,
+        for the camera-motion analysis (cameramotion.py): nothing is decoded twice. The list gets (times, frames)."""
+        want_motion = keyframes and motion is not None
         with tempfile.TemporaryDirectory(prefix="cat-") as td:
-            subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "error", *(["-skip_frame", "nokey"] if keyframes else []), "-i", str(path), "-an",
-                            "-vf", f"{self._lut(path)}fps=1/{step:.4f},{JPEG_VF}", "-q:v", "5", str(Path(td) / "%05d.jpg")],
-                           capture_output=True, timeout=max(300, dur * (3 if keyframes else 8)))
+            r = subprocess.run([*BACKGROUND, ffmpeg.bin_path("ffmpeg"), "-v", "info" if want_motion else "error", "-nostats",
+                                *(["-skip_frame", "nokey"] if keyframes else []), "-i", str(path), "-an",
+                                "-vf", f"fps=1/{step:.4f},scale={THUMB_W}:-2{self._lut_after(path)},{JPEG_VF}", "-q:v", "5", str(Path(td) / "%05d.jpg"),
+                                *(CM.second_output() if want_motion else [])],
+                               capture_output=True, timeout=max(300, dur * (3 if keyframes else 8)))
+            if want_motion:
+                try:
+                    motion.append(CM.read_frames(r.stdout, r.stderr))
+                except Exception as e:  # noqa: BLE001 - the stills are what matter; motion is a bonus
+                    log.info(f"camera motion frames for {path.name}: {e}")
             return [p.read_bytes() for p in sorted(Path(td).glob("*.jpg"))]
 
-    def _frames(self, path: Path, dur: float) -> tuple[list[bytes], float]:
+    def _frames(self, path: Path, dur: float, motion: list | None = None) -> tuple[list[bytes], float]:
         """JPEG frames about every `every` s -> (frames, step). Keyframes only first: fast even for 4K camera files, which have one every
         half second or so. An export or a screen recording has one every 10 s or more: then the keyframe pass comes back short (the
         end missing) or repeats the same picture, and the file is decoded in full instead."""
         step = max(self.every, dur / max(1, self.max_frames))
-        frames = self._grab(path, step, dur, keyframes=True)
+        frames = self._grab(path, step, dur, keyframes=True, motion=motion)
         want = max(1, math.ceil(dur / step))
         if frames and (len(frames) < want - 1 or (len(frames) >= 3 and len(set(frames)) < 0.75 * len(frames))):
             full = self._grab(path, step, dur, keyframes=False)
             if len(full) >= len(frames):
                 frames = full
         if not frames:                                          # (no keyframe decoded: try one ordinary frame from the middle)
-            r = subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "error", "-ss", f"{dur / 2:.2f}", "-i", str(path), "-frames:v", "1",
-                                "-vf", self._lut(path) + JPEG_VF, "-f", "mjpeg", "-q:v", "5", "-"], capture_output=True, timeout=300)
+            r = subprocess.run([*BACKGROUND, ffmpeg.bin_path("ffmpeg"), "-v", "error", "-ss", f"{dur / 2:.2f}", "-i", str(path), "-frames:v", "1",
+                                "-vf", f"scale={THUMB_W}:-2{self._lut_after(path)},{JPEG_VF}", "-f", "mjpeg", "-q:v", "5", "-"], capture_output=True, timeout=300)
             frames = [r.stdout] if r.stdout else []
         return frames, step
 
@@ -411,7 +451,7 @@ class Catalog:
         return {"dur": round(float(info.get("format", {}).get("duration") or 0), 3), "w": int(w), "h": int(h), "fps": float(rate),
                 "tc": timecode_s(info, rate), "tc_df": timecode_df(info), "audio": ffmpeg.audio_stream(info) is not None}
 
-    def _store(self, f: dict, meta: dict, frames: list[bytes], step: float) -> None:
+    def _store(self, f: dict, meta: dict, frames: list[bytes], step: float, motion=None) -> None:
         import numpy as np
         from PIL import Image
         ims = [Image.open(io.BytesIO(b)).convert("RGB") for b in frames]
@@ -426,12 +466,29 @@ class Catalog:
             (td / f"{k:04d}.jpg").write_bytes(b)
         (self.dir / "emb").mkdir(parents=True, exist_ok=True)
         np.save(self.dir / "emb" / f"{f['id']}.npy", emb)
+        mver = None
+        if motion is not None:                                       # where the camera really moves (cameramotion.py): a bonus, never a failure
+            try:
+                CM.save(self.dir / "motion" / f"{f['id']}.npy", motion)
+                mver = CM.VERSION
+            except Exception as e:  # noqa: BLE001
+                log.info(f"camera motion not kept for {f['path']}: {e}")
         old = self.load(f["id"]) or {}
         same = old.get("size") == f["size"] and old.get("mtime") == f["mtime"]
         self.save({**f, **meta, "step": round(step, 3), "frames": len(frames), "model": self.model, "indexed": int(time.time()),
                    "colour": "converted" if self._lut(f["path"]) else "as shot",                # (log footage: seen in normal colour)
+                   "motion": mver,
                    "thumb_w": ims[0].width if ims else THUMB_W, "thumb_h": ims[0].height if ims else 0,
                    "scenes": old.get("scenes") if same else None, "described": old.get("described") if same else None})
+
+    def _analyse_motion(self, mot: list):
+        """The motion array from what _grab collected, or None (no frames, no OpenCV...: the heat map then works as it did)."""
+        try:
+            times, gray = mot[0] if mot else ([], None)
+            return CM.analyze(times, gray) if len(times) >= 3 else None
+        except Exception as e:  # noqa: BLE001
+            log.info(f"camera motion not worked out: {e}")
+            return None
 
     def index_one(self, f: dict) -> bool:
         path = Path(f["path"])
@@ -445,10 +502,11 @@ class Catalog:
                 meta = self._probe(path)
                 if meta["dur"] < 0.5 or not meta["w"]:
                     raise RuntimeError("no picture in it")
-                frames, step = self._frames(path, meta["dur"])
+                mot: list = []
+                frames, step = self._frames(path, meta["dur"], motion=mot)
                 if not frames:
                     raise RuntimeError("no frame could be read")
-                self._store(f, meta, frames, step)
+                self._store(f, meta, frames, step, motion=self._analyse_motion(mot))
             return True
         except NotTheFile:
             raise
@@ -476,24 +534,48 @@ class Catalog:
             except Exception as e:  # noqa: BLE001
                 stopped = f"the picture model could not load: {e}"
                 todo = []
-        for n, f in enumerate(todo):
+        # Several files at once: reading a 4K camera file off a drive is mostly waiting (the drive, ffmpeg), and one at a time left the Mac
+        # idle most of the time (about 8 files a minute). The picture model still takes one picture batch at a time (its own lock).
+        from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+        W = max(1, min(6, int(self.workers)))
+
+        def work(f):
             if self.stop.is_set() or (deadline and time.time() > deadline):
-                break
+                return "skip", f, None
             self._wait()
-            if progress:
-                progress(n, len(todo), f"Looking at {f['rel']}")
             self._live("now", step="frames", id=f["id"], rel=f["rel"], media=f["kind"], k=None)
             try:
-                ok = self.index_one(f)
+                return ("ok" if self.index_one(f) else "fail"), f, None
             except NotTheFile as e:
-                stopped = str(e)
-                break
-            if ok:
-                self._live("done", step="frames", id=f["id"], rel=f["rel"], media=f["kind"], k=self._mid(self.load(f["id"])), what=[], by=None)
-                done += 1
-            else:
-                failed += 1
-            self.compile_soon(done + failed)                             # what is done so far is searchable while the rest runs
+                return "stop", f, str(e)
+            except Exception as e:  # noqa: BLE001 - (e.g. the error note itself could not be saved)
+                log.warning(f"catalog: {f.get('path')}: {e}")
+                return "fail", f, None
+
+        pending, it, n, halt = set(), iter(todo), 0, False
+        with ThreadPoolExecutor(W, thread_name_prefix="catalog-frames") as pool:
+            while True:
+                while not halt and len(pending) < W and not (self.stop.is_set() or (deadline and time.time() > deadline)):
+                    f = next(it, None)
+                    if f is None:
+                        break
+                    if progress:
+                        progress(n, len(todo), f"Looking at {f['rel']}")
+                    pending.add(pool.submit(work, f))
+                if not pending:
+                    break
+                finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for fut in finished:
+                    what, f, why = fut.result()
+                    n += 1
+                    if what == "stop":
+                        stopped, halt = why, True
+                    elif what == "ok":
+                        self._live("done", step="frames", id=f["id"], rel=f["rel"], media=f["kind"], k=self._mid(self.load(f["id"])), what=[], by=None)
+                        done += 1
+                    elif what == "fail":
+                        failed += 1
+                    self.compile_soon(done + failed)                     # what is done so far is searchable while the rest runs
         self.compile()
         if stopped:
             log.error(f"catalog: stopped: {stopped}")
@@ -810,9 +892,44 @@ class Catalog:
         self.save({**rec, "look": out})
         return out
 
+    def _camera(self, i: str, rec: dict):
+        """(the camera-motion profile of a video or None, still being worked out?). Files catalogued since motion was kept have it; older
+        ones get it in the background (one keyframe pass, run at low priority) and the page asks again a few seconds later."""
+        path = self.dir / "motion" / f"{i}.npy"
+        have = rec.get("motion", "absent")
+        if have == CM.VERSION and path.exists():
+            m = CM.load(path)
+            return (CM.profile(m) if m is not None else None), False
+        if have is None or (have != "absent" and not isinstance(have, int)):
+            return None, False                                       # (it was tried when the file was indexed: nothing to find)
+        jobs = self.__dict__.setdefault("_motion_jobs", set())
+        with self._idx_lock:
+            if i in jobs:
+                return None, True
+            jobs.add(i)
+
+        def run():
+            try:
+                with self.__dict__.setdefault("_motion_lock", threading.Lock()):          # one at a time
+                    m = CM.extract(ffmpeg.bin_path("ffmpeg"), rec["path"], BACKGROUND, timeout=max(300, float(rec.get("dur") or 60) * 4))
+                CM.save(path, m)
+                cur = self.load(i) or rec
+                self.save({**cur, "motion": CM.VERSION if len(m) else None})
+            except Exception as e:  # noqa: BLE001 - the heat map works without it
+                log.info(f"camera motion for {rec.get('rel') or i}: {e}")
+                cur = self.load(i) or rec
+                self.save({**cur, "motion": None})
+            finally:
+                with self._idx_lock:
+                    jobs.discard(i)
+        threading.Thread(target=run, name="camera-motion", daemon=True).start()
+        return None, True
+
     def heat(self, i: str, text: str = "") -> dict:
         """Where the good part of one video is, still by still (0-1): how well each still matches the search words (when there are any),
-        how good it looks (look()), and the scene ratings from the descriptions. "peak" is the best still."""
+        how good it looks (look()), and the scene ratings from the descriptions, and where the CAMERA makes a smooth move (a push-in, a pan:
+        cameramotion.py; shaky settling is pushed down). "peak" is the best still; "peak_t" (when the shot has a move) is the second the
+        move starts. "motion": "pending" while an older file's motion is worked out."""
         import numpy as np
         rec = self.load(i)
         if not rec or rec.get("kind") != "video" or not rec.get("frames"):
@@ -836,9 +953,30 @@ class Catalog:
                     heat = 0.6 * match + 0.4 * heat
             except Exception as e:  # noqa: BLE001 - the picture side still shows
                 log.info(f"heat without the words for {i}: {e}")
+        prof, pending = self._camera(i, rec)
+        move_span = None
+        if prof is not None:
+            centres = np.arange(n) * step
+            move_c = np.interp(centres, prof["t"], prof["move"])
+            shake_c = np.interp(centres, prof["t"], prof["shake"])
+            cam_c = np.interp(centres, prof["t"], prof["cam"])
+            move_span = CM.best_move(prof)
+            if move_span is not None:                                # the move dominates (less when the search words point somewhere else)
+                w = 0.5 if text else 0.7
+                heat = np.clip((1 - w) * heat + w * move_c - 0.3 * shake_c, 0.0, 1.0)
+            else:                                                    # still or handheld: unsettled stretches fall, a locked-off camera stays as it was
+                heat = np.clip(heat * (0.55 + 0.9 * cam_c), 0.0, 1.0)
         if n >= 3:
             heat = np.convolve(np.pad(heat, 1, mode="edge"), np.ones(3) / 3, mode="valid")
-        return {"step": step, "heat": [round(float(x), 3) for x in heat], "peak": int(np.argmax(heat)) if n else 0}
+        peak = int(np.argmax(heat)) if n else 0
+        out = {"step": step, "heat": [round(float(x), 3) for x in heat], "peak": peak}
+        if move_span is not None and n:
+            a = int(max(0, min(n - 1, round(move_span[0] / step)))); b = int(max(a, min(n - 1, round(move_span[1] / step))))
+            if float(heat[a:b + 1].max()) >= 0.85 * float(heat.max()):         # (the search words can still point at another moment)
+                out["peak"], out["peak_t"] = a, round(float(move_span[0]), 2)
+        if pending:
+            out["motion"] = "pending"
+        return out
 
     def preview(self, i: str, start: float, end: float) -> Path | None:
         """A small playable copy of one shot (540p H.264, made once and kept): camera originals such as 10-bit 4:2:2 H.264, MXF or
@@ -852,15 +990,26 @@ class Catalog:
         if out.exists():
             return out
         out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out.with_suffix(".part.mp4")
-        r = subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "error", "-y", "-ss", f"{a:.2f}", "-i", rec["path"], "-t", f"{e - a:.2f}",
-                            "-vf", self._lut(rec["path"]) + "scale=-2:540,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-                            "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-movflags", "+faststart", str(tmp)], capture_output=True, timeout=300)
-        if r.returncode or not tmp.exists():
-            tmp.unlink(missing_ok=True)
-            return None
-        tmp.replace(out)
+        with self._preview_lock(out.name):                          # (clicking again while it is being made waits for that copy, not a second one)
+            if out.exists():
+                return out
+            tmp = out.with_suffix(".part.mp4")
+            r = subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "error", "-y", "-ss", f"{a:.2f}", "-i", rec["path"], "-t", f"{e - a:.2f}",
+                                "-vf", "scale=-2:540" + self._lut_after(rec["path"]) + ",format=yuv420p", "-c:v", "libx264",
+                                "-preset", "veryfast", "-crf", "26", "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-movflags", "+faststart", str(tmp)],
+                               capture_output=True, timeout=600)
+            if r.returncode or not tmp.exists():
+                tmp.unlink(missing_ok=True)
+                return None
+            tmp.replace(out)
         return out
+
+    def _preview_lock(self, name: str):
+        with self._idx_lock:
+            locks = self.__dict__.setdefault("_pv_locks", {})
+            if len(locks) > 200:
+                locks.clear()
+            return locks.setdefault(name, threading.Lock())
 
     # -- B-roll for an interview ------------------------------------------------------------------
     def shots_for(self, ai, sentences, brief: str = "", limit: int = 48, progress=None) -> list[dict]:
