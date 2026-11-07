@@ -300,6 +300,40 @@ def llm_fix_starts(llm, moments: list[Moment], sents: list[Sentence], min_len: f
     return kept
 
 
+RETITLE_SCHEMA = {"type": "object", "properties": {"titles": {"type": "array", "items": {"type": "object", "properties": {
+    "clip": {"type": "integer"}, "title": {"type": "string"}}, "required": ["clip", "title"]}}}, "required": ["titles"]}
+RETITLE_SYSTEM = """You rewrite the on-screen titles of short clips that got a vague title. Each clip shows its current title (the reason it was refused) and what is actually said.
+Write ONE title per clip: max 55 characters, plain words, TRUE to what is said (never invent), no emojis, no profanity, no all-caps.
+It must state the specific claim, the stake or the surprise and carry the concrete name, number or thing from the clip ("Kevin Nealon's terrifying Johnny Carson moment",
+"What happened when the control rods were pulled out at Chernobyl", "How The Office almost got cancelled"). Never a bare question ("How do I do that?"), never a label
+("Streamer reacts to unexpected moment"), a greeting, or a teaser that hides the subject ("Taste this before you even touch it", "Your brain decides before you know it")."""
+
+
+def retitle_weak(llm, moments: list[Moment], sents: list[Sentence], max_clips: int = 12) -> list[Moment]:
+    """One more try for the clips whose title clipgate.weak_title refuses: ask once for a title that states the claim with a name or number. The new title is kept
+    only if it passes the same check; otherwise the old one stays (demote_weak_titles then lowers the score). Never raises."""
+    todo = [(k, m, why) for k, m in enumerate(moments) if (why := clipgate.weak_title(m.title)) and m.first >= 0 and m.last >= m.first][:max_clips]
+    if not todo:
+        return moments
+    blocks = []
+    for k, m, why in todo:
+        said = " ".join(s.text for s in sents[m.first:m.last + 1])[:700]
+        blocks.append(f"Clip {k}: current title \"{m.title}\" (refused: {why})\nWhat is said: {said}")
+    try:
+        res = llm.complete_json("clip_title", RETITLE_SYSTEM, "\n\n".join(blocks), RETITLE_SCHEMA)
+    except Exception:  # noqa: BLE001 - the old title and its lower score stay
+        return moments
+    for c in res.data.get("titles", []) or []:
+        try:
+            k = int(c["clip"])
+            t = re.sub(r"\s+", " ", str(c.get("title") or "")).strip()[:70]
+        except (TypeError, ValueError, KeyError):
+            continue
+        if 0 <= k < len(moments) and k in {x[0] for x in todo} and len(t) >= 8 and clipgate.weak_title(t) is None:
+            moments[k].title = t
+    return moments
+
+
 def demote_weak_titles(moments: list[Moment]) -> list[Moment]:
     """A title that is a bare question, a label or a greeting sells nothing: those posts got 250-300 views while claims got 2,800+. The AI is told, and what still
     slips through loses 2.5 points here (the score floor then rejects it) and is refused again by clipgate."""

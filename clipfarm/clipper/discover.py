@@ -144,6 +144,11 @@ class Finder:
         if self.is_avoided(info.get("title") or entry.get("title") or "", info.get("channel") or info.get("uploader") or ""):
             self.mark(vid, "avoided topic (gaming)")
             return None
+        from . import sourcecheck
+        game = sourcecheck.gameplay_meta(info, self.acfg.get("avoid_words")) if self.acfg.get("skip_gameplay", True) else None     # the category and tags say gameplay even when the title does not
+        if game:
+            self.mark(vid, f"avoided topic (gaming: {game})")
+            return None
         chan = info.get("channel") or info.get("uploader")
         if chan and self.taste.channel_blocked(chan):
             self.mark(vid, f"taste: you usually delete clips from {chan}")

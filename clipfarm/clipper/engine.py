@@ -244,9 +244,15 @@ class Engine:
             except Exception:  # noqa: BLE001
                 pass
             profile = self._source_profile(job_id, src)
+            if self.store.get(job_id)["options"].get("mode") not in ("asis", "polish", "long"):
+                self._refuse_still_source(job_id, src)
             words = self._transcribe(job_id, d, src)
             if self.store.get(job_id)["options"].get("mode") == "asis":
                 return self._as_is(job_id, d, src, words)
+            if self.store.get(job_id)["options"].get("mode") == "recap":      # a long video -> a few fast vertical recap reels (recap.py)
+                from . import recap
+                recap.run(self, job_id, d, src, words)
+                return self.store.get(job_id)
             if self.store.get(job_id)["options"].get("mode") in ("polish", "long"):
                 from . import polish
                 try:
@@ -471,6 +477,55 @@ class Engine:
         return words
 
     # --------------------------------------------------------------- moments
+    def _refuse_still_source(self, job_id: str, src: Path) -> None:
+        """A "video" that is one picture (a story read over cover art) only makes clips of a still with captions: those got 5-20 views. Say so now, before the transcription."""
+        if not self.cfg.get("clipper.source_check.still", True):
+            return
+        from . import sourcecheck as SC
+        r = SC.probe_source(src)
+        info = self.store.get(job_id).get("info") or {}
+        self.store.update(job_id, info={**info, "still_probe": r})
+        if r["still"]:
+            raise RuntimeError(f"this video is one still picture: {r['still_windows']} of the {r['windows']} places looked at do not move. "
+                               "A clip of it would be a picture with captions, which viewers swipe away from. Skipped.")
+
+    def _screen_stills(self, job_id: str, src: Path, found: list) -> list:
+        """Before moments are picked: a candidate whose stretch of the source does not move is dropped, so the pick falls on the next best moment instead of a still."""
+        if not self.cfg.get("clipper.source_check.still", True) or not found:
+            return found
+        from . import sourcecheck as SC
+        kept, dropped = SC.screen_moments(src, found, int(self.cfg.get("clipper.source_check.screen_limit", 30)))
+        for m, why in dropped:
+            log.info(f"{job_id}: moment '{m.title}' {m.start:.0f}-{m.end:.0f} s dropped before rendering: {why}")
+            live.emit(self.store, job_id, "dropped", title=m.title, start=round(m.start, 1), end=round(m.end, 1), why=why)
+        if not kept:
+            raise RuntimeError("every moment found is a still picture (nothing on screen moves): skipped")
+        return kept
+
+    def _strip_plan(self, d: Path, index: int, src: Path, span0: float, span1: float, words: list[dict]) -> dict:
+        """What to cut away from this stretch of the source (see sourcecheck.crop_plan). Read once per stretch and kept next to the clip; any trouble means "nothing"."""
+        from . import sourcecheck as SC
+        key = f"{span0:.0f}-{span1:.0f}"
+        cache = d / f"clip_{index:02d}_srccheck.json"
+        try:
+            c = json.loads(cache.read_text())
+            if c.get("key") == key:
+                return c["plan"]
+        except Exception:  # noqa: BLE001 - no cache yet
+            pass
+        try:
+            found = SC.burned_in(src, span0, span1, " ".join(w["text"] for w in words if span0 - 1 <= w["start"] <= span1 + 1))
+        except Exception as e:  # noqa: BLE001 - a check is never a reason to lose a clip
+            log.debug(f"source text check failed: {e}")
+            found = None
+        plan = SC.crop_plan(found)
+        if found is not None:
+            try:
+                atomic_write_json(cache, {"key": key, "found": found, "plan": plan})
+            except Exception:  # noqa: BLE001
+                pass
+        return plan
+
     def _moments(self, job_id: str, d: Path, src: Path, words: list[dict], profile: str = "standard") -> list[M.Moment]:
         job = self.store.get(job_id)
         opts = job["options"]
@@ -516,6 +571,7 @@ class Engine:
             live.emit(self.store, job_id, "moment", title=fm.title, hook=getattr(fm, "hook", "") or "", start=round(fm.start, 1),
                       end=round(fm.end, 1), score=round(float(fm.score), 1),
                       quote=" ".join(x.text for x in sents[fm.first:fm.last + 1])[:260])
+        found = self._screen_stills(job_id, src, found)
         src_info = job.get("source") or {}
         sb = float(self.ccfg.get("story_bias", 0.6))
         if sb > 0:                                               # clips that tell something that HAPPENED did best on the channel: a push, not a filter
@@ -567,6 +623,7 @@ class Engine:
             self._progress(job_id, "finding", "Checking that every clip starts on a hook", 0.64)
             picked = M.llm_fix_starts(router, picked, sents, lo)
             picked = M.fix_starts_heuristic(picked, sents, lo)
+        picked = M.retitle_weak(router, picked, sents)                   # one more ask for a title that states the claim, before the score is lowered
         picked = M.demote_weak_titles(picked)
         live.emit(self.store, job_id, "pick", moments=[{"title": m.title, "start": round(m.start, 1), "end": round(m.end, 1),
                                                         "score": round(float(m.score), 1)} for m in picked])
@@ -588,6 +645,13 @@ class Engine:
             res = router.complete_json("clip_title", TWITCH_TITLE_SYSTEM, f"Streamer: {s.get('channel')}\nThe fans' title: {s.get('title')}\nWhat is said in the clip: {said_text or '(no speech)'}",
                                        TWITCH_TITLE_SCHEMA)
             t2 = re.sub(r"\s+", " ", str(res.data.get("title") or "")).strip()[:70]
+            from . import clipgate
+            if clipgate.weak_title(t2):                                   # a bare question / greeting: one more ask, with the reason
+                res2 = router.complete_json("clip_title", TWITCH_TITLE_SYSTEM, f"Streamer: {s.get('channel')}\nThe fans' title: {s.get('title')}\nWhat is said in the clip: {said_text or '(no speech)'}\n\n"
+                                            f"Your last title \"{t2}\" was refused as {clipgate.weak_title(t2)}. State the specific claim or moment with the name or number in it.", TWITCH_TITLE_SCHEMA)
+                t3 = re.sub(r"\s+", " ", str(res2.data.get("title") or "")).strip()[:70]
+                if len(t3) >= 8 and not clipgate.weak_title(t3):
+                    t2, res = t3, res2
             if len(t2) >= 8:
                 title = t2
             c2 = re.sub(r"\s+", " ", str(res.data.get("caption") or "")).strip()
@@ -793,12 +857,23 @@ class Engine:
         sw, sh = sw or 1920, sh or 1080
         has_audio = ffmpeg.audio_stream(info) is not None
 
+        # ---- the source's own promo bars, name tags and captions: cropped out of the picture here, so the finished clip never has them (the gate stays as the last look)
+        crop_pre, vertical, plan = "", sw <= int(sh * W / H) // 2 * 2, None
+        if record and profile != "glasses" and self.cfg.get("clipper.source_check.strips", True):
+            from . import sourcecheck as SC
+            plan = self._strip_plan(d, index, src, span0, span1, words)
+            crop_pre, sh, _ycut = SC.crop_filter(sh, plan)
+            if not plan["own_captions"]:                          # the source's captions sit in the middle of the picture: ours would be a second set on top
+                style = "none"
+            if crop_pre:
+                log.info(f"{job_id} clip {index}: cropped {plan['top']:.0%} off the top and {plan['bottom']:.0%} off the bottom (the source's own text)")
+
         # ---- framing
         mode = "glasses" if profile == "glasses" and layout in ("auto", "track") else layout
         xexpr = None
         fit_spans: list[tuple[float, float]] = []
         crop_w = int(sh * W / H) // 2 * 2
-        if sw <= crop_w:                                     # already vertical
+        if vertical or sw <= crop_w:                         # already vertical
             mode = "center"
         wide_w = int(min(sw, sh * float(self.ccfg.get("wide_ratio", 1.0)))) // 2 * 2     # the "wide window": a square by default
         if mode in ("auto", "track", "wide"):
@@ -814,7 +889,7 @@ class Engine:
             fcam = None
             if small_cam and mode == "auto":
                 top_h = int(round(H * float(self.ccfg.get("facecam_split", 0.38)) / 2)) * 2
-                fcam = R.facecam_box(samples, sw, sh, W / top_h) if bool(self.ccfg.get("facecam_layout", True)) else None
+                fcam = R.facecam_box(samples, sw, sh, W / top_h) if bool(self.ccfg.get("facecam_layout", True)) and not crop_pre else None     # (the face-cam box is in uncropped pixels)
                 mode = "facecam" if fcam else "fit"                  # gameplay with a corner facecam: the face big on top, the game below (else the whole frame)
             elif cov >= float(self.ccfg.get("min_face_coverage", 0.35)) or (mode in ("track", "wide") and cov > 0):
                 win = wide_w if wide else crop_w
@@ -894,7 +969,7 @@ class Engine:
         seek = max(0.0, span0 - 1.0)
         parts, labels = [], []
         for i, (a, b) in enumerate(intervals):
-            parts.append(f"[0:v]trim=start={a - seek:.3f}:end={b - seek:.3f},setpts=PTS-STARTPTS[v{i}]")
+            parts.append(f"[0:v]trim=start={a - seek:.3f}:end={b - seek:.3f},setpts=PTS-STARTPTS{crop_pre}[v{i}]")
             labels.append(f"[v{i}]")
             if has_audio:
                 parts.append(f"[0:a]atrim=start={a - seek:.3f}:end={b - seek:.3f},asetpts=PTS-STARTPTS[a{i}]")
@@ -1050,7 +1125,7 @@ class Engine:
                 "title": m.title, "hook": m.hook, "caption": post, "score": round(m.score, 1), "reason": m.reason,
                 "picked_by": m.source, "source_start": round(m.start, 2), "source_end": round(m.end, 2),
                 "duration": round(out_len, 2), "cuts": len(intervals) - 1, "layout": mode, "fit_spans": len(fit_spans), "caption_style": style,
-                "pace": pace, "edit_style": edit_style, "styled": styled, "qa": qa_res, **({"style_done": __import__("clipfarm.clipper.feed", fromlist=["STYLE_V"]).STYLE_V} if edit_style != "standard" else {}), "hook_title": hook_title, "profile": profile, "moment": m.to_dict(),
+                "pace": pace, "edit_style": edit_style, "styled": styled, "qa": qa_res, **({"source_fix": plan} if plan and (crop_pre or not plan["own_captions"]) else {}), **({"style_done": __import__("clipfarm.clipper.feed", fromlist=["STYLE_V"]).STYLE_V} if edit_style != "standard" else {}), "hook_title": hook_title, "profile": profile, "moment": m.to_dict(),
                 "music": ({"title": track.title, "artist": track.artist, "license": track.license, "mood": mood,
                            "file": track.path.name, "path": str(track.path), "start": music_start} if track else None),
                 "rendered_at": int(time.time()), "word_end_pad": END_PAD,

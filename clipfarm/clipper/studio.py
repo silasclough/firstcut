@@ -63,6 +63,13 @@ def ram_gb() -> float:
         return 8.0
 
 
+def search_packages_ready() -> bool:
+    """PyTorch AND transformers are both in the app's Python (the footage and music search need both: transformers alone imports fine
+    without torch, and Setup used to call that done, so cataloguing stopped with "No module named 'torch'")."""
+    import importlib.util
+    return all(importlib.util.find_spec(m) is not None for m in ("torch", "transformers"))
+
+
 def local_models(ram: float) -> dict:
     """The local models that fit this much memory: the editing model (only used without an account, or as the fallback) and the picture
     model (always: it looks at B-roll)."""
@@ -416,7 +423,7 @@ def overlay(s: dict, root: Path) -> dict:
                        "models": {"script": s["ai"].get("claude_edit") or "sonnet", "default": s["ai"].get("claude_edit") or "sonnet",
                                   "cheap": s["ai"].get("claude_quick") or "haiku"},
                        "efforts": {"script": "medium", "default": "low", "cheap": "low"},
-                       "cheap_tasks": ["broll_pick", "broll_queries", "video_title", "video_kind", "video_length", "hook_text", "key_points", "music_vibe",
+                       "cheap_tasks": ["broll_pick", "broll_queries", "montage_story", "video_title", "video_kind", "video_length", "hook_text", "key_points", "music_vibe",
                                        "broll_suitable", "clip_title", "style_merge", "broll_describe", "photo_describe", "gfx_place",
                                        "catalog_describe", "stock_queries", "video_chapters"],
                        "fallback": fallback, "fallback_on_limit": fallback},
@@ -711,15 +718,11 @@ class Setup:
             name = m["vision"] if sid == "vision" else (s["ai"].get("local_model") or m["text"])
             return name in self._pulled()
         if sid == "search":
-            try:
-                import transformers  # noqa: F401
-            except ImportError:
+            if not search_packages_ready():
                 return False
             return (Path(s["places"]["models"]) / "huggingface" / ".siglip-ready").exists()
         if sid == "music":
-            try:
-                import transformers  # noqa: F401
-            except ImportError:
+            if not search_packages_ready():
                 return False
             return (Path(s["places"]["models"]) / "huggingface" / ".clap-ready").exists()
         if sid == "voices":
@@ -911,9 +914,7 @@ class Setup:
         part.replace(dest)
 
     def _do_music(self, st: dict) -> None:
-        try:
-            import transformers  # noqa: F401
-        except ImportError:
+        if not search_packages_ready():
             self._set("music", stage="installing the search engine (PyTorch)")
             subprocess.run([self._uv(), "pip", "install", "--python", sys.executable, "torch", "transformers>=4.56", "sentencepiece", "protobuf"],
                            check=True, capture_output=True, timeout=3600)
@@ -929,9 +930,7 @@ class Setup:
         (Path(s["places"]["models"]) / "huggingface" / ".clap-ready").write_text(MODEL)
 
     def _do_search(self, st: dict) -> None:
-        try:
-            import transformers  # noqa: F401
-        except ImportError:
+        if not search_packages_ready():
             self._set("search", stage="installing the search engine (PyTorch)")
             subprocess.run([self._uv(), "pip", "install", "--python", sys.executable, "torch", "transformers>=4.56", "sentencepiece", "protobuf"],
                            check=True, capture_output=True, timeout=3600)

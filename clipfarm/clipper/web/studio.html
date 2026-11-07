@@ -253,8 +253,9 @@
   .home-find input { flex: 1; border: 0; outline: 0; background: transparent; font-size: 14px; }
 
   /* composer */
+  .modes.two { grid-template-columns: repeat(2, 1fr); }
   .modes { width: 100%; max-width: 760px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
-  @media (max-width: 720px) { .modes { grid-template-columns: 1fr; } }
+  @media (max-width: 720px) { .modes, .modes.two { grid-template-columns: 1fr; } }
   .mode { display: flex; gap: 12px; align-items: flex-start; text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); }
   .mode svg { flex: none; margin-top: 2px; color: var(--muted); }
   .mode:hover { background: var(--sel); }
@@ -441,6 +442,12 @@
   .cl-t { flex: 0 0 168px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .cl-t .cl-pic { aspect-ratio: 16/9; }
   .cl-t .what { font-size: 12px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tags { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+  .tagchip { font: inherit; font-size: 11.5px; line-height: 1.35; padding: 1px 7px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tagchip:hover, .tagchip:focus-visible { color: var(--text); border-color: var(--accent); }
+  .shot .tags { margin-top: 2px; }
+  .player .ptags { display: flex; flex-wrap: nowrap; gap: 4px; margin-left: 8px; pointer-events: auto; flex: none; }
+  .player .ptags .tagchip { color: #fff; border-color: rgba(255,255,255,.45); background: rgba(0,0,0,.4); }
   .cl-t.in { animation: cl-in .3s ease-out; }
   @keyframes cl-in { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { .cl-t.in { animation: none; } .cl-bar i { transition: none; } }
@@ -450,6 +457,43 @@
   .shot .t img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .shot.cur .t { outline: 2px solid var(--accent); outline-offset: 2px; }
   .shot input { position: absolute; top: 8px; left: 8px; width: 17px; height: 17px; margin: 0; accent-color: var(--accent); }
+  /* Collections (coll*): the bookmark on a shot, the menu it opens, and the Collections page */
+  .shot .t .coll-add { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; padding: 0; border: 1px solid rgba(255,255,255,.35); border-radius: 50%;
+                       background: rgba(0,0,0,.5); color: #fff; display: flex; align-items: center; justify-content: center; opacity: 0; cursor: pointer; transition: opacity .12s; }
+  .shot:hover .t .coll-add, .shot:focus-within .t .coll-add, .shot .t .coll-add:focus-visible { opacity: 1; }
+  .shot .t .coll-add:hover { background: var(--accent); border-color: var(--accent); }
+  .coll-view .shot .t .coll-add.rm { opacity: .9; }
+  .coll-view .shot .t .coll-add:not(.rm) { right: 40px; }
+  .coll-view .shot input[data-pick] { display: none; }
+  .shot.missing .t { filter: grayscale(1); opacity: .55; }
+  .shot.missing .t img { visibility: hidden; }
+  .coll-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+  .coll-card { display: flex; flex-direction: column; gap: 8px; padding: 10px; cursor: pointer; }
+  .coll-card:hover { background: var(--sel); }
+  .coll-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .coll-mosaic { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; gap: 2px; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: var(--thumb); }
+  .coll-mosaic img { width: 100%; height: 100%; min-height: 0; object-fit: cover; display: block; }
+  .coll-mosaic.n1 { grid-template-columns: 1fr; }
+  .coll-mosaic.n2 { grid-template-rows: 1fr; }
+  .coll-mosaic.n3 img:first-child { grid-row: span 2; }
+  .coll-none { grid-column: 1 / -1; grid-row: 1 / -1; display: flex; align-items: center; justify-content: center; }
+  .coll-line { align-items: center; gap: 6px; min-width: 0; flex-wrap: nowrap; }
+  .coll-acts { display: flex; gap: 2px; opacity: 0; }
+  .coll-card:hover .coll-acts, .coll-card:focus-within .coll-acts, .coll-title-row:hover .coll-acts { opacity: 1; }
+  .coll-ic { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex: none; }
+  .coll-ic:hover, .coll-ic:focus-visible { background: var(--field); color: var(--text); }
+  .coll-newcard { border-style: dashed; cursor: default; gap: 10px; padding: 14px; }
+  .coll-newcard:hover { background: var(--panel); }
+  .coll-title-row { align-items: center; gap: 10px; flex-wrap: wrap; }
+  .coll-title { font-size: 22px; margin: 0; min-width: 0; }
+  .coll-menu { min-width: 250px; max-width: 320px; max-height: min(420px, 70vh); overflow-y: auto; }
+  .coll-menu button { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; align-items: center; width: 100%; }
+  .coll-menu .coll-h { padding: 4px 10px 2px; }
+  .coll-menu input { width: calc(100% - 12px); margin: 4px 6px; }
+  .coll-menu .err { padding: 0 10px 4px; }
+  .player .pcoll { position: absolute; top: 10px; right: 10px; display: flex; align-items: center; gap: 6px; padding: 5px 10px 5px 8px; border-radius: 999px; color: #fff; font: inherit; font-size: 12px; cursor: pointer;
+                   background: rgba(24,26,30,.34); -webkit-backdrop-filter: blur(16px) saturate(180%); backdrop-filter: blur(16px) saturate(180%); border: 1px solid rgba(255,255,255,.18); }
+  .player .pcoll:hover { background: rgba(24,26,30,.55); }
   .preview { border-left: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
   .preview video, .preview img { width: 100%; border-radius: 10px; background: #000; }
 
@@ -498,6 +542,16 @@
   .lv-strip img, .lv-grid img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--thumb); display: block; }
   .lv-strip figcaption, .lv-grid figcaption { font-size: 11px; color: var(--muted); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .lv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .mont-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 0 4px; }
+  .mt-strip { display: flex; flex-wrap: wrap; gap: 8px; }
+  .mt-tile { position: relative; width: 128px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--panel); cursor: grab; }
+  .mt-tile img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: var(--thumb); }
+  .mt-tile .mt-d { display: block; padding: 3px 6px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .mt-tile .x { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(0,0,0,.55); color: #fff; cursor: pointer; line-height: 1; padding: 0; }
+  .mt-tile.over { outline: 2px solid var(--accent); }
+  .mt-tile.out { cursor: default; opacity: .85; } .mt-tile.out .btn { margin: 4px 6px; }
+  .lv-grid.compact { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+  .lv-older { margin-top: 8px; } .lv-older summary { cursor: pointer; padding: 4px 0; }
   /* thumbnails in the live view open a bigger look (and, for B-roll, "Don't use this") */
   .lv-click { cursor: zoom-in; border-radius: 8px; outline-offset: 3px; }
   .lv-click:hover img, .lv-click:focus-visible img { box-shadow: 0 0 0 2px var(--accent); }
@@ -617,6 +671,7 @@
       <a href="#new/long" data-nav="long"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="2"/><path d="M6.5 6v4l3.5-2z"/></svg>Long form</a>
       <a href="#new/short" data-nav="short"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="4.5" y="1.5" width="7" height="13" rx="2"/><path d="M7 6.5v3l2.5-1.5z"/></svg>Short form</a>
       <a href="#find" data-nav="find" id="nav-find"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg>Find footage</a>
+      <a href="#collections" data-nav="collections" id="nav-collections"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3.5 2.5h9v11L8 10.5l-4.5 3z"/></svg>Collections</a>
       <a href="#music" data-nav="music" id="nav-music"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M6 12.5V3.5l7-1.5v9"/><circle cx="4.5" cy="12.5" r="1.8"/><circle cx="11.5" cy="11" r="1.8"/></svg>Music</a>
     </div>
     <div class="side-list" id="setup-side-wrap" hidden style="margin-top:14px"><a class="mk" id="setup-side" href="#setup" aria-label="Setup downloads: show details"></a></div>
@@ -1065,7 +1120,7 @@ document.addEventListener("scroll", closeCtx, true);
 document.addEventListener("contextmenu", e => {
   const shotEl = e.target.closest(".shot");
   if (shotEl && A && location.hash.startsWith("#find") && shotEl.dataset.si !== undefined && FIND.stock[+shotEl.dataset.si]) { e.preventDefault(); return stockMenu(e, FIND.stock[+shotEl.dataset.si]); }
-  if (shotEl && A && location.hash.startsWith("#find") && FIND.shots[+shotEl.dataset.i]) { e.preventDefault(); return shotMenu(e, FIND.shots[+shotEl.dataset.i]); }
+  if (shotEl && A && (location.hash.startsWith("#find") || location.hash.startsWith("#collections")) && FIND.shots[+shotEl.dataset.i]) { e.preventDefault(); return shotMenu(e, FIND.shots[+shotEl.dataset.i]); }
   const el = e.target.closest("[data-href], #done a, #making a");
   if (e.target.closest("input, textarea")) return;                         // (text fields keep Copy / Paste)
   e.preventDefault();                                                       // no "Reload" menu: it's an app
@@ -1123,6 +1178,7 @@ window.addEventListener("hashchange", () => document.querySelector("main").class
 function route(fromRefresh) {
   const h = location.hash.replace(/^#/, "") || "home";
   const [page, arg] = h.split("/");
+  if (page !== "collections" && typeof collLeave === "function") collLeave();       // (Find footage's own results come back before it paints)
   document.querySelectorAll("[data-nav]").forEach(a => a.classList.toggle("on", a.dataset.nav === (page === "new" ? arg : page === "transcript" ? "long" : page)));
   if (page === "settings") {
     if ($("#modal").hidden) openSettings(arg);
@@ -1143,6 +1199,7 @@ function route(fromRefresh) {
   if (page === "short" && arg) return paintShort(arg);
   if (page === "find") return paintFind();
   if (page === "music") return paintMusic();
+  if (page === "collections") return paintCollections(arg);
   if (page === "transcript" && arg) return paintTranscript(arg);
   if (page === "new") { if (arg === "long" || arg === "short") COMPOSE.mode = arg; return paintCompose(); }
   paintHome();
@@ -1359,6 +1416,24 @@ function longModesHTML() {
     ${mode("broll", `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1.5" y="8.5" width="13" height="5" rx="1.2"/><rect x="5.5" y="2.5" width="6" height="4" rx="1"/></svg>`, "Add B-roll to a video", "Your edit stays as it is; B-roll goes over it")}
     ${mode("transcript", `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3 4h10M3 7h10M3 10h7M3 13h5"/></svg>`, "Get the transcript", "Every word, as text and captions")}</div>`;
 }
+// Short form's two ways in (Clips from a video or link / Recap reels from a long video)
+// Message: "Give it the finished video, get 3 reels." User: an event videographer with the long video done and a client who also wants reels.
+// Guide, one action: the video, an optional B-roll folder, one button. Reels and length are chips; everything else is decided.
+function shortModesHTML() {
+  const cur = COMPOSE.shortMode || "clips";
+  const mode = (id, icon, title, sub) => `<button class="mode ${cur === id ? "on" : ""}" role="radio" aria-checked="${cur === id}" data-smode="${id}">${icon}<span><b>${title}</b><span class="small muted">${sub}</span></span></button>`;
+  return `<div class="modes two" role="radiogroup" aria-label="What to make">
+    ${mode("clips", `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="2"/><path d="M6.5 6v4l3.5-2z"/></svg>`, "Clips from a video or link", "The best moments, cut out as short clips")}
+    ${mode("recap", `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1.5" y="2" width="5" height="12" rx="1.2"/><rect x="9.5" y="2" width="5" height="12" rx="1.2"/></svg>`, "Recap reels", "A finished long video becomes a few fast reels, mostly B-roll")}</div>`;
+}
+const RECAP_DEFAULT = {reels: 3, len: 30, music: "auto"};
+function recapChipsHTML() {
+  const r = {...RECAP_DEFAULT, ...(COMPOSE.recap || {})};
+  const chip = (k, label, choices) => { const cur = choices.find(c => String(c[0]) === String(r[k])) || choices[0];
+    return `<label class="chip"><span class="k">${label}</span>${esc(cur[1])}<select data-recap="${k}" aria-label="${label}">${choices.map(c => `<option value="${esc(c[0])}" ${String(c[0]) === String(cur[0]) ? "selected" : ""}>${esc(c[1])}</option>`).join("")}</select></label>`; };
+  return chip("reels", "Reels", [[2, "2"], [3, "3"], [4, "4"], [5, "5"]]) + chip("len", "Each", [[15, "15 s"], [30, "30 s"], [45, "45 s"], [60, "60 s"]])
+       + chip("music", "Music", [["auto", "Match the content"], ["none", "None"]]);
+}
 function paintCompose() {
   $("#top-left").innerHTML = ""; $("#top-right").innerHTML = "";
   if (COMPOSE.mode === "long" && COMPOSE.longMode === "transcript") return paintTranscriptCompose();
@@ -1369,6 +1444,7 @@ function paintCompose() {
   const tray = shorts.length ? trayHTML(shorts, "short") : dropped ? trayHTML([...new Map(clips.map(c => [c.path, {path: c.path, kind: "video", name: c.name || c.path.split("/").pop(), dur: c.dur, w: c.w, h: c.h}])).values()], "long")
              : COMPOSE.busy ? trayHTML([], "") : "";
   const broll = long && COMPOSE.longMode === "broll";
+  const recap = !long && COMPOSE.shortMode === "recap";
   const noEdit = OFFLINE() && A.ai.use !== "local" && !A.online.local_editing;
   const linkOff = OFFLINE() ? ` disabled` : "";
   const pill = (icon, title, sub, xid) => `<div class="source"><span class="ic">${icon}</span><span class="ell"><b class="ell" style="display:block">${esc(title)}</b><span class="small muted ell" style="display:block">${esc(sub)}</span></span><button class="x" id="${xid}" aria-label="Remove">×</button></div>`;
@@ -1378,11 +1454,15 @@ function paintCompose() {
         : `<button class="btn" id="v-pick">Choose your video…</button><span class="small muted">the talking-head video, edited or not · or drop it in this window</span>`}</div>
       <div class="row">${COMPOSE.brollDir ? pill(ICON_FOLDER, COMPOSE.brollDir.split("/").filter(Boolean).pop(), "B-roll folder, read where it is" + (A.library && A.library.videos ? " · your footage library too" : ""), "b-x")
         : `<button class="btn" id="b-pick">Add a B-roll folder…</button><span class="small muted">optional${A.library && A.library.videos ? `: your footage library (${A.library.videos.toLocaleString()} videos) is searched either way` : ""}</span>`}</div>`;
+  const recapRows = `<div class="row">${COMPOSE.video ? pill(ICON_VIDEO, COMPOSE.video.split("/").pop(), "your finished video: its talk plays under the reels", "v-x")
+        : `<button class="btn" id="v-pick">Choose your video…</button><span class="small muted">the finished long video · or drop it in this window</span>`}</div>
+      <div class="row">${COMPOSE.brollDir ? pill(ICON_FOLDER, COMPOSE.brollDir.split("/").filter(Boolean).pop(), "B-roll folder, read where it is", "b-x")
+        : `<button class="btn" id="b-pick">Add a B-roll folder…</button><span class="small muted">optional: without one, the reels use the video's own pictures</span>`}</div>`;
   $("#view").innerHTML = `<div class="home">
     <h1 style="margin-bottom:${long ? 16 : 22}px">${long ? "Make a long video" : "Make short clips"}</h1>
-    ${long ? longModesHTML() : ""}
+    ${long ? longModesHTML() : shortModesHTML()}
     <div class="composer card" id="composer">
-      ${broll ? brollRows : `${tray}<div class="row">
+      ${broll ? brollRows : recap ? recapRows : `${tray}<div class="row">
         ${clips.length && !dropped ? `<div class="source"><span class="ic"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1.5" y="3.5" width="9" height="7" rx="1.5"/><path d="M4.5 12.5h9v-7"/></svg></span>
             <span class="ell"><b class="ell" style="display:block">${clips.every(c => c.dropped) ? `${vids.length} video${vids.length === 1 ? "" : "s"} you dropped in` : `${clips.length} shot${clips.length === 1 ? "" : "s"} from Find footage`}</b><span class="small muted ell" style="display:block" title="${esc(vids.join("\n"))}">Uses the ${vids.length === 1 ? "video" : vids.length + " videos"} they're from: ${esc(vids.map(v => v.split("/").pop()).join(", "))}</span></span>
             <button class="x" id="src-x" aria-label="Remove">×</button></div>`
@@ -1393,14 +1473,15 @@ function paintCompose() {
           : `<button class="btn" id="src-pick">${long ? "Choose a footage folder…" : shorts.length ? "Add another video…" : "Choose a video…"}</button>${long ? "" : `<input class="link-in" id="src-link" placeholder="${OFFLINE() ? "Links need the internet" : shorts.length ? "or paste another link" : "or paste a link (YouTube, a podcast…)"}" aria-label="Video link"${linkOff}>`}<span class="small muted">${long ? "or drop a folder anywhere in this window, or videos to use them as the footage" : shorts.length ? "or drop more, from the Finder or Photos" : "or drop videos (from the Finder or Photos)"}</span>`}
       </div>`}
       ${long && !broll && src && (COMPOSE.leftOut || []).length ? `<div class="small muted" style="margin:-4px 4px 0" title="${esc(COMPOSE.leftOut.join("\n"))}">Leaving out ${COMPOSE.leftOut.length === 1 ? "an earlier edit" : COMPOSE.leftOut.length + " earlier edits"}, not footage: ${esc(COMPOSE.leftOut.map(x => x.split("/").pop()).join(", "))}</div>` : ""}
+      ${long && !broll && src && COMPOSE.mont && !COMPOSE.noMont ? montageLineHTML() : ""}
       <div class="row">${COMPOSE.song ? pill(`<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M6 12.5V3.5l7-1.5v9"/><circle cx="4.5" cy="12.5" r="1.8"/><circle cx="11.5" cy="11" r="1.8"/></svg>`, COMPOSE.song.name, long ? "the music for this video" : "the music for every clip", "song-x")
         : `<button class="btn quiet" id="song-pick">Add a song…</button><span class="small muted">optional · from your music, or drop one in${A.music && A.music.tracks ? "" : " (otherwise the Music option picks)"}</span>`}</div>
-      <div class="notes-wrap"><textarea id="notes" rows="3" aria-label="What should it be?" placeholder="${broll ? "Anything about the B-roll? For example: show the science labs when she talks about classes, and keep the opening on her." : long ? "What should it be? For example: a 2-minute admissions video. Open with her best line. B-roll of the labs and campus." : "Anything to look for? For example: only the funny moments, and skip the sponsor read."}">${esc(COMPOSE.notes)}</textarea>
+      <div class="notes-wrap"><textarea id="notes" rows="3" aria-label="What should it be?" placeholder="${recap ? "Anything about the reels? For example: one reel on the keynote, one on the crowd, and end each on the logo." : broll ? "Anything about the B-roll? For example: show the science labs when she talks about classes, and keep the opening on her." : long ? "What should it be? For example: a 2-minute admissions video. Open with her best line. B-roll of the labs and campus." : "Anything to look for? For example: only the funny moments, and skip the sponsor read."}">${esc(COMPOSE.notes)}</textarea>
         <button class="mic" id="mic" aria-label="Dictate: say what you want" title="Say what you want instead of typing it (the words are worked out on this Mac)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg><span class="mic-t" id="mic-t" hidden></span></button></div>
       <div class="row">
-        ${chipsHTML(m, "new")}
+        ${recap ? recapChipsHTML() : chipsHTML(m, "new")}
         <span class="grow"></span>
-        <button class="btn primary" id="make" ${(broll ? COMPOSE.video : src || clips.length || shorts.length) && !noEdit && !COMPOSE.busy ? "" : "disabled"}>${broll ? "Add the B-roll" : long ? (dropped ? `Make a long video from ${vids.length} clip${vids.length === 1 ? "" : "s"}` : "Make the video") : shorts.length > 1 ? `Make clips from ${shorts.length} videos` : "Make clips"}</button>
+        <button class="btn primary" id="make" ${(broll || recap ? COMPOSE.video : src || clips.length || shorts.length) && !noEdit && !COMPOSE.busy ? "" : "disabled"}>${recap ? "Make recap reels" : broll ? "Add the B-roll" : long ? (dropped ? `Make a long video from ${vids.length} clip${vids.length === 1 ? "" : "s"}` : "Make the video") : shorts.length > 1 ? `Make clips from ${shorts.length} videos` : "Make clips"}</button>
       </div>
       ${noEdit ? `<div class="small muted">You're offline, and this Mac has no editing model to use instead. Connect to the internet to make it, or download this Mac's model in Settings › AI when you're back online. Getting a transcript works offline.</div>` : ""}
       <div class="err small" id="make-err"></div>
@@ -1410,13 +1491,16 @@ function paintCompose() {
                return mine.length ? `<div class="compose-recent"><div class="row" style="justify-content:space-between"><h2>${long ? "Recent long videos" : "Recent short clips"}</h2><a href="#home" class="small">All projects</a></div>
                  <div class="tiles" role="list">${mine.map(tileHTML).join("")}</div></div>` : ""; })()}
   </div>`;
-  $("#notes").oninput = e => { COMPOSE.notes = e.target.value; };
+  $("#notes").oninput = e => { COMPOSE.notes = e.target.value; montageSoon(); };
+  if ($("#mont-off")) $("#mont-off").onclick = () => { COMPOSE.noMont = true; LAST = ""; route(); };
   bindMic($("#mic"), $("#notes"), t => { COMPOSE.notes = t; });
   if ($("#src-x")) $("#src-x").onclick = () => { COMPOSE.source = ""; COMPOSE.sourceInfo = null; COMPOSE.clips = []; LAST = ""; route(); };
   bindTray();
   document.querySelectorAll("[data-lmode]").forEach(b => b.onclick = () => { COMPOSE.longMode = b.dataset.lmode; LAST = ""; route(); });
   if ($("#song-pick")) $("#song-pick").onclick = () => openSongs(song => { COMPOSE.song = song.name ? song : null; LAST = ""; route(); });
   if ($("#song-x")) $("#song-x").onclick = () => { COMPOSE.song = null; LAST = ""; route(); };
+  document.querySelectorAll("[data-smode]").forEach(b => b.onclick = () => { COMPOSE.shortMode = b.dataset.smode; LAST = ""; route(); });
+  document.querySelectorAll("[data-recap]").forEach(sel => sel.onchange = () => { COMPOSE.recap = {...(COMPOSE.recap || {}), [sel.dataset.recap]: sel.value}; LAST = ""; route(false); });
   if ($("#v-pick")) $("#v-pick").onclick = async () => { const p = await pick("file", "Choose your video"); if (p) { COMPOSE.video = p; LAST = ""; route(); } };
   if ($("#b-pick")) $("#b-pick").onclick = async () => { const p = await pick("folder", "Choose a folder of B-roll"); if (p) { COMPOSE.brollDir = p; LAST = ""; route(); } };
   if ($("#v-x")) $("#v-x").onclick = () => { COMPOSE.video = ""; LAST = ""; route(); };
@@ -1499,7 +1583,8 @@ function bindChips() {
 }
 async function setSource(p) {
   if (COMPOSE.mode === "short") { const info = await dropInfo(p); return info && addShort(info); }     // a chosen video or a pasted link: one more in the tray
-  COMPOSE.source = p; COMPOSE.sourceInfo = "Looking…"; COMPOSE.leftOut = []; COMPOSE.clips = []; LAST = ""; route();
+  COMPOSE.source = p; COMPOSE.sourceInfo = "Looking…"; COMPOSE.leftOut = []; COMPOSE.clips = []; COMPOSE.mont = null; COMPOSE.noMont = false; LAST = ""; route();
+  montageSoon(0);
   if (COMPOSE.mode === "long" && !/^https?:/.test(p)) {
     try { const r = await api("/api/ai/estimate?path=" + encodeURIComponent(p) + "&transcriber=parakeet");
       COMPOSE.sourceInfo = `${r.files} video${r.files === 1 ? "" : "s"}${r.audio_files ? `, ${r.audio_files} recorder audio file${r.audio_files === 1 ? "" : "s"}` : ""} · ${r.hours} h of footage, ${r.talk_hours} h with talking · read where it is`;
@@ -1508,6 +1593,70 @@ async function setSource(p) {
   } else COMPOSE.sourceInfo = /^https?:/.test(p) ? "a link: downloaded when you press Make" : "a video on this Mac";
   LAST = ""; route();
 }
+// ---- montages and slideshows (montage.py): the folder has no one talking, or the notes say slideshow: music first, the cuts follow it.
+// The composer says so in one line (with a way back); the project page shows the PLAN to check before anything renders.
+let montTimer = 0;
+function montageSoon(wait = 600) {                                          // (after the folder or the notes change: ask what it looks like)
+  clearTimeout(montTimer);
+  if (COMPOSE.mode !== "long" || !COMPOSE.source || /^https?:/.test(COMPOSE.source)) return;
+  montTimer = setTimeout(async () => {
+    const src = COMPOSE.source;
+    try {
+      const r = await post("/api/app/montage/detect", {path: src, notes: COMPOSE.notes || ""});
+      if (COMPOSE.source !== src) return;
+      const was = COMPOSE.mont && COMPOSE.mont.line;
+      COMPOSE.mont = r.montage || null;
+      if ((COMPOSE.mont && COMPOSE.mont.line) !== was && !$("#notes:focus")) { LAST = ""; route(); }
+    } catch (e) { /* no guess: an ordinary edit */ }
+  }, wait);
+}
+function montageLineHTML() {
+  const m = COMPOSE.mont;
+  return `<div class="mont-line"><span class="small">${esc(m.line)}</span><button class="btn quiet" id="mont-off">Not what I meant</button></div>`;
+}
+function montageCardHTML(p) {
+  const c = p.montage_card, base = `/media/${c.job}/`;
+  const tile = (s, extra = "") => `<div class="mt-tile ${s.kind || ""} ${extra}" draggable="true" data-id="${esc(s.id)}" title="${esc(s.what)}"><img alt="" src="${base}${esc(s.thumb)}" onerror="this.style.visibility='hidden'">
+      <span class="mt-d">${s.kind === "photo" ? "photo · " : ""}${s.d} s</span><button class="x" data-mt-rm="${esc(s.id)}" aria-label="Leave this shot out">×</button></div>`;
+  const lens = [[0, "AI decides"], [1, "1 min"], [2, "2 min"], [3, "3 min"], [5, "5 min"], [8, "8 min"]], cur = c.target_s ? Math.round(c.target_s / 60) : 0;
+  return `<div class="card mont" style="padding:18px;display:flex;flex-direction:column;gap:12px">
+    ${c.line ? `<div class="mont-line"><span class="small muted">${esc(c.line)}</span><button class="btn quiet" id="mt-normal">Not what I meant</button></div>` : ""}
+    <div><b>${esc(c.headline)}</b></div>
+    ${c.summary ? `<div>${esc(c.summary)}</div>` : ""}
+    ${c.you_said ? `<div class="small muted">You said: “${esc(c.you_said)}”</div>` : ""}
+    ${c.note ? `<div class="small" style="color:var(--warn)">${esc(c.note)}</div>` : ""}
+    <div class="row" style="gap:14px;flex-wrap:wrap">
+      <div class="seg" role="group" aria-label="Pace">${[["fast", "Fast-paced"], ["auto", "Regular"], ["slow", "Take it slow"]].map(([v, l]) => `<button data-mt-pace="${v}" class="${c.pace === v ? "on" : ""}">${l}</button>`).join("")}</div>
+      <label class="small muted">Length <select id="mt-len">${lens.map(([v, l]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <span class="small muted">${c.song && c.song.title ? `Song: <b style="color:var(--text)">${esc(c.song.title)}</b>` : "No music"}</span><button class="btn quiet" id="mt-song">Another song</button>
+      <label class="small row" style="gap:6px"><input type="checkbox" id="mt-diss" ${c.dissolves ? "checked" : ""}> Soft dissolves between shots</label>
+    </div>
+    <div class="small muted">The shots, in the order they play. Drag one to move it; × leaves it out.</div>
+    <div class="mt-strip" id="mt-strip">${c.strip.map(s => tile(s)).join("")}</div>
+    ${(c.left_out || []).length || (c.removed || []).length ? `<details><summary class="small muted">${(c.left_out || []).length + (c.removed || []).length} left out${c.left_out_line ? ` (${esc(c.left_out_line)})` : ""}</summary>
+      <div class="mt-strip" style="margin-top:8px">${[...(c.removed || []), ...(c.left_out || [])].map(s => `<div class="mt-tile out" title="${esc(s.what)}${s.why ? " · " + esc(s.why) : ""}"><img alt="" src="${base}${esc(s.thumb)}" onerror="this.style.visibility='hidden'"><button class="btn quiet" data-mt-back="${esc(s.id)}">Put back</button></div>`).join("")}</div></details>` : ""}
+    <div class="row"><button class="btn primary" id="mt-go">Make it</button><span class="small muted">Nothing is made until you press this.</span></div></div>`;
+}
+function montageBind(p, pid, on) {
+  const act = async body => { try { await post(`/api/ai/projects/${pid}/montage-edit`, body); } catch (e) { toast(e.message); } LAST = ""; refresh(); };
+  document.querySelectorAll("[data-mt-pace]").forEach(b => b.onclick = () => act({op: "pace", value: b.dataset.mtPace}));
+  document.querySelectorAll("[data-mt-rm]").forEach(b => b.onclick = e => { e.stopPropagation(); act({op: "remove", id: b.dataset.mtRm}); });
+  document.querySelectorAll("[data-mt-back]").forEach(b => b.onclick = () => act({op: "restore", id: b.dataset.mtBack}));
+  if ($("#mt-len")) $("#mt-len").onchange = e => act({op: "length", minutes: +e.target.value});
+  if ($("#mt-song")) $("#mt-song").onclick = () => act({op: "song", value: "another"});
+  if ($("#mt-diss")) $("#mt-diss").onchange = e => act({op: "dissolves", value: e.target.checked});
+  if ($("#mt-normal")) $("#mt-normal").onclick = async () => { try { await post(`/api/ai/projects/${pid}/montage-edit`, {op: "normal"}); } catch (e) { toast(e.message); } refresh(); };
+  on("#mt-go", () => post(`/api/ai/projects/${pid}/approve-plan`));
+  let drag = null;                                                           // reorder by dragging a tile onto the one it should come before
+  document.querySelectorAll("#mt-strip .mt-tile").forEach(t => {
+    t.ondragstart = e => { drag = t.dataset.id; e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", drag); } catch (x) { /* none */ } };
+    t.ondragover = e => { if (drag && drag !== t.dataset.id) { e.preventDefault(); t.classList.add("over"); } };
+    t.ondragleave = () => t.classList.remove("over");
+    t.ondrop = e => { e.preventDefault(); t.classList.remove("over"); const id = drag; drag = null; if (id && id !== t.dataset.id) act({op: "move", id, before: t.dataset.id}); };
+    t.ondragend = () => { drag = null; };
+  });
+}
+
 // ---- what is dropped into the window (or chosen, or pasted). THE TAB YOU ARE ON DECIDES where it goes; the file's shape never does (a
 // vertical clip from Photos can be footage for a long video too). Each drop is ADDED to the tray under the composer's source row.
 const IMAGE_RE = /\.(jpe?g|png|heic|heif|webp|gif|tiff?|bmp|dng|cr2|cr3|arw|nef)$/i;
@@ -1539,6 +1688,7 @@ async function dropInfo(p) {                                               // wh
   }
 }
 function addShort(info) {                                                  // short form: every video (and link) dropped, chosen or pasted joins the tray
+  if (COMPOSE.shortMode === "recap" && info.kind === "video") { COMPOSE.video = info.path; LAST = ""; return route(); }   // (recap reels: the one finished video)
   if (info.kind !== "video" && info.kind !== "link") return toast(info.kind === "image" ? "That's a photo; drop videos here." : "Short clips are made from videos or a link. That isn't one.");
   COMPOSE.shorts = [...(COMPOSE.shorts || []).filter(s => s.path !== info.path),
                     {path: info.path, kind: info.kind, name: info.name || info.path.split("/").pop(), dur: info.duration || 0, w: info.w || 0, h: info.h || 0}];
@@ -1645,9 +1795,12 @@ async function make() {
   const b = $("#make"); b.disabled = true; $("#make-err").textContent = "";
   try {
     const m = COMPOSE.mode, o = {...COMPOSE.opts[m]};
+    if (m === "long" && COMPOSE.noMont) o.montage = "off";                  // ("Not what I meant": an ordinary edit)
     const clips = m === "long" ? (COMPOSE.clips || []) : [], broll = m === "long" && COMPOSE.longMode === "broll";
     const song = COMPOSE.song ? (COMPOSE.song.track ? {track: COMPOSE.song.track} : {song: COMPOSE.song.song}) : {};
-    const r = await post("/api/app/" + m, broll ? {mode: "broll", video: COMPOSE.video, broll_folder: COMPOSE.brollDir || "", notes: COMPOSE.notes, options: o, ...song}
+    const recap = m === "short" && COMPOSE.shortMode === "recap", rc = {...RECAP_DEFAULT, ...(COMPOSE.recap || {})};
+    const r = await post("/api/app/" + m, recap ? {recap: true, source: COMPOSE.video, broll_folder: COMPOSE.brollDir || "", notes: COMPOSE.notes, options: {reels: +rc.reels, reel_len: +rc.len, music: rc.music === "none" ? "none" : ""}, ...song}
+                                       : broll ? {mode: "broll", video: COMPOSE.video, broll_folder: COMPOSE.brollDir || "", notes: COMPOSE.notes, options: o, ...song}
                                        : clips.length ? {clips: [...new Set(clips.map(c => c.path))], notes: COMPOSE.notes, options: o, ...song,
                                                          ...(clips.every(c => c.dropped) ? {title: (() => { const v = [...new Set(clips.map(c => c.path))];   // dropped videos: named after
                                                            return v.length === 1 ? v[0].split("/").pop().replace(/\.[^.]+$/, "") : v[0].split("/").slice(-2, -1)[0] || "Dropped videos"; })()} : {})}
@@ -1852,7 +2005,11 @@ function liveNow() {                                          // the latest thre
           <span class="meta" style="white-space:nowrap">${on ? "Picked · " : ""}${mmss(x.start)}–${mmss(x.end)} · ${Math.round(x.end - x.start)} s · ${x.score}</span></div>
           ${x.quote ? `<span class="q">“${esc(x.quote)}”</span>` : ""}<div class="lv-score"><i style="width:${Math.max(0, Math.min(100, x.score * 10))}%"></i></div></div>`; }).join("")}</div>`,
     lines: () => d.lines.length && `<h3>Lines it keeps <span>${d.lines.length}</span></h3><div class="lv-list">${d.lines.map(x => `<div class="lv-item ${anim(x.n)}"><span class="meta">${mmss(x.start)}–${mmss(x.end)}</span><span>“${esc(x.text)}”</span></div>`).join("")}</div>`,
-    broll: () => d.broll.length && `<h3>B-roll it places over the talking <span>${d.broll.length}</span></h3><div class="lv-grid">${d.broll.map(x => fig(x, `at ${mmss(x.at)} · ${x.length} s · ${x.what || x.of}`, "broll")).join("")}</div>`,
+    broll: () => d.broll.length && (() => {                                  // the newest few; the rest one click away (it used to be a wall of every shot)
+      const cap = x => `at ${mmss(x.at)} · ${x.length} s · ${x.what || x.of}`, recent = d.broll.slice(-6), older = d.broll.slice(0, -6);
+      return `<h3>B-roll it places over the talking <span>${d.broll.length}</span></h3><div class="lv-grid compact">${recent.map(x => fig(x, cap(x), "broll")).join("")}</div>`
+        + (older.length ? `<details class="lv-older"><summary class="small muted">Show the ${older.length} before these</summary><div class="lv-grid compact">${older.map(x => fig(x, cap(x), "broll")).join("")}</div></details>` : "");
+    })(),
     clips: () => d.render && `<h3>Making the clips <span>${d.clips.length} of ${d.render.of} done</span></h3>      ${/* (the finished ones are listed under this panel) */ ""}
       <div class="lv-item ${anim(d.render.n)}"><span class="meta">Clip ${d.render.index} of ${d.render.of} · ${mmss(d.render.start)}–${mmss(d.render.end)} of the video</span><b>${esc(d.render.title)}</b></div>`,
   };
@@ -1989,11 +2146,12 @@ function paintLong(pid) {
   const js = p.job_state || {}, st = js.status || "draft", c = p.clip, busy = BUSY.includes(st);
   const kept = p.options && p.options.keep_cut;
   $("#top-left").innerHTML = `<h2 class="ell">${esc(p.title)}</h2><span class="muted small">${kept ? `B-roll added to ${esc(p.options.aroll || "your video")}` : "Long form"}</span>`;
-  $("#top-right").innerHTML = st === "done" && c ? `<button class="btn quiet" id="l-song">${p.options && p.options.song ? "Change the song" : "Add a song"}</button><button class="btn quiet" id="l-reveal">Show in Finder</button>${openInButtons("l", true)}` : "";
+  $("#top-right").innerHTML = st === "done" && c ? `<button class="btn quiet" id="l-song">${p.options && p.options.song ? "Change the song" : "Add a song"}</button><button class="btn quiet" id="l-reveal">Show in Finder</button><button class="btn quiet" id="l-recap" title="Make a few short, fast reels from this video">Make recap reels</button>${openInButtons("l", true)}` : "";
   let h = `<div class="page">`;
   if (busy) h += `<div id="live-slot"></div><div id="te-slot"></div>`;     // the live view (filled by liveMount below), and the transcript under it
   else if (st === "failed" || st === "cancelled") h += `<div class="card" style="padding:18px"><b>${st === "failed" ? "It didn't finish" : "Stopped"}</b><div class="err small" style="margin-top:6px">${esc(js.error || "")}</div>
       <div class="row" style="margin-top:12px">${p.pending_render ? `<button class="btn primary" id="l-rerender">Render the same edit again</button>` : ""}<button class="btn ${p.pending_render ? "" : "primary"}" id="l-again">Try again</button><button class="btn danger" id="l-delete">Remove from the list</button></div></div>`;
+  else if (st === "approval" && p.awaiting_approval && p.montage_card) h += montageCardHTML(p);
   else if (st === "approval" && p.awaiting_approval) h += `<div class="card" style="padding:18px"><b>The plan is ready for you to check</b><div class="small muted" style="margin-top:4px">It follows your outline step by step; approve it to render.</div><div class="row" style="margin-top:12px"><button class="btn primary" id="l-approve">Approve and render</button></div></div>`;
   else if (st === "done" && c) {
     const base = `/media/${p.job}/`;
@@ -2050,11 +2208,15 @@ function paintLong(pid) {
   };
   on("#l-again", () => post(`/api/ai/projects/${pid}/make`, {notes: p.notes, ...(p.options || {}), fcp: true}));
   on("#l-approve", () => post(`/api/ai/projects/${pid}/approve-plan`));
+  if (p.montage_card && st === "approval") montageBind(p, pid, on);
   on("#l-delete", async () => { if (confirm("Remove this video from the list? Its folder and your footage are kept.")) { await api(`/api/ai/projects/${pid}`, {method: "DELETE"}); location.hash = "#home"; } });
   bindOpenIn(pid);
   if (st === "done" && c) paintBroll(p);
   on("#l-song", () => openSongs(song => songForProject("long", pid, song), {title: "A song for this video", allowNone: !!(p.options && (p.options.song || p.options.music))}));
   on("#l-reveal", () => post(`/api/ai/projects/${pid}/reveal`).catch(e => alert(e.message)));
+  on("#l-recap", async () => { try { const f = await api(`/api/app/long/${pid}/final`);      // (the finished video goes to the Recap reels composer, with the footage it was made from as B-roll)
+    COMPOSE = {mode: "short", shortMode: "recap", source: "", sourceInfo: null, notes: "", opts: {long: {}, short: {}}, clips: [], shorts: [], longMode: COMPOSE.longMode, video: f.path, brollDir: (p.folder && !(p.options && p.options.keep_cut)) ? p.folder : "", song: null, recap: COMPOSE.recap};
+    location.hash = "#new/short"; } catch (e) { toast(e.message); } });
   on("#l-apply", () => { const t = $("#l-change").value.trim(); if (t) return post(`/api/ai/projects/${pid}/revise`, {instruction: t}); });
   on("#l-learn", async () => { const t = $("#l-feedback").value.trim(); if (!t) return; const r = await post(`/api/app/styles/long/add`, {text: t}); $("#l-feedback").value = "";
     $("#l-learned").textContent = r.added && r.added.length ? "Added to How it edits: " + r.added.join(" · ") : "Nothing new to remember from that."; });
@@ -2361,7 +2523,7 @@ function findStatus() {
   const r = src.find(x => x.path === u) || {mounted: true};
   if (!r.mounted) return {text: `That folder's drive isn't plugged in. Plug it in to search it.`, btn: ""};
   if (r.cataloguing) return {text: `Now ${step} this folder: ${prog}. Search works on what is done so far.${load}`, btn: "stop"};
-  if (!r.videos && !r.photos) return {text: "This folder isn't catalogued yet.", btn: "run"};
+  if (!r.videos && !r.photos) return {text: st.error && !st.running ? st.error : "This folder isn't catalogued yet.", btn: "run"};   // (why the last try found nothing, in plain words)
   return {text: `${cnt(r.videos, r.photos)} catalogued here.`, btn: "more"};
 }
 const midCut = (t, n) => t.length <= n ? t : t.slice(0, Math.ceil(n / 2) - 1) + "…" + t.slice(-Math.floor(n / 2));
@@ -2445,16 +2607,27 @@ function catLiveFold() {                                                    // o
 }
 const clName = rel => String(rel || "").split("/").pop();
 const clStill = e => e && e.id && e.k !== null && e.k !== undefined ? `<img alt="" src="/api/library/thumb/${encodeURIComponent(e.id)}/${e.k}">` : "";
+const tagChips = (tags, cls = "tags") => (tags || []).filter(Boolean).length
+  ? `<span class="${cls}">${tags.filter(Boolean).slice(0, 3).map(w => `<button class="tagchip" data-tag="${esc(w)}" title="Search for ${esc(w)}">${esc(w)}</button>`).join("")}</span>` : "";
 function catTile(e, fresh) {
   const t = document.createElement("div");
   t.className = "cl-t" + (fresh ? " in" : "");
   const what = (e.what || []).filter(Boolean);
+  // the three keywords the pictures say (tagwords.py): what a file that is searchable but not described yet shows instead of a status; with none yet, just its name
   t.innerHTML = `<div class="cl-pic">${clStill(e) || `<span class="cl-ph">${esc(clName(e.rel))}</span>`}</div>
     <b class="ell small" title="${esc(e.rel || "")}">${esc(clName(e.rel))}</b>
-    <span class="what ${what.length ? "" : "muted"}">${esc(what.length ? what.join(" · ") : e.step === "frames" ? "Searchable now" : "")}</span>
+    ${what.length ? `<span class="what">${esc(what.join(" · "))}</span>` : ""}${tagChips(e.tags)}
     ${e.by ? `<span class="small muted">${esc(e.by)}</span>` : ""}`;
   return t;
 }
+// a keyword anywhere on the page searches for it (Find footage's search box)
+function tagSearch(word) {
+  closePlayer(true);
+  FIND.q = word;
+  if (location.hash.startsWith("#find") && $("#q")) { $("#q").value = word; return search(); }
+  location.hash = "#find"; setTimeout(() => { if ($("#q")) { $("#q").value = word; search(); } }, 60);
+}
+document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("[data-tag]"); if (b) { e.preventDefault(); e.stopPropagation(); tagSearch(b.dataset.tag); } }, true);
 function catLiveNow() {
   const e = CL.now, pic = $("#cl-now-pic"); if (!pic) return;
   const key = e ? `${e.n}` : "";
@@ -2528,7 +2701,7 @@ function underOptions(u) {
   const src = sources(), multi = src.length > 1;
   const opt = r => `<option value="${esc(r.path)}" ${u === r.path ? "selected" : ""}>${esc(shortName(r.path))}${!r.mounted ? " · not plugged in" : r.videos || r.photos ? ` · ${(r.videos + r.photos).toLocaleString()}` : " · not catalogued"}</option>`;
   return `${multi ? `<option value="" ${u ? "" : "selected"}>Everything (${src.length} folders)</option>` : ""}${src.map(opt).join("")}
-          <option disabled>──────────</option><option value="__add">Add a folder…</option><option value="__manage">Manage folders…</option>`;
+          ${collOptions()}<option disabled>──────────</option><option value="__add">Add a folder…</option><option value="__manage">Manage folders…</option>`;
 }
 function paintFind() {
   $("#top-left").innerHTML = ""; $("#top-right").innerHTML = "";
@@ -2560,7 +2733,7 @@ function paintFind() {
       <div class="small" id="find-msg">${esc(FIND.msg)}</div>
       <div class="shots" id="shots"></div>
       <div class="stock-wrap" id="stock-wrap" hidden><div class="shots-h" id="stock-h"></div><div class="shots" id="stock-shots"></div><div class="row" id="stock-foot"></div></div>
-      <div class="card row" id="basket" style="padding:10px 10px 10px 16px;justify-content:space-between;position:sticky;bottom:0" hidden><span id="basket-n"></span><span class="row"><button class="btn" id="b-clear">Clear</button><button class="btn" id="b-sdl" hidden>Download</button><button class="btn" id="b-sadd" hidden>Add to my B-roll</button><button class="btn" id="b-long">Make a long video</button><button class="btn" id="b-short">Make short clips</button><button class="btn primary" id="b-send">Send to Final Cut</button></span></div>
+      <div class="card row" id="basket" style="padding:10px 10px 10px 16px;justify-content:space-between;position:sticky;bottom:0" hidden><span id="basket-n"></span><span class="row"><button class="btn" id="b-clear">Clear</button><button class="btn" id="b-coll">Add to collection…</button><button class="btn" id="b-sdl" hidden>Download</button><button class="btn" id="b-sadd" hidden>Add to my B-roll</button><button class="btn" id="b-long">Make a long video</button><button class="btn" id="b-short">Make short clips</button><button class="btn primary" id="b-send">Send to Final Cut</button></span></div>
     </div></div>`;
   paintFindStatus();
   paintHint();
@@ -2574,6 +2747,7 @@ function paintFind() {
   $("#q").focus();
   if ($("#under")) $("#under").onchange = async e => {
     const v = e.target.value;
+    if (v.startsWith("__coll:")) { COLL.qFrom = FIND.q || ""; location.hash = "#collections/" + v.slice(7); return; }       // a collection as the place to look
     if (v === "__manage") { location.hash = "#settings/library"; return; }
     if (v === "__add") { if (!(await addSource())) paintFind(); return; }
     FIND.under = v; FIND.shots = []; FIND.msg = "";
@@ -2584,6 +2758,7 @@ function paintFind() {
   $("#kind").onchange = e => { FIND.kind = e.target.value; $("#kind-l").textContent = e.target.selectedOptions[0].textContent; if (FIND.q) search(); };
   $("#b-clear").onclick = () => { FIND.basket.clear(); FIND.stockPick.clear(); paintShots(); paintStock(); };
   $("#b-send").onclick = sendBasket;
+  $("#b-coll").onclick = e => collMenu(e.currentTarget, [...FIND.basket.values()]);
   $("#b-long").onclick = async () => {                                     // picked stock videos are downloaded first, then go in too
     const stock = [...FIND.stockPick.values()].filter(s => s.kind === "video");
     const got = stock.length ? await stockFiles(stock, "use") : [];
@@ -2655,10 +2830,11 @@ function rememberPick(s) {                                                // (Ho
                                           path: s.path || "", dur: s.dur || 0, step: s.step || 0, frames: s.frames || 0}}).catch(() => {});
 }
 function shotMenu(e, s) {
-  const k = keyOf(s), picked = FIND.basket.has(k), video = s.kind === "video";
-  const acts = [video ? [picked ? "unpick" : "pick", picked ? "Unpick" : "Pick"] : null, video ? ["short", "Make short clips from this video"] : null,
-                video ? ["long", FIND.basket.size && !picked ? `Make a long video with the ${FIND.basket.size + 1} shots` : picked && FIND.basket.size > 1 ? `Make a long video with the ${FIND.basket.size} picked shots` : "Make a long video from this video"] : null,
-                null, ["finder", "Show in Finder"], video ? ["fcp", "Send this shot to Final Cut"] : null].filter((x, i, a) => x || (a[i - 1] && i < a.length - 1));
+  const bk = COLL.on ? new Map() : FIND.basket;                              // (inside a collection the picked-shots basket is not on show: it does not count)
+  const k = keyOf(s), picked = bk.has(k), video = s.kind === "video";
+  const acts = [video && !COLL.on ? [picked ? "unpick" : "pick", picked ? "Unpick" : "Pick"] : null, video ? ["short", "Make short clips from this video"] : null,
+                video ? ["long", bk.size && !picked ? `Make a long video with the ${bk.size + 1} shots` : picked && bk.size > 1 ? `Make a long video with the ${bk.size} picked shots` : "Make a long video from this video"] : null,
+                null, s.missing ? null : ["coll", "Add to collection…"], ["finder", "Show in Finder"], video ? ["fcp", "Send this shot to Final Cut"] : null].filter((x, i, a) => x || (a[i - 1] && i < a.length - 1));
   const m = $("#ctx");
   m.innerHTML = acts.map(x => x ? `<button role="menuitem" data-act="${x[0]}">${esc(x[1])}</button>` : "<hr>").join("");
   m.hidden = false;
@@ -2669,7 +2845,8 @@ function shotMenu(e, s) {
     const a = b.dataset.act;
     if (a === "pick" || a === "unpick") { if (a === "pick") { FIND.basket.set(k, s); rememberPick(s); } else FIND.basket.delete(k); paintShots(); }
     else if (a === "short") shotsToShort([s]);
-    else if (a === "long") shotsToLong(picked ? [...FIND.basket.values()] : [...FIND.basket.values(), s]);
+    else if (a === "long") shotsToLong(picked ? [...bk.values()] : [...bk.values(), s]);
+    else if (a === "coll") collMenu({x: e.clientX, y: e.clientY}, [s]);
     else if (a === "finder") post("/api/library/reveal", {id: s.id}).catch(er => alert(er.message));
     else if (a === "fcp") {
       try { const r2 = await post("/api/library/fcpxml", {shots: [{id: s.id, start: s.start, end: s.end, what: s.what || FIND.q}], name: "Found footage - " + (s.what || FIND.q || "shot"), open: true});
@@ -2694,7 +2871,8 @@ function openPlayer(i, ext) {                                              // (e
     + (ext ? `<button class="pavoid" id="pavoid" ${lvOut(ext.avoid) ? "disabled" : ""}>${lvOut(ext.avoid) ? "Won't be used" : "Don't use this"}</button><div class="pnote" id="pnote" hidden></div>`
        : video ? `<label class="ppick"><input type="checkbox" ${picked ? "checked" : ""} aria-label="Pick this shot">${picked ? "Picked" : "Pick"}</label>` : "")
     + (video ? `<img class="pframe" alt="" hidden>` : "")
-    + `<div class="pbar"><span class="capwrap"><span class="cap ell" id="pcap">${video ? `${mmss(s.start)}–${mmss(s.end)} · ` : ""}${esc(s.what || s.rel.split("/").pop())}</span></span>
+    + (!ext ? `<button class="pcoll" id="pcoll" type="button" aria-label="Add this shot to a collection">${COLL_ICON.add}<span>Collection</span></button>` : "")
+    + `<div class="pbar"><span class="capwrap"><span class="cap ell" id="pcap">${video ? `${mmss(s.start)}–${mmss(s.end)} · ` : ""}${esc(s.what || s.rel.split("/").pop())}</span>${tagChips(s.tags, "ptags")}</span>
        ${video ? `<button class="pp" aria-label="Pause">${PP_PAUSE}</button>
        <div class="scrub" role="slider" tabindex="0" aria-label="Scrub through the video" aria-valuemin="0" aria-valuemax="${Math.round(s.dur || 0)}"><svg class="heat" aria-hidden="true"></svg><div class="track"></div>
          <div class="shotband"></div><div class="head"></div><span class="tip" hidden></span></div><span class="ptime" id="ptime"></span><button class="best" id="pbest" hidden title="Where the video looks best for what you searched">Best part</button>` : ""}</div>`;
@@ -2717,6 +2895,7 @@ function openPlayer(i, ext) {                                              // (e
     v.onclick = () => closePlayer();                                       // click the picture: pause and shrink back
     pp.onclick = e => { e.stopPropagation(); v.paused ? v.play() : v.pause(); };   // the button: play / pause, stays open
   } else p.querySelector("img.full").onclick = () => closePlayer();
+  if ($("#pcoll")) $("#pcoll").onclick = e => { e.stopPropagation(); collMenu(e.currentTarget, [PLAYER && PLAYER.moment ? PLAYER.moment : s]); };      // (the moment you are on, as Pick does)
   const pick = p.querySelector(".ppick input");
   if (pick) pick.onchange = () => {                                        // the only way to pick or unpick: the checkbox (this moment)
     const m = PLAYER.moment, k = keyOf(m);
@@ -2792,7 +2971,6 @@ function bindScrub(p, s, v) {
     v.oncanplay = () => { v.oncanplay = null; if (!v.isConnected) return; frame.hidden = true; v.play().catch(() => {}); };
   };
   v.addEventListener("timeupdate", () => {
-    if (direct && !free && v.currentTime >= s.end) v.currentTime = s.start;      // (the shot, again, until you scrub)
     if (!dragging) paintHead(seg[0] + v.currentTime);
   });
   const loadHeat = (tries) => api(`/api/library/heat/${s.id}?q=${encodeURIComponent(FIND.q || "")}`).then(h => {          // like YouTube's "most replayed"
@@ -3600,16 +3778,260 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && PLAYER) { 
 $("#pscrim").addEventListener("click", () => closePlayer());
 window.addEventListener("hashchange", () => closePlayer(true));
 window.addEventListener("resize", () => closePlayer(true));
+// ---- Collections (shotcollections.py).
+// 1. Message: "Save a shot once, find it again in a click." 2. User: an editor hunting B-roll through thousands of clips who stumbles on a good one and
+//    never remembers where it was; hurried, mouse in hand. 3. Principles: speed (one bookmark on every shot, one small menu, no dialog), reassure (a
+//    collection only points at the footage: nothing is copied, moved or deleted; every add can be undone), guide (a page of named cards, each opens
+//    into the same shot grid and player as Find footage). 4. Built with: light and dark, keyboard (arrows in the menu, Enter, Esc), no colour-only state.
+const COLL = {list: null, at: 0, loading: null, view: null, id: null, q: "", on: false, stash: null, creating: false, renaming: "", renamingView: false, err: ""};
+const collItem = s => ({id: s.id, kind: s.kind, start: s.kind === "photo" ? 0 : +(+s.start).toFixed(2), end: s.kind === "photo" ? 0 : +(+s.end).toFixed(2),
+                        k: s.kind === "photo" || !s.step ? (s.k || 0) : Math.round(s.start / s.step), rel: s.rel || "", what: s.what || "", dur: s.dur || 0});
+const collKey = it => `${it.id}@${(+it.start).toFixed(2)}@${(+it.end).toFixed(2)}`;
+const COLL_ICON = {add: `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3.5 2.5h9v11L8 10.5l-4.5 3z"/><path d="M8 4.8v3.4M6.3 6.5h3.4"/></svg>`,
+                   rm: `<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>`,
+                   pen: `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 13.5l.7-3L11 2.7a1.4 1.4 0 0 1 2 0l.3.3a1.4 1.4 0 0 1 0 2L5.5 12.8z"/></svg>`,
+                   bin: `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.5 9h6l.5-9"/></svg>`};
+function collLoad(force) {                                                  // the list of collections (kept a few seconds; a change reloads it)
+  if (COLL.loading) return COLL.loading;
+  if (!force && COLL.list && Date.now() - COLL.at < 20000) return Promise.resolve(COLL.list);
+  COLL.loading = api("/api/app/collections").then(r => { COLL.list = r.collections || []; COLL.at = Date.now(); COLL.err = ""; return COLL.list; })
+    .catch(e => { COLL.err = e.message; if (!COLL.list) COLL.list = []; return COLL.list; })
+    .finally(() => { COLL.loading = null; collFillUnder(); if (location.hash === "#collections" && !COLL.creating && !COLL.renaming) paintCollections(); });
+  return COLL.loading;
+}
+function collOptions() {                                                    // Find footage's "In" menu: the collections after the folders
+  if (COLL.list === null) { collLoad(false); return ""; }
+  return COLL.list.length ? `<option disabled>──────────</option>` + COLL.list.map(c => `<option value="__coll:${esc(c.id)}">Collection · ${esc(c.name)} (${c.count})</option>`).join("") : "";
+}
+function collFillUnder() { const sel = $("#under"); if (sel && !sel.matches(":focus")) sel.innerHTML = underOptions(lookIn()); }
+function collTileBtn(s, i) {                                                // on a shot's picture: add it to a collection; inside a collection: take it out
+  const add = `<button class="coll-add" type="button" data-coll="${i}" aria-label="Add to a collection" title="Add to a collection">${COLL_ICON.add}</button>`;
+  if (!COLL.on) return s.missing ? "" : add;
+  return `<button class="coll-add rm" type="button" data-collrm="${i}" aria-label="Take it out of this collection" title="Take it out of this collection">${COLL_ICON.rm}</button>${s.missing ? "" : add}`;
+}
+function collBindTiles() {
+  document.querySelectorAll("#shots [data-coll]").forEach(b => b.onclick = e => { e.stopPropagation(); e.preventDefault(); collMenu(b, [FIND.shots[+b.dataset.coll]]); });
+  document.querySelectorAll("#shots [data-collrm]").forEach(b => b.onclick = e => { e.stopPropagation(); e.preventDefault(); collRemoveShot(FIND.shots[+b.dataset.collrm]); });
+}
+const collMissingNote = () => toast("That file isn't in your library any more: its drive may be unplugged, or it was moved. The × takes it out of the collection.");
+function collPlace(m, a) {
+  const r = a && a.getBoundingClientRect ? a.getBoundingClientRect() : {left: a.x, right: a.x, top: a.y, bottom: a.y}, w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + "px";
+  m.style.top = (r.bottom + 6 + h > innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6) + "px";
+}
+let COLL_MENU = null;
+function collOutside(e) { const m = $("#collmenu"); if (m && !m.contains(e.target)) collCloseMenu(false); }
+function collCloseMenu(restore) {
+  const m = $("#collmenu"); if (!m || m.hidden) return;
+  m.hidden = true; document.removeEventListener("mousedown", collOutside, true);
+  const a = COLL_MENU && COLL_MENU.anchor; COLL_MENU = null;
+  if (restore && a && a.focus && a.isConnected) a.focus();
+}
+function collAdded(r, name, items) {                                        // "Added to Student interaction · Undo"
+  COLL.at = 0; collLoad(true).then(() => { if (COLL.id) collFetchView(); });
+  const got = new Set(r.added || []), mine = items.filter(it => got.has(collKey(it)));
+  if (!mine.length) return toast(`Already in “${name}”.`);
+  const id = r.collection.id;
+  toast(`Added ${mine.length === 1 ? "to" : mine.length + " shots to"} “${name}”`, {label: "Undo", run: async () => {
+    try { await post(`/api/app/collections/${id}/remove`, {items: mine}); COLL.at = 0; collLoad(true).then(() => { if (COLL.id) collFetchView(); }); toast("Taken out again."); } catch (e) { toast(e.message); }
+  }});
+}
+async function collMenu(anchor, shots) {                                    // the small menu: your collections (last used first), a tick where it is already, "New collection…"
+  shots = (shots || []).filter(s => s && s.id && !s.missing);
+  if (!shots.length) return toast("Pick a shot first.");
+  const items = shots.map(collItem), n = items.length;
+  let m = $("#collmenu");
+  if (!m) { m = document.createElement("div"); m.id = "collmenu"; m.className = "ctx coll-menu"; m.setAttribute("role", "menu"); m.hidden = true; document.body.appendChild(m); }
+  closeCtx(); collCloseMenu(false);
+  COLL_MENU = {anchor, items};
+  m.innerHTML = `<div class="small muted" style="padding:6px 10px">Loading…</div>`; m.hidden = false; collPlace(m, anchor);
+  document.addEventListener("mousedown", collOutside, true);
+  let list, held;
+  try { [list, held] = await Promise.all([collLoad(true), post("/api/app/collections/holding", {items}).then(r => r.holding || {})]); }
+  catch (e) { m.innerHTML = `<div class="small err" style="padding:6px 10px">${esc(e.message)}</div>`; return; }
+  if (!COLL_MENU || COLL_MENU.items !== items) return;                      // (closed, or another menu opened meanwhile)
+  const rows = list.map(c => { const h = held[c.id] || 0, all = h >= n;
+    return `<button type="button" role="menuitemcheckbox" aria-checked="${all}" data-c="${esc(c.id)}"><span class="ck" aria-hidden="true">${all ? "✓" : h ? "–" : ""}</span><span class="ell">${esc(c.name)}</span><span class="muted small">${c.count}</span></button>`; }).join("");
+  m.innerHTML = `<div class="coll-h small muted">${n === 1 ? "Add this shot to" : `Add these ${n} shots to`}</div>${rows || `<div class="small muted" style="padding:6px 10px">No collections yet.</div>`}<hr>
+    <div id="coll-newrow"><button type="button" role="menuitem" data-new="1"><span class="ck" aria-hidden="true">+</span><span>New collection…</span><span></span></button></div>`;
+  m.querySelectorAll("[data-c]").forEach(b => b.onclick = async () => {
+    const c = list.find(x => x.id === b.dataset.c); collCloseMenu(true);
+    if ((held[c.id] || 0) >= n) return toast(`Already in “${c.name}”.`);
+    try { collAdded(await post(`/api/app/collections/${c.id}/add`, {items}), c.name, items); } catch (e) { toast(e.message); }
+  });
+  const openNew = () => {
+    const row = $("#coll-newrow"); if (!row) return;
+    row.innerHTML = `<input id="coll-newname" class="field" maxlength="60" placeholder="Name, e.g. Student interaction" aria-label="Name of the new collection" autocomplete="off" spellcheck="false"><div class="small err" id="coll-newerr"></div>`;
+    const inp = $("#coll-newname"); inp.focus(); collPlace(m, anchor);
+    inp.onkeydown = async e => {
+      e.stopPropagation();
+      if (e.key === "Escape") { e.preventDefault(); collCloseMenu(true); }
+      else if (e.key === "Enter") {
+        e.preventDefault(); const name = inp.value.trim(); if (!name) return;
+        try { const r = await post("/api/app/collections", {name, items}); collCloseMenu(true); collAdded(r, r.collection.name, items); }
+        catch (er) { $("#coll-newerr").textContent = er.message; }
+      }
+    };
+  };
+  m.querySelector("[data-new]").onclick = openNew;
+  m.onkeydown = e => {
+    if (e.target.matches("input")) return;
+    const bs = [...m.querySelectorAll("button")], k = bs.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); bs[(k + 1) % bs.length].focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); bs[(k - 1 + bs.length) % bs.length].focus(); }
+    else if (e.key === "Home") { e.preventDefault(); bs[0].focus(); }
+    else if (e.key === "End") { e.preventDefault(); bs[bs.length - 1].focus(); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); collCloseMenu(true); }
+  };
+  collPlace(m, anchor);
+  if (!list.length) openNew(); else { const first = m.querySelector("[data-c]"); if (first) first.focus(); }
+}
+async function collRemoveShot(s) {                                          // the × on a shot inside a collection
+  const it = collItem(s), c = COLL.view && COLL.view.collection; if (!c) return;
+  try {
+    await post(`/api/app/collections/${c.id}/remove`, {items: [it]});
+    COLL.at = 0; collLoad(true); collFetchView();
+    toast(`Taken out of “${c.name}”`, {label: "Undo", run: async () => { try { await post(`/api/app/collections/${c.id}/add`, {items: [it]}); COLL.at = 0; collLoad(true); collFetchView(); } catch (e) { toast(e.message); } }});
+  } catch (e) { toast(e.message); }
+}
+function collLeave() { if (COLL.stash !== null) { FIND.shots = COLL.stash; COLL.stash = null; } COLL.on = false; COLL.view = null; COLL.id = null; COLL.seen = ""; COLL.renamingView = false; }
+const collPlural = n => `${n} shot${n === 1 ? "" : "s"}`;
+function collCard(c) {
+  const covers = (c.covers || []).slice(0, 4), ren = COLL.renaming === c.id;
+  return `<div class="card coll-card" data-c="${esc(c.id)}" tabindex="0" role="link" aria-label="${esc(c.name)}, ${collPlural(c.count)}">
+    <div class="coll-mosaic n${covers.length}">${covers.length ? covers.map(v => `<img alt="" loading="lazy" src="/api/library/thumb/${esc(v.id)}/${+v.k || 0}">`).join("") : `<span class="coll-none muted small">Empty</span>`}</div>
+    <div class="row coll-line">${ren ? `<input class="field grow" data-rn="${esc(c.id)}" value="${esc(c.name)}" maxlength="60" aria-label="Rename the collection" spellcheck="false">`
+      : `<b class="ell grow" data-nm="${esc(c.id)}" title="Double-click to rename">${esc(c.name)}</b>`}
+      <span class="coll-acts"><button class="coll-ic" type="button" data-ren="${esc(c.id)}" aria-label="Rename ${esc(c.name)}" title="Rename">${COLL_ICON.pen}</button><button class="coll-ic" type="button" data-del="${esc(c.id)}" aria-label="Delete ${esc(c.name)}" title="Delete the collection">${COLL_ICON.bin}</button></span></div>
+    <div class="small muted">${collPlural(c.count)}</div></div>`;
+}
+async function collRename(id, name, then) {                                 // (an empty or unchanged name just closes the box)
+  const cur = (COLL.list || []).find(c => c.id === id) || (COLL.view && COLL.view.collection.id === id ? COLL.view.collection : null);
+  name = (name || "").trim();
+  if (!name || (cur && name === cur.name)) return then(false);
+  try { await post(`/api/app/collections/${id}/rename`, {name}); COLL.at = 0; await collLoad(true); then(true); toast(`Renamed to “${name}”.`); }
+  catch (e) { toast(e.message); then(false); }
+}
+async function collDelete(id, name, count) {
+  if (!confirm(`Delete the collection “${name}”?\n\nIts ${collPlural(count)} stay exactly where they are in your footage; only the list goes.`)) return false;
+  try { await post(`/api/app/collections/${id}/delete`, {}); COLL.at = 0; await collLoad(true); toast(`Deleted “${name}”.`); return true; } catch (e) { toast(e.message); return false; }
+}
+function paintCollections(arg) {
+  $("#top-left").innerHTML = ""; $("#top-right").innerHTML = "";
+  if (arg) return collPaintView(arg);
+  collLeave();
+  const list = COLL.list; collLoad(false);
+  $("#view").innerHTML = `<div class="recent">
+      <div class="row" style="justify-content:space-between;align-items:flex-start"><div><h1 style="font-size:24px">Collections</h1>
+        <div class="muted" style="margin-top:4px;max-width:560px">Keep the shots you want to find again under names you choose. A collection only points at your footage: nothing is copied or moved.</div></div>
+        <button class="btn primary" id="coll-new">+ New collection</button></div>
+      ${COLL.err ? `<div class="err small">${esc(COLL.err)}</div>` : ""}
+      <div class="coll-grid" id="coll-grid">${COLL.creating ? `<div class="card coll-card coll-newcard"><label class="small muted" for="coll-nn">Name the collection</label>
+        <input id="coll-nn" class="field" maxlength="60" placeholder="e.g. Student interaction" autocomplete="off" spellcheck="false">
+        <div class="row"><button class="btn primary" id="coll-nn-ok" type="button">Create</button><button class="btn quiet" id="coll-nn-x" type="button">Cancel</button></div><div class="err small" id="coll-nn-err"></div></div>` : ""}${(list || []).map(collCard).join("")}</div>
+      ${list && !list.length && !COLL.creating ? `<div class="muted" id="coll-empty">No collections yet. In Find footage, press the bookmark on a shot to start one, or make an empty one here.</div>` : ""}</div>`;
+  $("#coll-new").onclick = () => { COLL.creating = true; paintCollections(); };
+  if (COLL.creating) {
+    const inp = $("#coll-nn"), done = () => { COLL.creating = false; paintCollections(); };
+    inp.focus();
+    const make = async () => {
+      const name = inp.value.trim(); if (!name) return;
+      try { await post("/api/app/collections", {name}); COLL.at = 0; COLL.creating = false; await collLoad(true); paintCollections(); }
+      catch (e) { $("#coll-nn-err").textContent = e.message; }
+    };
+    inp.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); make(); } else if (e.key === "Escape") { e.preventDefault(); done(); } };
+    $("#coll-nn-ok").onclick = make; $("#coll-nn-x").onclick = done;
+  }
+  const open = id => { location.hash = "#collections/" + id; };
+  document.querySelectorAll(".coll-card[data-c]").forEach(el => {
+    const id = el.dataset.c, c = list.find(x => x.id === id);
+    el.onclick = e => { if (e.target.closest("button, input")) return; open(id); };
+    el.onkeydown = e => { if ((e.key === "Enter" || e.key === " ") && !e.target.closest("button, input")) { e.preventDefault(); open(id); } };
+    const nm = el.querySelector("[data-nm]"); if (nm) nm.ondblclick = e => { e.stopPropagation(); COLL.renaming = id; paintCollections(); };
+    const ren = el.querySelector("[data-ren]"); if (ren) ren.onclick = e => { e.stopPropagation(); COLL.renaming = id; paintCollections(); };
+    const del = el.querySelector("[data-del]"); if (del) del.onclick = async e => { e.stopPropagation(); if (await collDelete(id, c.name, c.count)) paintCollections(); };
+    const rn = el.querySelector("[data-rn]");
+    if (rn) {
+      rn.focus(); rn.select();
+      let closing = false;
+      const fin = save => { if (closing) return; closing = true; if (!save) { COLL.renaming = ""; return paintCollections(); } collRename(id, rn.value, () => { COLL.renaming = ""; paintCollections(); }); };
+      rn.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); fin(true); } else if (e.key === "Escape") { e.preventDefault(); fin(false); } };
+      rn.onblur = () => fin(true);
+    }
+  });
+}
+function collPaintView(id) {
+  if (COLL.seen !== id) { COLL.seen = id; COLL.q = COLL.qFrom || ""; COLL.qFrom = ""; COLL.view = null; COLL.renamingView = false; }    // (the words you had in Find footage come with you)
+  COLL.id = id; COLL.on = true;
+  if (COLL.stash === null) COLL.stash = FIND.shots;                         // (Find footage's results come back when you leave)
+  $("#view").innerHTML = `<div class="find coll-view"><div class="find-main">
+      <div class="row small"><a href="#collections">‹ Collections</a></div>
+      <div class="row coll-title-row"><span id="coll-titlebox" class="row" style="gap:6px;min-width:0"></span><span class="muted small" id="coll-count"></span><span class="grow"></span>
+        <button class="btn" id="coll-long" type="button">Use in a long video</button><button class="btn" id="coll-fcp" type="button">Send to Final Cut</button>
+        <button class="btn quiet" id="coll-finder" type="button">Show in Finder</button><button class="btn quiet danger" id="coll-del" type="button">Delete</button></div>
+      <div class="card search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" style="opacity:.6"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg>
+        <input id="coll-q" type="search" value="${esc(COLL.q)}" placeholder="Filter this collection by words, e.g. laughing" aria-label="Filter this collection by words" autocomplete="off"></div>
+      <div class="small" id="find-msg" role="status">Loading…</div>
+      <div class="shots" id="shots"></div></div></div>`;
+  FIND.shots = []; paintShots();
+  let t = 0;
+  $("#coll-q").oninput = e => { clearTimeout(t); t = setTimeout(() => { COLL.q = e.target.value.trim(); collFetchView(); }, 250); };
+  $("#coll-q").onkeydown = e => { if (e.key === "Enter") { clearTimeout(t); COLL.q = e.target.value.trim(); collFetchView(); } };
+  const shots = () => (COLL.view ? COLL.view.shots : []), vids = () => shots().filter(s => s.kind === "video" && !s.missing), c = () => COLL.view && COLL.view.collection;
+  $("#coll-long").onclick = () => { if (!vids().length) return toast("There are no video shots here to use."); shotsToLong(vids()); };
+  $("#coll-fcp").onclick = async e => {
+    if (!vids().length) return toast("Final Cut takes video shots, and there are none here.");
+    const b = e.currentTarget; b.disabled = true;
+    try {
+      const r = await post("/api/library/fcpxml", {shots: vids().map(s => ({id: s.id, start: s.start, end: s.end, what: s.what || ""})), name: c().name, open: true});
+      toast(r.problems && r.problems.length ? "Saved, but Final Cut's check failed: " + r.problems[0] : `Sent ${r.clips} shot${r.clips === 1 ? "" : "s"} to Final Cut, in an event called “${c().name}”.`);
+    } catch (er) { toast(er.message); } finally { b.disabled = false; }
+  };
+  $("#coll-finder").onclick = () => { const s = shots().find(x => !x.missing); if (!s) return toast("None of these files can be found right now."); post("/api/library/reveal", {id: s.id}).catch(er => toast(er.message)); };
+  $("#coll-del").onclick = async () => { const cc = c(); if (cc && await collDelete(cc.id, cc.name, cc.count)) location.hash = "#collections"; };
+  collFetchView();
+}
+function collPaintHead() {
+  const v = COLL.view; if (!v || !$("#coll-titlebox")) return;
+  const c = v.collection, box = $("#coll-titlebox");
+  if (COLL.renamingView) {
+    box.innerHTML = `<input class="field" id="coll-rn" value="${esc(c.name)}" maxlength="60" aria-label="Rename the collection" spellcheck="false" style="font-size:18px;min-width:260px">`;
+    const rn = $("#coll-rn"); rn.focus(); rn.select();
+    let closing = false;
+    const fin = save => { if (closing) return; closing = true; COLL.renamingView = false; if (!save) return collPaintHead(); collRename(c.id, rn.value, () => collFetchView()); };
+    rn.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); fin(true); } else if (e.key === "Escape") { e.preventDefault(); fin(false); } };
+    rn.onblur = () => fin(true);
+  } else {
+    box.innerHTML = `<h1 class="coll-title ell" id="coll-title" title="Double-click to rename">${esc(c.name)}</h1><button class="coll-ic" type="button" id="coll-ren" aria-label="Rename ${esc(c.name)}" title="Rename">${COLL_ICON.pen}</button>`;
+    $("#coll-title").ondblclick = $("#coll-ren").onclick = () => { COLL.renamingView = true; collPaintHead(); };
+  }
+  $("#coll-count").textContent = collPlural(c.count) + (c.missing ? ` · ${c.missing} missing` : "");
+  const vids = v.shots.filter(s => s.kind === "video" && !s.missing).length;
+  $("#coll-long").disabled = $("#coll-fcp").disabled = !vids;
+  const msg = !v.library ? "There's no footage library on this Mac, so these shots can't be shown." : v.shots.length ? (c.missing ? `${c.missing} shot${c.missing === 1 ? " is" : "s are"} missing: a drive may be unplugged, or the file moved. The × takes one out.` : COLL.q ? "Best matches first." : "")
+    : COLL.q ? "Nothing in this collection matches those words." : "Nothing here yet. In Find footage, press the bookmark on a shot to add it.";
+  $("#find-msg").textContent = msg;
+}
+async function collFetchView() {
+  const id = COLL.id, q = COLL.q; if (!id) return;
+  let r;
+  try { r = await post(`/api/app/collections/${id}/view`, {q}); }
+  catch (e) { if (id === COLL.id) { toast("That collection isn't there any more."); location.hash = "#collections"; } return; }
+  if (id !== COLL.id || q !== COLL.q) return;
+  COLL.view = r; FIND.shots = r.shots; collPaintHead(); paintShots();
+}
+
 function paintShots() {
-  $("#shots").innerHTML = FIND.shots.map((s, i) => `<div class="shot" data-i="${i}" tabindex="0" ${s.kind === "video" ? 'draggable="true"' : ""} aria-label="${esc(s.what || s.rel.split("/").pop())}: ${s.kind === "video" ? "play" : "view"}"><div class="t"><img alt="" loading="lazy" src="/api/library/thumb/${s.id}/${s.k}">
+  $("#shots").innerHTML = FIND.shots.map((s, i) => `<div class="shot${s.missing ? " missing" : ""}" data-i="${i}" tabindex="0"${s.kind === "video" ? 'draggable="true"' : ""} aria-label="${esc(s.what || s.rel.split("/").pop())}: ${s.kind === "video" ? "play" : "view"}"><div class="t"><img alt="" loading="lazy" src="/api/library/thumb/${s.id}/${s.k}">
       <span class="play" aria-hidden="true">${s.kind === "video" ? `<svg width="18" height="18" viewBox="0 0 16 16"><path d="M5 3v10l8.5-5z" fill="currentColor"/></svg>` : `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2H2v4M10 14h4v-4M2 2l5 5M14 14l-5-5"/></svg>`}</span>
-      ${s.kind === "video" ? `<input type="checkbox" data-pick="${i}" ${FIND.basket.has(keyOf(s)) ? "checked" : ""} aria-label="Pick this shot"><span class="badge">${mmss(s.start)}–${mmss(s.end)}</span>` : `<span class="badge">Photo</span>`}</div>
-      <div class="ell" style="font-weight:600;font-size:12.5px">${esc(s.what || s.rel.split("/").pop())}</div><div class="ell meta" style="margin-top:-3px">${esc(s.rel.split("/").slice(-3, -1).join(" / "))}</div></div>`).join("");
+      ${s.missing ? `<span class="badge">Missing</span>` : s.kind === "video" ? `<input type="checkbox" data-pick="${i}" ${FIND.basket.has(keyOf(s)) ? "checked" : ""} aria-label="Pick this shot"><span class="badge">${mmss(s.start)}–${mmss(s.end)}</span>` : `<span class="badge">Photo</span>`}${collTileBtn(s, i)}</div>
+      <div class="ell" style="font-weight:600;font-size:12.5px">${esc(s.what || s.rel.split("/").pop())}</div><div class="ell meta" style="margin-top:-3px">${esc(s.rel.split("/").slice(-3, -1).join(" / "))}</div>${tagChips(s.tags)}</div>`).join("");
   $("#shots").querySelectorAll("[data-pick]").forEach(cb => cb.onclick = e => { e.stopPropagation(); const s = FIND.shots[+cb.dataset.pick], k = keyOf(s); if (FIND.basket.has(k)) FIND.basket.delete(k); else { FIND.basket.set(k, s); rememberPick(s); } paintBasket(); });
   $("#shots").querySelectorAll(".shot").forEach(el => {
-    el.onclick = e => { if (e.target.matches("input")) return; openPlayer(+el.dataset.i); };
-    el.onkeydown = e => { if ((e.key === "Enter" || e.key === " ") && !e.target.matches("input")) { e.preventDefault(); openPlayer(+el.dataset.i); } };
+    el.onclick = e => { if (e.target.matches("input") || e.target.closest("[data-tag], .coll-add")) return; if (FIND.shots[+el.dataset.i].missing) return collMissingNote(); openPlayer(+el.dataset.i); };
+    el.onkeydown = e => { if ((e.key === "Enter" || e.key === " ") && !e.target.matches("input") && !e.target.closest("[data-tag], .coll-add")) { e.preventDefault(); if (FIND.shots[+el.dataset.i].missing) return collMissingNote(); openPlayer(+el.dataset.i); } };
   });
+  collBindTiles();
   document.querySelectorAll(".shot[draggable=true]").forEach(el => {
     el.ondragstart = e => {
       const s = FIND.shots[+el.dataset.i];
@@ -3627,7 +4049,7 @@ function paintBasket() {
   const n = FIND.basket.size, ns = FIND.stockPick.size, all = n + ns, secs = [...FIND.basket.values()].reduce((a, s) => a + (s.end - s.start), 0);
   $("#basket").hidden = !all;
   $("#basket-n").innerHTML = `<b>${all} shot${all === 1 ? "" : "s"} picked</b> <span class="muted">· ${[n ? `${Math.round(secs)} s${ns ? " of yours" : ""}` : "", ns ? `${ns} stock` : ""].filter(Boolean).join(" · ")}</span>`;
-  $("#b-short").hidden = $("#b-send").hidden = !n;                         // (stock isn't in the catalogue until it's added: Final Cut and
+  $("#b-short").hidden = $("#b-send").hidden = $("#b-coll").hidden = !n;                         // (stock isn't in the catalogue until it's added: Final Cut and
   $("#b-sadd").hidden = $("#b-sdl").hidden = !ns;                          //  short clips take your shots)
   $("#b-sadd").classList.toggle("primary", !n);
 }

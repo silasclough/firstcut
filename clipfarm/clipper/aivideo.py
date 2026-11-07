@@ -230,6 +230,8 @@ class Projects:
                 opts[k] = str(body[k])
         if body.get("transitions"):                                      # fades and dissolves where the cut calls for one: "auto" | "none"
             opts["transitions"] = "none" if str(body["transitions"]) == "none" else "auto"
+        if "montage" in body:                                            # "off": never turn this folder into a montage / slideshow (the page's "Not what I meant")
+            opts["montage"] = "off" if str(body["montage"]) == "off" else "auto"
         if "library" in body:                                            # B-roll from the footage catalog (when this Mac has one)
             opts["library"] = bool(body["library"])
         if "stock" in body:                                              # stock B-roll (Pixabay / Pexels) for what your own footage doesn't show
@@ -308,6 +310,11 @@ class Projects:
                 out["pending_changes"] = [c for c in (plan.get("pending_changes") or []) if isinstance(c, dict)][:50]     # (B-roll changes waiting for Re-render)
                 out["awaiting_approval"] = bool(plan.get("awaiting_approval"))
                 out["script_map"] = plan.get("script_map") if out["awaiting_approval"] else None
+                if plan.get("montage"):                                       # a montage / slideshow: the plan card (montage.py) instead of a script map
+                    from . import montage as MO
+                    out["is_montage"] = plan["montage"].get("style") or "montage"
+                    if out["awaiting_approval"]:
+                        out["montage_card"] = MO.card(plan["montage"], title=plan.get("title") or "", notes=proj.get("notes") or "", job=proj["job"])
                 if out["script_map"]:                                      # how long it will be, from the lines on the review screen
                     out["review"] = {"length_s": round(sum(ln.get("end", 0) - ln.get("start", 0) for st_ in out["script_map"] for ps in st_["passages"] for ln in ps["lines"]), 1),
                                      "target_s": plan.get("target_s"), "edited": bool(plan.get("flow_edited"))}

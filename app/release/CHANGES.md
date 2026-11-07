@@ -2,6 +2,14 @@
 
 The newest entry is what the update card shows. Keep each line short and in plain words.
 
+## 0.5.0
+- Recap reels: Short form has a second way in. Give it your finished long video (and a B-roll folder) and it makes 3 vertical reels of about 30 seconds, one for each part of the event. The talk from your video plays underneath, you see the speaker for a moment at the start and once in the middle, and the rest is quick B-roll with captions and music. Shots filmed at 50 or 60 fps play in slow motion at 30 fps (about three in four of them). A logo in the B-roll folder goes in the corner; there are no other graphics. A finished long video has a Make recap reels button.
+- Collections: name a list of shots in Find footage and find it again.
+- Find footage shows the top 3 keywords for each shot.
+- Montage and slideshow videos: a folder with no one talking (or mostly photos) is cut to music, and you check the plan card before it renders.
+- The B-roll panel in the live view is smaller, and shots play through once instead of looping.
+- B-roll is more varied: the same shot or look is not used again and again.
+
 ## 0.4.0
 - Cataloguing adapts to you: it uses the whole Mac when you're away, backs off while you work or play a shot, and pauses while another app (a game) needs the Mac. Settings › Footage library says how much it may use. It was about three times faster than 0.2 even before this.
 - B-roll Edit: drag the start and end handles of any B-roll shot, slide it frame by frame, and play just that part. Replace, Edit and "Don't use this" no longer re-render by themselves: the video shows "out of date" with a Re-render button (and Discard changes).

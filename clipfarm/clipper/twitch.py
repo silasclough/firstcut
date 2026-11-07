@@ -21,6 +21,7 @@ from pathlib import Path
 import requests
 
 from ..core.log import get_logger
+from . import sourcecheck
 
 log = get_logger("clipper.twitch")
 API = "https://api.twitch.tv/helix"
@@ -127,9 +128,11 @@ class Twitch:
                 title = (c.get("title") or "").strip()
                 if views < min_views or not (lo <= dur <= hi) or seen(cid) or avoid(title, c.get("broadcaster_name") or ""):
                     continue
+                if t.get("skip_gameplay", True) and sourcecheck.gameplay_twitch(c):          # made in a game, not Just Chatting / IRL: real-life content only
+                    continue
                 age_h = max(2.0, (datetime.now(timezone.utc) - datetime.fromisoformat(c["created_at"].replace("Z", "+00:00"))).total_seconds() / 3600)
                 out.append({"id": cid, "url": c["url"], "title": title, "channel": c.get("broadcaster_name") or ch.get("name"), "duration": dur, "kind": "twitch_clip",
                             "license": "allowlisted (permission granted by their management)", "views": views, "twitch_login": login, "twitch_clip": c["id"],
-                            "channel_url": f"https://www.twitch.tv/{login}", "upload_date": c["created_at"][:10].replace("-", ""),
+                            "channel_url": f"https://www.twitch.tv/{login}", "game_id": c.get("game_id") or "", "game_name": c.get("game_name") or "", "upload_date": c["created_at"][:10].replace("-", ""),
                             "why": f"Twitch clip, {views:,} views", "rank": math.log10(views + 1) + 0.5 * math.log10(views / age_h + 1)})
         return sorted(out, key=lambda s: -s["rank"])

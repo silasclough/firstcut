@@ -83,6 +83,73 @@ class StudioAPI:
             self._storage = ST.Storage(self.cfg, self.store, self.projects, self.runner, settings=self.settings.get)
         return self._storage
 
+    def collections(self):
+        """Collections of shots (shotcollections.py): named lists of references into the footage catalogue."""
+        from . import shotcollections as SC
+        if getattr(self, "_collections", None) is None:
+            self._collections = SC.Collections(self.root / "data" / "collections.json")
+        return self._collections
+
+    def collections_api(self, rest: list[str], b: dict | None) -> tuple[int, dict]:
+        """/api/app/collections...: GET list | GET <id> (the shots) ; POST create | holding | <id>/view|rename|delete|add|remove|note|move."""
+        from . import shotcollections as SC
+        col = self.collections()
+        cat = self.runner.library() if self.runner else None
+
+        def card(c: dict) -> dict:
+            return {"id": c["id"], "name": c["name"], "count": len(c["items"]), "updated": c["updated"], "used": c["used"], "covers": SC.cover_of(cat, c)}
+
+        def view(c: dict, q: str = "") -> dict:
+            shots = SC.shots_of(cat, c)
+            shown = SC.filter_shots(cat, shots, q) if q else shots
+            return {"collection": {**card(c), "missing": sum(1 for x in shots if x["missing"])}, "shots": shown, "q": q, "library": cat is not None}
+        try:
+            if rest == []:
+                if b is None:
+                    return 200, {"collections": [card(c) for c in col.list()]}
+                items = b.get("items")
+                if items:                                                  # (checked first: a bad shot must not leave an empty collection behind)
+                    if not isinstance(items, list):
+                        return 400, {"error": "items must be a list"}
+                    [SC.clean_item(x) for x in items]
+                c = col.create(b.get("name"))
+                res = col.add(c["id"], items) if items else {"added": [], "duplicates": 0, "collection": c}
+                return 200, {"collection": card(res["collection"]), "added": res["added"], "duplicates": res["duplicates"]}
+            if rest == ["holding"] and b is not None:                      # the Add menu's ticks: how many of these shots each collection already has
+                return 200, {"holding": col.holding(b.get("items") or [])}
+            cid = rest[0]
+            if not SC.COLL_ID.fullmatch(cid):
+                return 404, {"error": "no such collection"}
+            if len(rest) == 1 and b is None:
+                return 200, view(col.get(cid))
+            what = rest[1] if len(rest) == 2 else ""
+            if b is None or not what:
+                return 404, {"error": "not found"}
+            if what == "view":
+                return 200, view(col.get(cid), str(b.get("q") or ""))
+            if what == "rename":
+                return 200, {"collection": card(col.rename(cid, b.get("name")))}
+            if what == "delete":
+                col.delete(cid)
+                return 200, {"ok": True}
+            if what == "add":
+                res = col.add(cid, b.get("items"))
+                return 200, {"collection": card(res["collection"]), "added": res["added"], "duplicates": res["duplicates"]}
+            if what == "remove":
+                n = col.remove(cid, b.get("items"))
+                return 200, {"removed": n, "collection": card(col.get(cid))}
+            if what == "note":
+                col.set_note(cid, b.get("item") or {}, b.get("note"))
+                return 200, {"ok": True}
+            if what == "move":
+                col.move(cid, b.get("item") or {}, int(b.get("to") or 0))
+                return 200, {"ok": True}
+            return 404, {"error": "not found"}
+        except KeyError as e:
+            return 404, {"error": str(e.args[0]) if e.args else "not found"}
+        except (ValueError, TypeError) as e:
+            return 400, {"error": str(e)}
+
     def storage_tick(self) -> None:
         """Every ~12 hours (the first one two minutes after the app opens): with a number of days chosen in Settings (the default is never),
         remove the videos of what is older, when nothing is being made. A busy app tries again in ten minutes."""
@@ -481,6 +548,19 @@ class StudioAPI:
         aroll = next(f.name for f in folder.iterdir() if f.is_symlink() and Path(os.readlink(f)) == v)
         return str(folder), aroll
 
+    def montage_detect(self, path: str, notes: str) -> dict:
+        """{"montage": {style, why, line} | None} from what can be known without listening: the notes and how many photos and clips are in the folder."""
+        from . import montage as MO
+        from .localproj import skipped
+        p = Path(path).expanduser()
+        if not path or not p.is_absolute() or not p.is_dir():
+            return {"montage": None}
+        try:
+            n = MO.quick_counts(p, skipped)
+        except OSError:
+            return {"montage": None}
+        return {"montage": MO.detect(notes, n_photos=n["photos"], n_videos=n["videos"]), "photos": n["photos"], "videos": n["videos"]}
+
     def make_long(self, b: dict) -> dict:
         if b.get("mode") == "broll":                                       # keep their cut; only add B-roll (and graphics, captions if asked)
             folder, aroll = self.broll_folder(b.get("video"), b.get("broll_folder") or "")
@@ -505,6 +585,7 @@ class StudioAPI:
         body = {"notes": str(b.get("notes") or ""), "music": str(o.get("music") or ""), "caption_style": str(o.get("caption_style") or "none"),
                 "pace": SD.ENGINE_PACE["long"].get(str(o.get("pace") or "auto"), "natural"), "long_minutes": minutes, "graphics": str(o.get("graphics") or ""), "gfx_style": str(o.get("gfx_style") or "auto"),
                 "transitions": "none" if str(o.get("transitions") or "auto") == "none" else "auto",
+                "montage": "off" if str(given.get("montage") or "") == "off" else "auto",
                 **({"keep_cut": True, "aroll": str(b["aroll"])} if b.get("keep_cut") else {}),
                 "transcriber": "parakeet", "kind": "auto", "fcp": True, "library": bool(o.get("library", True)), "stock": bool(o.get("stock"))}
         proj = self.projects.create_local(src, str(b.get("title") or ""), str(b.get("notes") or ""), {}, self.default_options(self.cfg.get("clipper", {}) or {}),
@@ -525,7 +606,7 @@ class StudioAPI:
         return {"id": j["id"], "title": j.get("title"), "status": j.get("status"), "stage": j.get("stage"), "progress": j.get("progress", 0.0),
                 **PG.WATCH.view(j), "error": j.get("error"), "created": j.get("created"), "updated": j.get("updated"), "home": j.get("app_home"), "clips": clips,
                 "archived": j.get("archived"), "keep": bool(j.get("keep")),
-                "options": {k: (j.get("options") or {}).get(k) for k in ("min_len", "max_len", "caption_style", "layout", "music", "song")}}
+                "options": {k: (j.get("options") or {}).get(k) for k in ("min_len", "max_len", "caption_style", "layout", "music", "song", "mode", "recap_reels", "recap_len", "broll_dir")}}
 
     def short_options(self, s: dict, given: dict, notes: str) -> dict:
         o = {**s["defaults"]["short"], **(given or {})}
@@ -542,6 +623,23 @@ class StudioAPI:
         opts["music"] = str(o.get("music") or "")
         opts["prompt"] = "\n\n".join(x for x in (notes.strip(), self.styles.brief("short")) if x)[:4000]
         return opts
+
+    @staticmethod
+    def recap_options(b: dict) -> dict:
+        """The options of a recap job: how many reels (1-6, default 3), how long each (10-90 s, default 30) and the B-roll folder, if one was chosen."""
+        o = b.get("options") or {}
+        try:
+            n = max(1, min(6, int(o.get("reels") or b.get("reels") or 3)))
+            ln = max(10.0, min(90.0, float(o.get("reel_len") or b.get("reel_len") or 30)))
+        except (TypeError, ValueError):
+            raise ValueError("the number of reels and their length must be numbers")
+        folder = str(b.get("broll_folder") or "").strip()
+        if folder:
+            f = Path(folder).expanduser()
+            if not f.is_absolute() or not f.is_dir():
+                raise ValueError("choose a folder of B-roll (or leave it out)")
+            folder = str(f)
+        return {"mode": "recap", "recap_reels": n, "recap_len": ln, "broll_dir": folder, "clips": n, "music": "none" if str(o.get("music") or "") == "none" else "auto"}
 
     def make_short(self, b: dict) -> dict:
         many = b.get("sources")
@@ -575,7 +673,14 @@ class StudioAPI:
         s = self.settings.get()
         notes = str(b.get("notes") or "")
         opts = self.short_options(s, b.get("options") or {}, notes)
+        recap = bool(b.get("recap"))
+        if recap and is_url:
+            raise ValueError("recap reels are made from a finished video on this Mac: choose the file")
+        if recap:                                                          # a long video -> a few fast vertical reels (recap.py)
+            opts.update(self.recap_options(b))
         title = p.stem if not is_url else "Clips from a link"
+        if recap:
+            title = f"{p.stem} · recap reels"
         home = SD.project_folder(s["places"]["videos"], title)
         if b.get("song") or b.get("track"):                              # every clip with their song
             opts["song"] = self.song_path(b, home)
@@ -611,6 +716,8 @@ class StudioAPI:
         prev = {"min_len": j["options"].get("min_len"), "max_len": j["options"].get("max_len"), "caption_style": j["options"].get("caption_style"),
                 "layout": j["options"].get("layout"), "music": j["options"].get("music")}
         opts = self.short_options(s, {**prev, **(b.get("options") or {})}, (j.get("source") or {}).get("notes") or "")
+        if (j.get("options") or {}).get("mode") == "recap":               # (a recap stays a recap when it is made again)
+            opts.update({k: j["options"].get(k) for k in ("mode", "recap_reels", "recap_len", "broll_dir", "clips")})
         home = Path(j.get("app_home") or "")
         if (home / "Clips").is_dir():                                     # the last version stays, out of the way
             old, n = home / f"Clips (before {time.strftime('%H.%M')})", 2
@@ -1513,6 +1620,8 @@ class StudioAPI:
             return 200, {"ok": True}
         if rest == ["busy"]:
             return 200, {"what": self.busy()}
+        if rest and rest[0] == "collections":                              # Collections: named lists of shots to find again (shotcollections.py)
+            return self.collections_api(rest[1:], None)
         if rest == ["storage"]:                                           # Settings › Storage: what the videos use, by project, and what is due
             return 200, self.cached("storage:%s:%s" % self.storage().options(), 20, lambda: self.storage().usage())
         if len(rest) in (2, 3) and rest[0] == "live" and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", rest[1]):   # the live view (live.py)
@@ -1553,6 +1662,16 @@ class StudioAPI:
                 except (OSError, ValueError):
                     rows = []
             return 200, {"issues": rows}
+        if len(rest) == 3 and rest[0] == "long" and rest[2] == "final" and self.runner:           # the finished video's file (Make recap reels from it)
+            try:
+                job = self.store.get(self.projects.get(rest[1])["job"])
+                clip = (job.get("clips") or [None])[0]
+                f = self.store.dir(job["id"]) / str((clip or {}).get("file") or "")
+            except (KeyError, OSError, ValueError):
+                return 404, {"error": "no such video"}
+            if not clip or not f.is_file():
+                return 404, {"error": "this video isn't finished yet"}
+            return 200, {"path": str(f), "title": job.get("title") or ""}
         if len(rest) == 3 and rest[0] == "long" and rest[2] == "avoid" and self.runner:           # shots ruled out with "Don't use this"
             try:
                 return 200, {"shots": self.runner.avoided(rest[1])}
@@ -1586,6 +1705,8 @@ class StudioAPI:
         return 404, {"error": "not found"}
 
     def post(self, rest: list[str], b: dict) -> tuple[int, dict]:
+        if rest and rest[0] == "collections":
+            return self.collections_api(rest[1:], b if isinstance(b, dict) else {})
         if len(rest) == 2 and rest[0] == "storage":                        # Settings › Storage (storage.py): pin, remove one video, free what is due
             st = self.storage()
             kind = str(b.get("kind") or "")
@@ -1695,6 +1816,8 @@ class StudioAPI:
             if gov is not None:
                 gov.touch()
             return 200, {"ok": True}
+        if rest == ["montage", "detect"]:                                  # the composer's first guess: does this folder look like a montage / slideshow?
+            return 200, self.montage_detect(str(b.get("path") or ""), str(b.get("notes") or ""))
         if rest == ["keys"]:                                               # a key for Pixabay / Pexels / Epidemic Sound (into the Keychain)
             name = str(b.get("name") or "")
             SD.key_set(name, str(b.get("value") or ""))

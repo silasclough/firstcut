@@ -59,6 +59,7 @@ from . import multicam as MC
 from . import speakers as SP
 from . import moments as M
 from . import music as MU
+from . import montage as MO
 from . import story
 from . import photos as PH
 from . import tighten as TI
@@ -1028,6 +1029,12 @@ class LocalRunner:
         files = scan(folder)
         if not files:
             raise RuntimeError("no videos in that folder")
+        notes_ = self.projects.get(pid).get("notes") or ""
+        counts = MO.quick_counts(folder, skipped)
+        det = MO.detect(notes_, n_photos=counts["photos"], n_videos=len(files), audio_clips=sum(1 for f in files if f.get("audio")),
+                        setting=opts.get("montage") or "auto")
+        if det:                                                              # known without listening: a slideshow, a montage asked for, clips with no sound
+            return self.make_montage(pid, proj, folder, st, ai, engine, opts, P, det, files)
         audios = scan_audio(folder, proj.get("extra_audio") or [])
         group = self.find_group(files, audios, st, lambda fr, m: P("transcribing", m, 0.03 + 0.02 * fr))
         if group:
@@ -1049,6 +1056,10 @@ class LocalRunner:
         st.put("files.json", files)
         all_words = self.transcribe(files, ai, st, opts.get("transcriber", "parakeet"), lambda f, m: P("transcribing", m, 0.05 + 0.3 * f), group,
                                     refresh=True)
+        det = MO.detect(self.projects.get(pid).get("notes") or "", n_words=len(all_words), footage_s=sum(float(f.get("dur") or 0) for f in files),
+                        n_photos=0, n_videos=len(files), setting=opts.get("montage") or "auto")
+        if det and not group:                                                # nobody is talking: cut to music instead (a multicam shoot is never one)
+            return self.make_montage(pid, proj, folder, st, ai, engine, opts, P, det, files)
         outline = FL.steps(self.projects.get(pid).get("notes") or "")
         if outline:
             all_words, fixes = FL.correct_names(all_words, outline)
@@ -1169,11 +1180,254 @@ class LocalRunner:
             live.stage(self.store, self.live_job, f"{a_file['name']} stays exactly as it is: {len(pool)} B-roll shot(s) to choose from")
         self.render(pid, plan, files, words, scenes, ai, engine, st, folder, note=plan["pending_note"], all_words=all_words)
 
+    # -- montages and slideshows (montage.py): footage with no one speaking, cut to music; the plan is checked before anything renders ---------
+    def montage_track(self, plan: dict, folder: Path, ai, st: State, title: str, notes: str, est_s: float):
+        """The song, chosen FIRST (the cuts follow it): the person's own, one in the project's Music folder, else the best match in the music library
+        for the mood the notes and the pace ask for. Returns a Track or None."""
+        m = plan.get("music") or {"mode": "auto"}
+        mt = plan["montage"]
+        if m.get("mode") == "none":
+            return None
+        if m.get("song") and m.get("file"):
+            t = MU.song(m["file"])
+            if t:
+                return t
+        used = set(m.get("used", []))
+        own = MU.own_tracks(folder / "Music")
+        if own and not m.get("wanted"):
+            return own[int(hashlib.sha1(title.encode()).hexdigest()[:6], 16) % len(own)]
+        pace = MO.pace_key(mt.get("pace"))
+        mood = next((w for w in MU.MOODS if re.search(rf"\b{w}\b", notes, re.I)), "") or \
+            {"fast": "upbeat", "slow": "emotional", "auto": "chill" if mt["style"] == "slideshow" else "upbeat"}[pace]
+        flavour = ("gentle warm instrumental slideshow" if mt["style"] == "slideshow" and pace != "fast" else
+                   "energetic upbeat high energy" if pace == "fast" else "feel good upbeat") + " " + re.sub(r"\s+", " ", notes)[:120]
+        t = MU.pick(self.cfg, mood=mood, genre=flavour, seed=title + str(len(used)), exclude=used, length_s=est_s)
+        plan["music"] = {**m, "mode": "auto", "mood": mood, "genre": "", "why": f"{mood}, for {'a slideshow' if mt['style'] == 'slideshow' else 'a montage'}"}
+        return t
+
+    def _montage_canvas(self, files: list[dict], photos: list[dict]) -> tuple[int, int]:
+        """1920x1080, or 1080x1920 when most of what is shown is upright."""
+        tall = sum(1 for f in files if not f.get("photo") and f.get("h", 0) > f.get("w", 0))
+        wide = sum(1 for f in files if not f.get("photo") and f.get("h", 0) <= f.get("w", 0))
+        for ph in photos[:80]:
+            sz = PH._size(ph["path"])
+            if sz:
+                tall, wide = (tall + 1, wide) if sz[1] > sz[0] else (tall, wide + 1)
+        return (1080, 1920) if tall > wide else (1920, 1080)
+
+    def _montage_thumbs(self, job: str, m: dict, files: list[dict]) -> None:
+        """A small picture of every shot in the plan card (job folder: mt_<id>.jpg). A shot that can't be read just has none."""
+        jobd = self.store.dir(job)
+        by_name = {f["name"]: f for f in files}
+        for c in m["cands"]:
+            out = jobd / f"mt_{c['id']}.jpg"
+            if out.exists():
+                continue
+            try:
+                if c["kind"] == "photo":
+                    b = PH._jpeg(c["path"], 240)
+                    if b:
+                        out.write_bytes(b)
+                else:
+                    f = by_name.get(c["name"])
+                    if not f:
+                        continue
+                    ss = max(0.0, (float(c["start"]) + float(c["end"])) / 2.0 - f["start"])
+                    r = subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "error", "-y", "-ss", f"{ss:.2f}", "-i", f["path"], "-frames:v", "1",
+                                        "-vf", "scale=240:-2" + self._lut_vf(f["path"]), "-q:v", "6", str(out)], capture_output=True, timeout=60)
+                    if r.returncode:
+                        out.unlink(missing_ok=True)
+            except Exception as e:  # noqa: BLE001 - a plan card without one picture is fine
+                log.info(f"montage picture for {c['id']}: {e}")
+
+    def make_montage(self, pid: str, proj: dict, folder: Path, st: State, ai: LocalAI, engine: LocalEngine, opts: dict, P, det: dict, files: list[dict]) -> None:
+        """Footage with no A-roll (a camp, an event, a folder of photos): the music is chosen first, the best shots are picked and put in order,
+        each held for the pace the person chose and cut on the beats, and the plan stops for the person to check (the plan card) before it renders."""
+        job = proj["job"]
+        notes = self.projects.get(pid).get("notes") or ""
+        keep_sound = MO.wants_sound(notes) and det["style"] != "slideshow"
+        P("finding", "Looking at your photos and clips", 0.06)
+        for f in files:                                                     # every clip is the programme itself; its own sound stays out unless asked
+            f["broll"] = False
+            f["audio_orig"] = f.get("audio_orig", f["audio"])
+            f["audio"] = bool(f["audio_orig"]) and keep_sound
+        st.put("files.json", files)
+        scenes = self.describe(files, [], ai, st, lambda fr, m: P("finding", m, 0.08 + 0.2 * fr)) if files else {}
+        raw = MO.scan_photos(folder, skipped)
+        cache = st.get("photos.json", {}) or {}
+        got: dict[str, dict] = {}
+        for k in range(0, len(raw), 40):
+            P("finding", f"Looking at the photos ({min(len(raw), k + 40)} of {len(raw)})", 0.28 + 0.14 * k / max(1, len(raw)))
+            got.update({q["path"]: q for q in PH.describe(ai, raw[k:k + 40], cache)})
+            st.put("photos.json", cache)
+        photos = [got.get(q["path"]) or {**q, "what": Path(q["name"]).stem.replace("_", " "), "quality": 6.0} for q in raw]   # (undescribed: still shown)
+        if not files and not photos:
+            raise RuntimeError("there are no clips or photos in that folder")
+        cands = MO.candidates(files, scenes, photos, when=MO.shot_time)
+        keep, left = MO.select(cands)
+        if not keep:
+            raise RuntimeError("none of the shots were good enough to use (they all looked blurry or unusable)")
+        order = MO.arc_order(keep)
+        pace = MO.pace_key(opts.get("pace"))
+        minutes = float(opts.get("long_minutes") or 0)
+        old = st.get("plan.json", {}) or {}
+        title = " ".join(str(proj.get("title") or "").split()) or folder.name
+        music = (self._song_music(opts["song"]) if opts.get("song") else {"mode": "none"} if str(opts.get("music")) in ("none", "False", "off")
+                 else {"mode": "auto", "wanted": str(opts["music"])} if opts.get("music") not in (None, "", "auto", True) else {"mode": "auto"})
+        W, H = self._montage_canvas(files, photos)
+        mt = {"style": det["style"], "why": det["why"], "line": det["line"], "pace": pace, "target_s": minutes * 60.0 if minutes else None,
+              "dissolves": MO.wants_dissolves(notes), "keep_sound": keep_sound, "cands": cands, "order": order, "removed": [], "left_out": left, "canvas": [W, H]}
+        plan = {"style": "story", "title": title, "items": [], "pool": [], "montage": mt, "music": music, "beat_sync": True, "target_s": mt["target_s"],
+                "summary": "", "gap": 0.0, "hook_text": "", "version": int(old.get("version", 0)), "history": old.get("history", []), "broll_notes": []}
+        P("finding", "Choosing the music", 0.46)
+        est = min(MO.MAX_AUTO_S, sum(sum(MO.PACE[pace]["photo" if c["kind"] == "photo" else "clip"]) / 2.0 for c in keep))
+        track = self.montage_track(plan, folder, ai, st, title, notes, mt["target_s"] or est)
+        if track:
+            grid = self.beat_grid(track, st)
+            plan["music"] = {**plan["music"], "file": str(track.path), "title": track.title, "used": sorted(set(plan["music"].get("used", [])) | {track.path.name})}
+            mt["song"] = {"title": track.title, "file": str(track.path), "bpm": (grid or {}).get("bpm"), "why": plan["music"].get("why", ""), "mood": plan["music"].get("mood", "")}
+            mt["period"] = (grid or {}).get("period")
+            mt["music_start"] = max(0.0, (grid or {}).get("first", 0.0)) if grid else 0.0
+        else:
+            plan["music"] = {"mode": "none"}
+            mt["song"], mt["period"], mt["music_start"] = {}, None, 0.0
+        MO.layout(mt)
+        P("finding", "Writing the plan", 0.52)
+        mt["summary"], new_title = self._montage_story(ai, mt, notes, title)
+        if new_title and title.lower() in {folder.name.lower(), ""} or (new_title and not proj.get("title")):
+            plan["title"] = new_title
+            self.projects.update(pid, title=new_title)
+        plan["items"] = mt["items"]
+        self._montage_thumbs(job, mt, files)
+        plan["awaiting_approval"], plan["pending_render"], plan["pending_note"] = True, True, f"{det['style']} planned"
+        st.put("plan_words.json", {"words": [], "spans": []})
+        st.put("plan.json", plan)
+        self.store.update(job, status="approval", stage="The plan is ready: check it, then make the video", progress=0.55, error=None)
+
+    def _montage_story(self, ai, mt: dict, notes: str, title: str) -> tuple[str, str]:
+        """(a sentence or two on how the video unfolds, a title): from the shots in play order. The AI may fail: then it is built from the first, middle
+        and last shots."""
+        cands = {c["id"]: c for c in mt["cands"]}
+        seq = [cands[i["id"]]["what"] for i in mt["items"]]
+        if not seq:
+            return "", ""
+        step = max(1, len(seq) // 24)
+        try:
+            res = ai.complete_json("montage_story", "You describe a finished video's story for the person who asked for it: plain, concrete, no hype.",
+                                   f"What the person asked for: {notes or '(nothing written)'}\nThe shots, in play order: " + " | ".join(seq[::step])[:3500]
+                                   + "\n\nWrite a title (3-7 words) and how the video unfolds in one or two sentences that start with 'It opens on'.",
+                                   {"type": "object", "properties": {"title": {"type": "string"}, "summary": {"type": "string"}}, "required": ["title", "summary"]})
+            summ = " ".join(str(res.data.get("summary") or "").split())[:400]
+            ttl = " ".join(str(res.data.get("title") or "").replace('"', "").split())[:90]
+            if summ:
+                return summ, ttl
+        except Exception as e:  # noqa: BLE001 - built from the shots instead
+            log.info(f"montage story: {e}")
+        return MO.default_summary(mt), ""
+
+    def montage_card(self, pid: str) -> dict | None:
+        """The plan card of a montage project (None for any other)."""
+        proj = self.projects.get(pid)
+        plan = State(home_of(proj)).get("plan.json") or {}
+        mt = plan.get("montage")
+        if not mt:
+            return None
+        return MO.card(mt, title=plan.get("title") or "", notes=proj.get("notes") or "", job=proj["job"])
+
+    def montage_edit(self, pid: str, op: dict) -> dict:
+        """One click on the plan card: remove / put back / move a shot, change the pace, the song, the length or the dissolves. The plan is laid out
+        again (nothing renders). Returns the new card."""
+        with self.review_lock:
+            proj, folder, st, ai, engine = self._setup(pid)
+            plan = st.get("plan.json") or {}
+            mt = plan.get("montage")
+            if not mt or not plan.get("awaiting_approval"):
+                raise ValueError("there is no montage plan waiting for you")
+            ids = {c["id"] for c in mt["cands"]}
+            kind, cid = str(op.get("op") or ""), str(op.get("id") or "")
+            if kind == "remove" and cid in mt["order"]:
+                mt["removed"] = [*mt.get("removed", []), cid]
+            elif kind == "restore" and cid in ids:
+                mt["removed"] = [x for x in mt.get("removed", []) if x != cid]
+                if cid not in mt["order"]:                                  # (a shot the planner left out: it goes at the end of its time)
+                    mt["order"].append(cid)
+                    cands = {c["id"]: c for c in mt["cands"]}
+                    mt["order"].sort(key=lambda i: tuple(cands[i]["t"]))
+                    mt["left_out"] = [g for g in mt.get("left_out", []) if g["id"] != cid]
+            elif kind == "move" and cid in mt["order"]:
+                before = str(op.get("before") or "")
+                mt["order"].remove(cid)
+                mt["order"].insert(mt["order"].index(before) if before in mt["order"] else len(mt["order"]), cid)
+            elif kind == "pace":
+                mt["pace"] = MO.pace_key(op.get("value"))
+                self.store.update(proj["job"], options={**self.store.get(proj["job"])["options"], "pace": {"auto": "natural"}.get(mt["pace"], mt["pace"])})
+            elif kind == "length":
+                minutes = max(0.0, min(600.0, float(op.get("minutes") or 0)))
+                mt["target_s"] = minutes * 60.0 if minutes else None
+                plan["target_s"] = mt["target_s"]
+            elif kind == "dissolves":
+                mt["dissolves"] = bool(op.get("value"))
+            elif kind == "song":
+                notes = proj.get("notes") or ""
+                want = str(op.get("value") or "")
+                if want and want != "another":
+                    if MU.song(want) is None:
+                        raise ValueError("that song isn't an audio file on this Mac")
+                    plan["music"] = self._song_music(want, plan.get("music"))
+                else:
+                    plan["music"] = {k: v for k, v in (plan.get("music") or {}).items() if k not in ("file", "song", "title")} or {"mode": "auto"}
+                    plan["music"]["mode"] = "auto"
+                track = self.montage_track(plan, folder, ai, st, plan.get("title") or "", notes, mt.get("total_s") or 120.0)
+                if track:
+                    grid = self.beat_grid(track, st)
+                    plan["music"] = {**plan["music"], "file": str(track.path), "title": track.title, "used": sorted(set(plan["music"].get("used", [])) | {track.path.name})}
+                    mt["song"] = {"title": track.title, "file": str(track.path), "bpm": (grid or {}).get("bpm"), "why": plan["music"].get("why", ""), "mood": plan["music"].get("mood", "")}
+                    mt["period"] = (grid or {}).get("period")
+                    mt["music_start"] = max(0.0, (grid or {}).get("first", 0.0)) if grid else 0.0
+            else:
+                raise ValueError("that change isn't one the plan card knows")
+            MO.layout(mt)
+            mt["summary"] = MO.default_summary(mt)
+            plan["items"] = mt["items"]
+            plan["montage"] = mt
+            st.put("plan.json", plan)
+            return MO.card(mt, title=plan.get("title") or "", notes=proj.get("notes") or "", job=proj["job"])
+
+    def bake_montage(self, plan: dict, st: State) -> list[dict]:
+        """The photos of a montage as short animated clips (a gentle move each, held as long as the plan says); they are shots of the programme."""
+        mt = plan["montage"]
+        W, H = mt.get("canvas") or (1920, 1080)
+        pdir = st.dir / "photos"
+        pdir.mkdir(exist_ok=True)
+        out, k, gone = [], 0, set()
+        for it in plan["items"]:
+            if "photo" not in it:
+                continue
+            effect = MO.EFFECTS[k % len(MO.EFFECTS)]
+            k += 1
+            secs = float(it["end"]) - float(it["start"]) + 0.6
+            mov = pdir / f"{safe(Path(it['photo']).stem, 40)}_{PH.key(it['photo'], effect, secs, W, H)[:8]}.mp4"      # (Final Cut shows this name)
+            try:
+                if not mov.exists():
+                    PH.bake(it["photo"], effect, secs, W, H, 30.0, mov)
+            except Exception as e:  # noqa: BLE001 - that photo is left out
+                log.warning(f"animating {Path(it['photo']).name} failed: {e}")
+                gone.add(it["id"])
+                continue
+            out.append({"name": f"photo {it['id']} {Path(it['photo']).name}", "path": str(mov), "start": float(it["start"]), "end": float(it["start"]) + secs, "dur": secs,
+                        "w": W, "h": H, "fps": 30.0, "audio": False, "broll": False, "photo": True, "mphoto": True, "tc": 0.0})
+        if gone:
+            plan["items"] = [it for it in plan["items"] if it.get("id") not in gone]
+        return out
+
     def rerender(self, pid: str) -> None:
         """Render the saved edit again - nothing is re-planned (after a failed render, or to pick up a fix): the same cut, no new AI choices
         about what to keep."""
         proj, folder, st, ai, engine = self._setup(pid)
         plan = st.get("plan.json")
+        if plan and plan.get("montage") and plan.get("items"):                  # a montage: its own words are none; the shots are in the plan
+            files = [f for f in (st.get("files.json") or []) if not f.get("mphoto")]
+            return self.render(pid, plan, files, [], {}, ai, engine, st, folder, note=plan.get("pending_note") or "rendered again", all_words=[])
         if not plan or not plan.get("items"):
             raise RuntimeError("there is no saved edit to render yet - press Make the video")
         files, group, all_words, words = self.saved_inputs(folder, st, ai, self.store.get(proj["job"])["options"].get("transcriber", "parakeet"))
@@ -2325,7 +2579,11 @@ class LocalRunner:
         if mcj.get("group"):
             st.put("multicam.json", mcj)                                     # the corrected timecodes are what the build below reads back
         keep = plan.get("keep_cut")
-        if keep:                                                               # "Add B-roll to a video": the whole video, once, as delivered
+        mont = plan.get("montage")
+        if mont:                                                               # a montage / slideshow: the photos become clips, the shots play in the plan's order
+            files = [f for f in files if not f.get("mphoto")] + self.bake_montage(plan, st)
+            intervals = [(float(i["start"]), float(i["end"])) for i in plan["items"] if i.get("kind") == "visual"]
+        elif keep:                                                             # "Add B-roll to a video": the whole video, once, as delivered
             intervals = [(float(keep["start"]), float(keep["end"]))]
         else:
             raw, bounds = self.intervals_of(plan, sents, words, all_words, with_bounds=True)
@@ -2375,7 +2633,10 @@ class LocalRunner:
             plan["music"] = {**(plan.get("music") or {}), "file": str(track.path), "title": track.title,
                              "used": sorted(set((plan.get("music") or {}).get("used", [])) | {track.path.name})}
             grid = self.beat_grid(track, st) if plan.get("beat_sync") else None
-            if grid:
+            if grid and mont:                                              # the shots were already laid out in whole beats / bars: the song starts on its first beat
+                music_start = max(0.0, grid["first"])
+                beat_note = f"{grid['bpm']:.0f} BPM, every cut on the beat"
+            elif grid:
                 music_start = max(0.0, grid["first"])                      # the song begins ON a beat, so beats fall on k * period
                 out_len = sum(b - a for a, b in intervals)
                 bt = BT.grid(grid["period"], 0.0, out_len + 2)
@@ -2389,6 +2650,8 @@ class LocalRunner:
         bbrief = self.projects.brief(proj) + ("\nWhat the editor asked for in the B-roll: " + "; ".join(plan["broll_notes"][-6:])
                                               if keep and plan.get("broll_notes") else "")
         pool = plan.get("pool")
+        if mont:
+            pool = []                                                       # (every shot is in the plan already: nothing is laid over anything)
         if pool is None:                                                    # an older plan: the B-roll files only
             pool = [{**s, "file": f["name"]} for f in files if f["broll"] for s in scenes.get(f["name"], [])]
         ad = plan.get("style") == "ad"
@@ -2489,7 +2752,7 @@ class LocalRunner:
         csig = hashlib.sha1(json.dumps([[round(c["start"], 2), round(c["end"], 2), c["angle"]] for c in cuts]).encode()).hexdigest()
         # a jump cut inside one shot (an interview with a pause or a slip cut out) gets B-roll over it, as an editor hides it
         style_p = PROFILES.get(plan.get("style"), PROFILES["story"])
-        jumps = [j for j, _ in jump_cuts(intervals, files, cuts)] if (not keep and not style_p["punch_ins"] and not ad
+        jumps = [j for j, _ in jump_cuts(intervals, files, cuts)] if (not keep and not mont and not style_p["punch_ins"] and not ad
                                                                        and self.cfg.get("clipper.ai_videos.cover_jumps", True)) else []
         fresh = False
         if reuse and rc.get("csig") == csig and rc.get("final") is not None:
@@ -2511,6 +2774,10 @@ class LocalRunner:
                         + (f", {did['removed']} taken out (nothing else fitted)" if did["removed"] else ""))
                 if not fresh and rc.get("final") is not None:               # (a saved placement keeps the swap)
                     st.put("render_cache.json", {**rc, "final": {**rc["final"], "cutaways": cutaways}})
+        if pool and cutaways and not mont and not ad and not (rc.get("pinned")):     # no file and no look more than twice (a shot swapped by hand stays as it is)
+            cutaways, varied = MO.vary(cutaways, pool, exclude={outro["scene"]} if outro else set())
+            if varied:
+                log.info(f"B-roll variety: {varied} repeated shot(s) swapped for different ones")
         cutaways = no_flash_gaps(cutaways, pool or [], out_len)             # never a half-second flash of the speaker between two shots
         if fresh:                                                          # (an ad's too, so a shot can be swapped; it is only reused once pinned)
             st.put("render_cache.json", {"sig": rsig, "planned": planned, "csig": csig, "final": {"cutaways": cutaways, "cuts": cuts}})
@@ -2541,10 +2808,11 @@ class LocalRunner:
         P("rendering", "Cutting the kept stretches from the originals", 0.6)
         rough, rough_len, parts = self.assemble(files, intervals, cutaways, group, cuts, st,
                                                 lambda f: P("rendering", f"Cutting the kept stretches ({f:.0%})", 0.6 + 0.12 * f), outro=outro,
-                                                punch=not keep and bool(PROFILES.get(plan.get("style"), PROFILES["story"])["punch_ins"]),   # (a kept video is never zoomed)
-                                                even=not keep,                    # (...nor re-levelled: it stays exactly as it is)
-                                                style=None if keep else plan.get("style") or "story",   # (layouts: never in a kept video)
-                                                tmode="none" if keep else TR.mode_of(opts.get("transitions")),     # (a kept video stays exactly as it is)
+                                                punch=not keep and not mont and bool(PROFILES.get(plan.get("style"), PROFILES["story"])["punch_ins"]),   # (a kept video is never zoomed)
+                                                even=not keep and not mont,       # (...nor re-levelled: it stays exactly as it is)
+                                                style=None if (keep or mont) else plan.get("style") or "story",   # (layouts: never in a kept video)
+                                                tmode="none" if keep else ("full" if mont and mont.get("dissolves") else "none" if mont and TR.mode_of(opts.get("transitions")) == "none"
+                                                                            else "auto") if mont else TR.mode_of(opts.get("transitions")),     # (a montage: hard cuts and an end fade; soft dissolves only when switched on)
                                                 hook_at_start=bool(plan.get("hook_text")))
         if getattr(self, "live_job", None):                                  # the live view: frames of the cut as it now stands
             live.filmstrip(self.store, self.live_job, rough, rough_len, of="the cut", n=8, what="the cut")
@@ -2628,7 +2896,7 @@ class LocalRunner:
             self.store.update(job, options=opts)                            # polish's working settings must never replace what you chose
         loudness_pass(jobd / clip["file"], loud)
         self.verify(jobd / clip["file"], rough_len, reference=rough)
-        outline = FL.steps(proj.get("notes") or "") if not keep else []         # (a kept video says what it says: no script to check)
+        outline = FL.steps(proj.get("notes") or "") if not keep and not mont else []         # (a kept video says what it says: no script to check)
         if outline:
             # The final arbiter listens to the exported media, not the intended plan. If it cannot quote proof,
             # the corresponding script point is explicitly marked missing for the creator's review.
@@ -4036,7 +4304,8 @@ def layout_graph(layout: str, W: int, H: int, rs: str, lut_b: str, lut_s: str, n
 def build_parts(files: list[dict], group: dict | None, cuts: list[dict], intervals, cutaways: list[dict], outro: dict | None = None) -> list[dict]:
     """The whole program as pieces, in order, each with its picture source and sound source (and what Final Cut needs to know)."""
     def file_at(t: float) -> dict:
-        return next((f for f in files if f["start"] <= t < f["end"] + 1e-6 and not f.get("photo")), next(f for f in reversed(files) if not f.get("photo")))
+        play = lambda f: not f.get("photo") or f.get("mphoto")             # noqa: E731 (a montage's photos are shots of their own)
+        return next((f for f in files if f["start"] <= t < f["end"] + 1e-6 and play(f)), next(f for f in reversed(files) if play(f)))
     parts: list[dict] = []
     for a, b in intervals:
         t = a

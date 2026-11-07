@@ -533,3 +533,42 @@ def test_log_clips_catalogued_in_grey_are_looked_at_again(tmp_path, monkeypatch)
     assert [f["id"] for f in cat.todo([log_clip, normal])] == ["a1"]
     cat.save({**log_clip, "model": cat.model, "frames": 30, "indexed": 2, "colour": "converted"})
     assert cat.todo([log_clip, normal]) == []                                               # done once
+
+
+def test_a_run_that_finds_nothing_says_why(tmp_path):
+    """BUG (reported 2026-11-07): "Catalogue it now" on a folder did nothing, with no word of why. A folder that cannot be read, or holds only
+    finished edits, now says so in plain words (the page shows it where it used to say 'isn't catalogued yet')."""
+    drive = tmp_path / "Drive"
+    drive.mkdir()
+    (drive / "Event FINAL.mp4").write_bytes(b"x" * 4000)
+    cat = C.Catalog(_cfg(tmp_path, [drive]), embedder=FakeEmbedder())
+    assert cat.scan() == [] and "finished edits" in cat.nothing_found() and "1 video" in cat.nothing_found()
+    empty = tmp_path / "Empty"
+    empty.mkdir()
+    cat2 = C.Catalog(_cfg(tmp_path, [empty]), embedder=FakeEmbedder())
+    cat2.scan()
+    assert "no videos or photos" in cat2.nothing_found()
+    locked = tmp_path / "Locked"
+    (locked / "sub").mkdir(parents=True)
+    (locked / "sub" / "a.mp4").write_bytes(b"x" * 4000)
+    (locked / "sub").chmod(0)
+    try:
+        cat3 = C.Catalog(_cfg(tmp_path, [locked]), embedder=FakeEmbedder())
+        cat3.scan()
+        if os.geteuid() != 0:                                                     # (root can read anything)
+            assert "won't let FirstCut read" in cat3.nothing_found()
+    finally:
+        (locked / "sub").chmod(0o700)
+
+
+def test_setup_is_not_done_while_pytorch_is_missing(monkeypatch):
+    """BUG (reported 2026-11-07): transformers was in the app's Python but torch was not; Setup called the footage search done, so nothing
+    installed it and every catalogue run stopped with "No module named 'torch'". Both packages are checked now."""
+    import importlib.util as iu
+
+    from clipfarm.clipper import studio as SD
+    real = iu.find_spec
+    monkeypatch.setattr(iu, "find_spec", lambda name, *a, **k: None if name == "torch" else real("os"))
+    assert SD.search_packages_ready() is False
+    monkeypatch.setattr(iu, "find_spec", lambda name, *a, **k: real("os"))
+    assert SD.search_packages_ready() is True

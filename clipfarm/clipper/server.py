@@ -1022,6 +1022,18 @@ def make_handler(engine: Engine, store: Store, worker: Worker, feed: Feed, max_u
                     except ValueError as e:
                         return self._err(409, str(e))
                     return self._json(projects.view(projects.get(pid)))
+                if what == "montage-edit" and proj.get("mode") == "local":      # one click on a montage's plan card: nothing renders
+                    if runner.running == pid:
+                        return self._err(409, "it's being made right now")
+                    if b.get("op") == "normal":                                  # "Not what I meant": make it as an ordinary edit instead
+                        job = store.get(proj["job"])
+                        store.update(proj["job"], options={**job["options"], "montage": "off"})
+                        runner.start(pid, "make")
+                        return self._json({"queued": True}, 202)
+                    try:
+                        return self._json({"card": runner.montage_edit(pid, {k: b.get(k) for k in ("op", "id", "before", "value", "minutes") if k in b})})
+                    except (ValueError, TypeError) as e:
+                        return self._err(409, str(e))
                 if what == "plan-find" and proj.get("mode") == "local":
                     query = str(b.get("query") or "").strip()[:300]
                     if not query:

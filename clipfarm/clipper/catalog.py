@@ -36,6 +36,7 @@ from pathlib import Path
 
 from ..core import ffmpeg
 from . import cameramotion as CM
+from . import tagwords as TW
 from ..core.log import get_logger
 from ..core.state import atomic_write_json
 
@@ -205,6 +206,8 @@ class Catalog:
         self._embedder, self._vision = embedder, vision
         self._idx = None
         self._idx_lock = threading.Lock()
+        self._tagger = None                                      # tagwords.TagWords: three picture keywords per file (tagwords.py)
+        self._tag_lock = threading.Lock()
         self.stop = threading.Event()
         self.status: dict = {"running": False, "stage": "", "done": 0, "total": 0, "error": None}
         self.thread: threading.Thread | None = None
@@ -319,10 +322,12 @@ class Catalog:
         """Every video (and photo) under the roots, from the folder listing only. Final Cut libraries, proxies, render files, the
         recycle bin and the folders in catalog.skip are left out. A RAW photo with a JPEG of the same name counts once (the JPEG)."""
         out, seen = [], set()
+        errs: list[str] = []
+        left_out = 0
         roots = self.mounted()                     # (a folder inside another is walked too, even when the walk would skip its name;
         for root in dict.fromkeys(roots):          #  the ids keep each file once)
             base = Path(*root.parts[:3]) if len(root.parts) > 2 and root.parts[1] == "Volumes" else root.parent   # names start at the drive
-            for dirpath, dirnames, filenames in os.walk(root):
+            for dirpath, dirnames, filenames in os.walk(root, onerror=lambda e: errs.append(f"{type(e).__name__}: {e}")):
                 dirnames[:] = sorted(d for d in dirnames if not self._skipped(d))
                 stems = {Path(f).stem.lower() for f in filenames if Path(f).suffix.lower() in EDIT_PHOTO_EXT | {".heic", ".heif"}}
                 for f in sorted(filenames):
@@ -340,13 +345,32 @@ class Catalog:
                     if st.st_size < 1024:
                         continue
                     if kind == "video" and finished_video(p.relative_to(root)):
+                        left_out += 1
                         continue                                  # (an export or a final: edited pictures, with graphics and captions on them)
                     if rid(p) in seen:
                         continue
                     seen.add(rid(p))
                     out.append({"id": rid(p), "path": str(p), "rel": str(p.relative_to(base)), "root": str(root), "kind": kind,
                                 "size": st.st_size, "mtime": int(st.st_mtime)})
+        self.scan_info = {"found": len(out), "errors": errs[:5], "finished": left_out, "roots": [str(r) for r in dict.fromkeys(roots)]}
         return out
+
+    def nothing_found(self) -> str:
+        """Plain words for why a run over folders found no videos or photos to catalogue ("" when it found some)."""
+        info = getattr(self, "scan_info", None) or {}
+        if info.get("found"):
+            return ""
+        where = ", ".join(Path(r).name for r in info.get("roots") or []) or "that folder"
+        errs = " ".join(info.get("errors") or [])
+        if "Permission" in errs or "Operation not permitted" in errs:
+            return (f"macOS won't let FirstCut read “{where}”. Open System Settings › Privacy & Security › Files & Folders (or Full Disk Access), "
+                    "turn FirstCut on for Removable Volumes, then try again.")
+        if errs:
+            return f"Couldn't read “{where}”: {errs[:160]}"
+        if info.get("finished"):
+            return (f"Found no footage in “{where}”: its {info['finished']} video{'s' if info['finished'] != 1 else ''} look like finished edits "
+                    "(they are in Final or Export folders, or named final, v2 or rough cut), which are left out.")
+        return f"There are no videos or photos in “{where}” that can be catalogued (it may be empty, or only hold file types the catalogue doesn't read)."
 
     def todo(self, found: list[dict]) -> list[dict]:
         """The files not catalogued yet (or changed since, or catalogued with another model)."""
@@ -369,6 +393,58 @@ class Catalog:
                 self.forget(r["id"])
                 n += 1
         return n
+
+    # -- keywords: the three words that best describe a file's pictures (tagwords.py) --------------------------------------------
+    def tagger(self):
+        """The word matrix for the picture model that is LOADED (never loads or downloads it): None while there is no model yet."""
+        with self._tag_lock:
+            if self._tagger is None and self._embedder is not None:
+                self._tagger = TW.TagWords(self.dir, self._embedder, self.model)
+            return self._tagger
+
+    def picture_tags(self, frames, rel: str = "") -> list[str]:
+        """Up to three words for a file's frame embeddings; with no model (or no match) the words of its folders and file name."""
+        try:
+            tg = self.tagger()
+            tags = tg.pick(frames) if tg is not None else []
+        except Exception as e:  # noqa: BLE001 - keywords are a bonus, never a reason to fail a file
+            log.info(f"keywords not made for {rel}: {e}")
+            tags = []
+        return tags or TW.path_words(rel)
+
+    def fill_tags(self, limit: int = 600, ids=None) -> int:
+        """Keywords for catalogued files that have none yet (made before keywords existed): from their embeddings on disk, no video is read.
+        Only with the picture model already loaded (so it never downloads it). Returns how many were tagged."""
+        import numpy as np
+        if self.tagger() is None:
+            return 0
+        n = 0
+        for rec in (self.load(i) for i in ids) if ids is not None else self.records():
+            if not rec or rec.get("tags") is not None or not rec.get("frames") or rec.get("error"):
+                continue
+            try:
+                e = np.load(self.dir / "emb" / f"{rec['id']}.npy").astype("float32")
+            except (OSError, ValueError):
+                continue
+            self.save({**rec, "tags": self.picture_tags(e, rec.get("rel") or "")})
+            n += 1
+            if n >= limit:
+                break
+        if n and self._tagger is not None:
+            self._tagger.flush()
+        return n
+
+    def _described_tags(self, rec: dict, texts: list[str]) -> list[str]:
+        """The record's keywords after a description arrived: the picture words, sharpened by words the description uses that few others do."""
+        tg = self.tagger()
+        if tg is None:
+            return rec.get("tags") or TW.path_words(rec.get("rel") or "")
+        try:
+            tg.note_description(" ".join(texts))
+            return tg.merge(rec.get("tags") or [], texts)
+        except Exception as e:  # noqa: BLE001
+            log.info(f"keywords not sharpened for {rec.get('rel')}: {e}")
+            return rec.get("tags") or []
 
     # -- pass 1: frames + embeddings ---------------------------------------------------------------
     def embedder(self):
@@ -477,7 +553,8 @@ class Catalog:
                 log.info(f"camera motion not kept for {f['path']}: {e}")
         old = self.load(f["id"]) or {}
         same = old.get("size") == f["size"] and old.get("mtime") == f["mtime"]
-        self.save({**f, **meta, "step": round(step, 3), "frames": len(frames), "model": self.model, "indexed": int(time.time()),
+        tags = old.get("tags") if (same and old.get("described") and old.get("tags")) else self.picture_tags(emb, f.get("rel") or "")   # (the sharpened ones stay)
+        self.save({**f, **meta, "step": round(step, 3), "frames": len(frames), "model": self.model, "indexed": int(time.time()), "tags": tags,
                    "colour": "converted" if self._lut(f["path"]) else "as shot",                # (log footage: seen in normal colour)
                    "motion": mver,
                    "thumb_w": ims[0].width if ims else THUMB_W, "thumb_h": ims[0].height if ims else 0,
@@ -534,7 +611,7 @@ class Catalog:
                 from PIL import Image
                 self.embedder().images([Image.new("RGB", (32, 32))])
             except Exception as e:  # noqa: BLE001
-                stopped = f"the picture model could not load: {e}"
+                stopped = f"the picture model could not load: {e}" + (" (open Settings › Setup and run it again: it installs the missing part)" if isinstance(e, ImportError) else "")
                 todo = []
         # Several files at once: reading a 4K camera file off a drive is mostly waiting (the drive, ffmpeg), and one at a time left the Mac
         # idle most of the time (about 8 files a minute). The picture model still takes one picture batch at a time (its own lock).
@@ -590,7 +667,8 @@ class Catalog:
                     if what == "stop":
                         stopped, halt = why, True
                     elif what == "ok":
-                        self._live("done", step="frames", id=f["id"], rel=f["rel"], media=f["kind"], k=self._mid(self.load(f["id"])), what=[], by=None)
+                        self._live("done", step="frames", id=f["id"], rel=f["rel"], media=f["kind"], k=self._mid(self.load(f["id"])), what=[], by=None,
+                                   tags=(self.load(f["id"]) or {}).get("tags") or [])
                         done += 1
                     elif what == "fail":
                         failed += 1
@@ -598,6 +676,10 @@ class Catalog:
         finally:
             gov.stop()
             self.status.update(workers=0, load="")
+        try:
+            self.fill_tags()                                              # (files catalogued before keywords: embeddings only, a moment's work)
+        except Exception as e:  # noqa: BLE001
+            log.info(f"keywords for older files not made: {e}")
         self.compile()
         if stopped:
             log.error(f"catalog: stopped: {stopped}")
@@ -665,9 +747,10 @@ class Catalog:
             log.warning(f"catalog: describing {rec['path']} failed: {e}")
             return False
         rec = {**rec, "scenes": scenes, "described": getattr(res, "model", None) or self.vision_model}
+        rec["tags"] = self._described_tags(rec, [str(x.get("what") or "") for x in scenes])
         self.save(rec)
         self._live("done", step="describe", id=rec["id"], rel=rec["rel"], media="video", k=self._mid(rec),
-                   what=[str(x.get("what") or "")[:140] for x in scenes[:2]], by=self.who(rec["described"]))
+                   what=[str(x.get("what") or "")[:140] for x in scenes[:2]], by=self.who(rec["described"]), tags=rec["tags"])
         return True
 
     def describe_photos(self, recs: list[dict]) -> int:
@@ -689,8 +772,9 @@ class Catalog:
                 continue
             if 0 <= k < len(recs) and what:
                 by = getattr(res, "model", None) or self.vision_model
-                self.save({**recs[k], "scenes": [{"start": 0.0, "end": 0.0, "what": what, "quality": q}], "described": by})
-                self._live("done", step="describe", id=recs[k]["id"], rel=recs[k]["rel"], media="photo", k=0, what=[what[:140]], by=self.who(by))
+                tags = self._described_tags(recs[k], [what])
+                self.save({**recs[k], "scenes": [{"start": 0.0, "end": 0.0, "what": what, "quality": q}], "described": by, "tags": tags})
+                self._live("done", step="describe", id=recs[k]["id"], rel=recs[k]["rel"], media="photo", k=0, what=[what[:140]], by=self.who(by), tags=tags)
                 n += 1
         return n
 
@@ -759,7 +843,7 @@ class Catalog:
             starts.append(n)
             n += len(e)
             meta.append({k: r.get(k) for k in ("id", "path", "rel", "root", "kind", "dur", "w", "h", "fps", "tc", "tc_df", "audio", "step",
-                                                   "scenes", "size", "mtime")} | {"frames": len(e)})
+                                                   "scenes", "size", "mtime", "tags")} | {"frames": len(e)})
         self.dir.mkdir(parents=True, exist_ok=True)
         emb = np.concatenate(mats) if mats else np.zeros((0, 768), "float16")
         built = time.time()                                       # both halves carry it: a search between the two renames sees a mismatch
@@ -786,7 +870,7 @@ class Catalog:
             if ("built" in z.files and float(z["built"]) != float(doc.get("built") or 0)) or len(meta) != len(z["starts"]):
                 return self._idx                                  # caught between the two renames: the last whole index until it settles
             self._idx = {"emb": z["emb"], "starts": z["starts"], "files": meta, "stamp": stamp,
-                         "paths": [(m["rel"] + " " + " ".join(s.get("what", "") for s in (m.get("scenes") or []))).lower() for m in meta]}
+                         "paths": [(m["rel"] + " " + " ".join(s.get("what", "") for s in (m.get("scenes") or [])) + " " + " ".join(m.get("tags") or [])).lower() for m in meta]}
             return self._idx
 
     def in_sources(self, idx) -> list[bool]:
@@ -858,7 +942,33 @@ class Catalog:
             for k in [int(x) for x in np.argsort(-row)[:per_file]]:
                 out.append(self._shot(f, row, k, float(rank[i]), emb))
         out.sort(key=lambda s: -s["score"])
-        return out[:n]
+        out = out[:n]
+        self._tags_for_shots(out, idx)
+        return out
+
+    def _tags_for_shots(self, shots: list[dict], idx: dict) -> None:
+        """Keywords for the files of these results that were catalogued before keywords existed (from the embeddings the index already holds,
+        and kept on their records): the page shows them under each shot."""
+        need = [s for s in shots if s.get("tags") is None]
+        if not need:
+            return
+        pos = idx.get("pos")
+        if pos is None:
+            pos = idx["pos"] = {f["id"]: j for j, f in enumerate(idx["files"])}
+        done: dict[str, list[str]] = {}
+        for s in need:
+            if s["id"] not in done:
+                j = pos.get(s["id"])
+                tags: list[str] = []
+                if j is not None:
+                    a = int(idx["starts"][j])
+                    frames = idx["emb"][a:a + int(idx["files"][j].get("frames") or 0)].astype("float32")
+                    tags = self.picture_tags(frames, s.get("rel") or "")
+                    rec = self.load(s["id"])
+                    if rec and rec.get("tags") is None and self.tagger() is not None:
+                        self.save({**rec, "tags": tags})
+                done[s["id"]] = tags
+            s["tags"] = done[s["id"]]
 
     def _shot(self, f: dict, row, k: int, rank: float, emb) -> dict:
         """The stretch around frame k that matches about as well: at least SHOT_MIN s where the clip allows, at most SHOT_MAX."""
@@ -883,7 +993,8 @@ class Catalog:
                 "start": round(start, 2), "end": round(end, 2), "dur": dur, "score": round(rank, 4), "chance": round(emb.chance(top), 4),
                 "step": step, "frames": int(f.get("frames") or len(row)),           # (the page scrubs through the file's stills: frame k at k * step)
                 "what": (sc or {}).get("what"), "quality": (sc or {}).get("quality"), "w": f.get("w"), "h": f.get("h"), "fps": f.get("fps"),
-                "tc": f.get("tc", 0.0), "tc_df": f.get("tc_df", False), "audio": f.get("audio"), "size": f.get("size"), "mtime": f.get("mtime")}
+                "tc": f.get("tc", 0.0), "tc_df": f.get("tc_df", False), "audio": f.get("audio"), "size": f.get("size"), "mtime": f.get("mtime"),
+                "tags": f.get("tags")}
 
     # -- where the good part of a video is (the player's heat map) -------------------------------------------
     def look(self, i: str) -> list[float]:
@@ -1186,6 +1297,10 @@ class Catalog:
             if frames:
                 r = self.index(deadline, limit=limit, progress=prog)
                 self.status.update(last_index=r)
+                why = self.nothing_found()
+                if why:                                                  # (said on the page: an empty run used to end without a word)
+                    self.status.update(error=why, stage=why[:120])
+                    log.warning(f"catalog: {why}")
                 if r.get("stopped"):                                     # the drive went away or the picture model failed: say so, stop
                     self.status.update(error=r["stopped"], stage="Stopped: " + r["stopped"][:120])
                     return False

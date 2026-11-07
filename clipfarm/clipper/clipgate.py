@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+GATE_VERSION = 3                 # bump when a check is added: the scheduler looks again (on the finished file) at every clip that was last looked at under an older version
 MIN_SECONDS = 7.0
 MAX_SECONDS = 40.0               # October 2026: posts of 35 s and longer kept ~21% of viewers and got about 600 views against ~1,000 for 12-25 s (your own uploads are exempt, see relay.ingest)
 OUTRO = re.compile(r"\b(conclud\w+ my (?:review|video|thoughts)|that wraps (?:it )?up|(?:let me )?wrap(?:ping)? (?:it|this|things|the video) up|thanks? (?:so much )?for (?:watching|listening)|"
@@ -22,6 +23,15 @@ BARE_QUESTION = re.compile(r"^(?:how|what|why|where|when|who)\s+(?:do|did|does|a
 FILLER = re.compile(r"^(?:wait|wow|omg|whoa|bruh|yo|hey|hi|hello|look|watch|listen)(?![-\w])|\byou won'?t believe\b|\bwill (?:blow|shock|surprise) you\b|"
                     r"\bgoes? (?:viral|wrong)\b|\b(?:crazy|wild) (?:story|moment|thing)\b|\bunexpected (?:moment|thing|twist)\b|"
                     r"\b(?:funny|best|epic|insane|crazy|amazing) moment\b|\bthis (?:video|clip|moment)\b|\breacts? to (?:an? )?(?:\w+ )?(?:moment|thing|clip|video)\b", re.I)
+
+
+GENERIC = re.compile(r"^(?:taste|watch|listen to|look at|try|feel|see) this\b|\bbefore you (?:even )?(?:touch|know|realize|realise|think|try|taste|see|notice)\b|"
+                     r"^your (?:brain|body|mind|heart|gut|eyes|ears|skin) (?:decides|knows|wants|controls|hides|lies|tricks)\b|"
+                     r"^how to (?:make|earn|get|build|become|be|win|achieve|save|find)\b.{0,30}\b(?:million|money|rich|wealth|millionaire|successful|success|famous|happy|confident)\b", re.I)
+GAME_WORDS = re.compile(r"(?<![a-z0-9])(?:gta ?(?:v|rp|5|6)|nopixel|paleto|valorant|fortnite|minecraft|roblox|call of duty|warzone|apex legends|counter-?strike|cs2|csgo|rainbow six|"
+                        r"nba 2k\d*|elden ring|let'?s play|speed ?run|playthrough|gameplay|rp server|league of legends|dota ?2?|rocket league|"
+                        r"fall guys|pubg|destiny 2|genshin|twitch plays)(?![a-z0-9])", re.I)     # (only names and game talk that mean a game: not "gaming the system", "roleplay", "overwatch", "game of life", a bare "GTA")
+GAME_TAGS = {"gaming", "gameplay", "video games", "gta", "gta rp", "roleplay", "let's play"}     # (a source's own tag list is exact: here the broad words are safe)
 
 
 def _concrete(words: list[str]) -> bool:
@@ -41,13 +51,59 @@ def weak_title(title: str | None) -> str | None:
         return "a single word"
     if BARE_QUESTION.search(t) and len(words) <= 7:
         return "a bare question"
+    if GENERIC.search(t):
+        return "a generic hook with no subject"
     hit = FILLER.search(t)
     if hit and not _concrete(words) and (len(words) <= 5 or hit.start() > 0):                  # (a long sentence that merely starts with "Watch" says something)
         return "a greeting or label"
     return None
 
 
-def problems(clip: dict, source: dict | None = None) -> list[str]:
+def gaming_why(clip: dict, source: dict | None = None, cfg=None) -> str | None:
+    """-> why this is game footage (None = fine). Real-life content only: the words of the clip's own title and hashtags, and of the source video's title, channel
+    and topic, are matched against a list of games and game talk (plus clipper.auto.avoid_words / avoid_channels from the config when it is given). Streamers
+    talking to their camera are fine; this only goes by what the clip and its source say, so a gameplay clip with a neutral title and an unlisted channel
+    still gets through (the engine's source check looks at the pictures)."""
+    src = source or {}
+    parts = [clip.get("title"), clip.get("caption"), src.get("title"), src.get("channel"), src.get("topic"), " ".join(map(str, src.get("tags") or []))]
+    text = " ".join(str(x) for x in parts if x).lower()
+    if not text:
+        return None
+    m = GAME_WORDS.search(text)
+    if m:
+        return f"game footage ({m.group(0)}): real-life content only"
+    if str(src.get("topic") or "").strip().lower() in ("gaming", "game", "games", "gameplay", "video games"):
+        return f"game footage (topic {src.get('topic')}): real-life content only"
+    if cfg is not None:
+        try:
+            ch = {str(c).lower() for c in (cfg.get("clipper.auto.avoid_channels") or [])}
+            if str(src.get("channel") or "").lower() in ch:
+                return f"game channel ({src.get('channel')}): real-life content only"
+            own = " ".join(str(x) for x in (src.get("title"), src.get("channel"), src.get("topic")) if x).lower()      # (the source's words, as purge_avoided always matched them)
+            padded = f" {own} "
+            for w in (str(w).lower() for w in (cfg.get("clipper.auto.avoid_words") or [])):
+                if f" {w} " in padded or (len(w) > 4 and w in own):
+                    return f"game footage ({w}): real-life content only"
+        except Exception:  # noqa: BLE001 - a broken config is never a reason to lose a clip
+            pass
+    return None
+
+
+def check_file(video, clip: dict | None = None) -> dict:
+    """The last look at a FINISHED file (the same checks the render makes: moving picture, a real opening, burned-in promo, double captions). -> a clip's `qa`
+    entry: {"issues": [...], "gate": GATE_VERSION}. Run again by the scheduler on clips that were rendered before a check existed."""
+    from pathlib import Path
+    from . import opening
+    clip = clip or {}
+    return {"issues": opening.check(Path(video), " ".join(str(clip.get("transcript") or "").split()), strict=True), "gate": GATE_VERSION}
+
+
+def fresh(qa: dict | None) -> bool:
+    """True when a clip's `qa` was made under the current set of checks."""
+    return bool(qa) and int(qa.get("gate") or 0) >= GATE_VERSION
+
+
+def problems(clip: dict, source: dict | None = None, cfg=None) -> list[str]:
     """-> the reasons this clip should not be posted (empty = fine)."""
     out: list[str] = []
     dur = float(clip.get("duration") or 0)
@@ -67,6 +123,8 @@ def problems(clip: dict, source: dict | None = None) -> list[str]:
         out.append("sounds like a sales pitch")
     if (source or {}).get("topic") in ("gaming", "game", "gameplay") and clip.get("layout") in ("track",) and dur < 25:
         out.append("short, tightly cropped gameplay face cam")
+    if why := gaming_why(clip, source, cfg):
+        out.append(why)
     for i in (clip.get("qa") or {}).get("issues", []):                              # the finished-file check (qa.py), run on every clip when it is rendered
         if i.get("level") == "bad":
             out.append(i["what"])
