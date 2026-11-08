@@ -66,6 +66,11 @@ def test_the_video_never_ends_on_half_a_sentence():
              M.Sentence(2, 9.5, 11, "Then we went home"), M.Sentence(3, 13, 14, "x"), M.Sentence(4, 15, 16, "y")]
     items = LP.finish_sentence([{"kind": "talk", "a": 0, "b": 0}], sents)
     assert items[0]["b"] == 1                                                           # runs on to "her ..." but not across the pause
+    # every item finishes its thought (not only the last one) when asked
+    sents = [M.Sentence(0, 0, 2, "We moved in May."), M.Sentence(1, 2.5, 4, "And then the car broke"), M.Sentence(2, 4.1, 5, "down on the highway."),
+             M.Sentence(3, 20, 22, "Next we found a house."), M.Sentence(4, 22.5, 24, "It had a red door."), M.Sentence(5, 30, 31, "The end.")]
+    both = LP.finish_sentence([{"kind": "talk", "a": 0, "b": 1}, {"kind": "talk", "a": 3, "b": 4}], sents, every=True)
+    assert both[0]["b"] == 2 and both[1]["b"] == 4
 
 
 # ----------------------------------------------------------------------------- cut points
@@ -235,7 +240,7 @@ def test_a_repeated_line_inside_a_longer_passage_is_cut_out():
     sents = [M.Sentence(0, 0, 3, "We fit every single foot by hand here."), M.Sentence(1, 4, 6, "It takes time."),
              M.Sentence(2, 7, 10, "And honestly we fit every single foot by hand here."), M.Sentence(3, 11, 13, "People notice.")]
     out = LP.no_repeats([{"kind": "talk", "a": 0, "b": 0}, {"kind": "talk", "a": 1, "b": 3}], sents)
-    assert [(it["a"], it["b"]) for it in out] == [(0, 0), (1, 1), (3, 3)]
+    assert [(it["a"], it["b"]) for it in out] == [(1, 3)]                                    # one take stays: the best one (complete, clean, the later), not the first
 
 
 def test_the_transcript_comes_from_the_cleanest_camera():
@@ -661,7 +666,7 @@ def test_one_long_broll_shot_supplies_many_cutaways():
     short = [{"start": 0.0, "end": 9.0, "what": "a dog", "quality": 7.0}, {"start": 5.0, "end": 6.0, "what": "photo", "quality": 7.0, "photo": True}]
     assert BR.split_long(short) == short                                                          # short shots and photos are left alone
     assert BR.split_long(parts) == parts                                                          # already split: not split again
-    assert BR.sheets_for(30) == 2 and BR.sheets_for(540) == 8 and BR.sheets_for(7200) == 8        # long files are looked at more closely
+    assert BR.sheets_for(30) == 2 and BR.sheets_for(540) == 14 and BR.sheets_for(7200) == 16        # long files are looked at more closely
 
 
 def test_a_camera_with_almost_no_sound_still_lines_up_with_the_loud_one():
@@ -741,6 +746,9 @@ def test_um_uh_and_stuttered_words_are_cut_out_of_the_speech():
     assert at_start[0][0] > 1.4
     sliver = LP.cut_fillers([(0.7, 3.0)], words)                                                  # 0.3 s of "was" would be left alone before the "um": keep it
     assert sliver[0] == (0.7, 1.025) or sliver == [(0.7, 3.0)]
+    soft = LP.cut_fillers([(0.0, 5.5)], words, policy="keep_soft")                                # keep_soft: this "um" is long (0.5 s), so it still goes...
+    assert soft == got
+    assert LP.cut_fillers([(0.0, 5.5)], words, policy="keep") == [(0.0, 5.5)]                      # ...and "keep" leaves everything
 
 
 def test_jump_cuts_on_one_camera_get_an_alternating_punch_in():

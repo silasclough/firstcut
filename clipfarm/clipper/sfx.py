@@ -49,8 +49,46 @@ def whoosh(kind: str, direction: str, dur: float, seed: int = 1) -> np.ndarray:
     return sig / peak * (PEAK if direction == "in" else PEAK * 0.7)
 
 
-def track(events: list[dict], total: float, path: Path) -> Path | None:
-    """events = [{"at", "len", "style"}] (a full-screen card's start, length and transition) -> a stereo wav of `total` seconds with the whooshes in place."""
+VARIANTS = ("wipe", "iris", "push", "zoom")                 # the whoosh sounds; the same one is never used for two cards in a row
+WINDOW_S = 30.0
+
+
+def choose(events: list[dict], policy: dict | None = None) -> list[dict]:
+    """The cards that get a sound, from the style's `sfx` policy: at most `max_per_30s` in any 30 seconds (0 = none), never the same whoosh twice in a row,
+    and at least one silent full-screen card in any 30 seconds that has two or more. The rest stay silent. A card with no `style` is a wipe."""
+    pol = policy if isinstance(policy, dict) else {}
+    try:
+        mx = int(pol.get("max_per_30s", 2))
+    except (TypeError, ValueError):
+        mx = 2
+    if mx <= 0:
+        return []
+    out: list[dict] = []
+    seen: list[tuple[float, bool]] = []                                      # (time, sounded) of the cards so far
+    last = None
+    for e in sorted((e for e in events if isinstance(e, dict) and "at" in e), key=lambda e: float(e["at"])):
+        try:
+            at = float(e["at"])
+        except (TypeError, ValueError):
+            continue
+        recent = [(t, ok) for t, ok in seen if at - t < WINDOW_S]
+        sounded = sum(1 for _t, ok in recent if ok)
+        give = sounded < mx and not (recent and all(ok for _t, ok in recent))      # (a window never has every card sounded)
+        seen.append((at, give))
+        if not give:
+            continue
+        style = str(e.get("style") or "wipe")
+        if style == last:                                                    # never the same sound twice in a row
+            style = VARIANTS[(VARIANTS.index(style) + 1) % len(VARIANTS)] if style in VARIANTS else VARIANTS[0]
+        last = style
+        out.append({**e, "style": style})
+    return out
+
+
+def track(events: list[dict], total: float, path: Path, policy: dict | None = None) -> Path | None:
+    """events = [{"at", "len", "style"}] (a full-screen card's start, length and transition) -> a stereo wav of `total` seconds with the whooshes in place
+    (only for the cards the style's sfx policy allows: see choose())."""
+    events = choose(events, policy) if policy is not None else events
     if not events or total <= 0:
         return None
     buf = np.zeros(int(SR * total) + SR)

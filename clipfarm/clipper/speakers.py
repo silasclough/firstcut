@@ -28,6 +28,13 @@ SCHEMA = {"type": "object", "properties": {"host": {"type": "array", "items": {"
 
 def host_spans(ai, words: list[dict], progress=None) -> list[tuple[float, float]]:
     """-> [(start, end)] seconds of the interviewer's sentences."""
+    return analyse(ai, words, progress)[0]
+
+
+def analyse(ai, words: list[dict], progress=None) -> tuple[list[tuple[float, float]], bool]:
+    """-> ([(start, end)] seconds of the interviewer's sentences, is there an interviewer at all). The second answer is the AI's own
+    has_interviewer (any part of the transcript); when it never said, it is whether any sentence was marked."""
+    flags: list[bool] = []
     sents = M.sentences_from_words(words, pause_s=0.5, max_words=22)      # short thoughts, so a question and its answer land in different ones
     spans: list[tuple[float, float]] = []
     by = {s.idx: s for s in sents}
@@ -44,6 +51,8 @@ def host_spans(ai, words: list[dict], progress=None) -> list[tuple[float, float]
             log.warning(f"labelling speakers failed for part {n + 1}: {e}")
             continue
         lo, hi = chunk[0].idx, chunk[-1].idx
+        if "has_interviewer" in res.data:
+            flags.append(bool(res.data.get("has_interviewer")))
         for k in res.data.get("host") or []:
             try:
                 k = int(k)
@@ -51,7 +60,8 @@ def host_spans(ai, words: list[dict], progress=None) -> list[tuple[float, float]
                 continue
             if lo <= k <= hi and k in by:
                 spans.append((by[k].start, by[k].end))
-    return merge(spans)
+    merged = merge(spans)
+    return merged, (any(flags) if flags else bool(merged))
 
 
 def merge(spans: list[tuple[float, float]], gap: float = 0.3) -> list[tuple[float, float]]:
@@ -83,8 +93,9 @@ CHECK_SYSTEM = (
     "chosen sentences that are the interviewer's, or that begin a question to the guest. Only the guest's own answers may stay.")
 
 
-def check_selected(ai, sents, selected: set[int]) -> set[int]:
-    """-> the sentence numbers among `selected` that are actually the interviewer (to be dropped)."""
+def check_selected(ai, sents, selected: set[int], coach: bool = True) -> set[int]:
+    """-> the sentence numbers among `selected` that are actually the interviewer (to be dropped). coach=False (no interviewer in this recording, or the
+    style keeps them): the COACH words ("tell me about...") are not a reason, they are the speaker's own sentence."""
     by = {s.idx: s for s in sents}
     order = sorted(i for i in selected if i in by)
     bad: set[int] = set()
@@ -103,7 +114,8 @@ def check_selected(ai, sents, selected: set[int]) -> set[int]:
             bad |= {int(x) for x in res.data.get("interviewer") or [] if int(x) in want}
         except Exception as e:  # noqa: BLE001 - unchecked is better than failing
             log.warning(f"checking the chosen sentences failed: {e}")
-    bad |= {i for i in order if COACH.search(by[i].text)}                    # the interviewer coaching the guest, whatever the AI said
+    if coach:
+        bad |= {i for i in order if COACH.search(by[i].text)}                # the interviewer coaching the guest, whatever the AI said
     return bad
 
 

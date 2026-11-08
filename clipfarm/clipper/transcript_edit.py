@@ -126,6 +126,59 @@ def item_extent(it: dict, by: dict, words: list[dict]) -> tuple[int, int] | None
     return (hit[0], hit[-1]) if hit else None
 
 
+def order_lines(plan: dict, sents, words: list[dict], files: list[dict] | None = None) -> list[dict]:
+    """The lines of the video in the order they PLAY (not the order they were said): [{a, b, at, src}], one per sentence of every talk item
+    in plan order. a..b are word indexes (into `words`, the page's list), `at` is about where the line starts in the finished video (seconds:
+    the lengths of the lines before it, less the stretches cut by hand; pauses and B-roll are not counted, so it is "about"), `src` the
+    footage file it was said in. Plain data in, plain data out: a plan whose items are out of source order gives lines out of source order."""
+    by = {s.idx: s for s in sents}
+    mids = [mid(w) for w in words]
+    cuts = [(float(a), float(b)) for a, b in plan.get("te_cuts") or []]
+    files = [f for f in (files or []) if isinstance(f, dict)]
+
+    def file_of(t: float) -> str:
+        for f in files:
+            try:
+                if float(f.get("start", 0)) - 1e-3 <= t < float(f.get("end", 0)):
+                    return str(f.get("name") or "")
+            except (TypeError, ValueError):
+                continue
+        return ""
+
+    out: list[dict] = []
+    at = 0.0
+
+    def line(lo: float, hi: float) -> None:
+        nonlocal at
+        if hi <= lo or not mids:
+            return
+        first = bisect.bisect_left(mids, lo - EDGE)
+        last = bisect.bisect_right(mids, hi + EDGE) - 1
+        if last < first:
+            return
+        if all(any(a - 1e-6 <= mids[k] <= b + 1e-6 for a, b in cuts) for k in range(first, last + 1)):
+            return                                                      # (every word of it was cut by hand: it plays nothing)
+        gone = sum(max(0.0, min(hi, e) - max(lo, s)) for s, e in cuts)
+        out.append({"a": first, "b": last, "at": round(at, 1), "src": file_of(lo)})
+        at += max(0.0, hi - lo - gone)
+
+    kc = plan.get("keep_cut")
+    if kc:                                                              # (a kept video plays its whole file, in order)
+        k0, k1 = float(kc.get("start") or 0.0), float(kc.get("end") or 1e9)
+        for s in sents:
+            line(max(float(s.start), k0), min(float(s.end), k1))
+        return out
+    for it in plan.get("items") or []:
+        bnd = item_bounds(it, by)
+        if not bnd:
+            continue
+        for k in range(int(it["a"]), int(it["b"]) + 1):
+            s = by.get(k)
+            if s is not None:
+                line(max(float(s.start), bnd[0]), min(float(s.end), bnd[1]))
+    return out
+
+
 # ------------------------------------------------------------------------------------------------------------- the two edits
 def _clone(plan: dict) -> dict:
     return json.loads(json.dumps(plan))
@@ -330,13 +383,14 @@ def view(runner, pid: str) -> dict:
     """What the transcript panel needs:
        state  "none" (no transcript yet), "words" (a transcript but no plan yet), "plan" (words marked, editing on)
        words  [[text, start, end], ...]; flags one character per word: 0 not in the video, 1 in it, 2 staged to be cut, 3 staged to be added
-       breaks paragraph starts (word indexes); staged {ops, summary}; busy; undo (an applied edit that can be undone)."""
+       breaks paragraph starts (word indexes); staged {ops, summary}; busy; undo (an applied edit that can be undone);
+       order  the lines of the video in the order they play ([{a, b, at, src}], word indexes: see order_lines), [] until there is a plan."""
     from .localproj import State, home_of, seg
     proj = runner.projects.get(pid)
     st = State(home_of(proj))
     words, _ = load_words(st)
     busy = runner.running == pid
-    out = {"state": "none", "words": [], "flags": "", "breaks": [], "staged": {"ops": [], "summary": "", "queued": False}, "busy": busy,
+    out = {"state": "none", "words": [], "flags": "", "breaks": [], "order": [], "staged": {"ops": [], "summary": "", "queued": False}, "busy": busy,
            "undo": bool(st.get(PREV)), "version": (st.get("plan.json") or {}).get("version")}
     if not words:
         return out
@@ -356,6 +410,10 @@ def view(runner, pid: str) -> dict:
     d = diff(before, after, sents, words)
     out["staged"] = {"ops": ops, "summary": sentence_line(d) if ops else "", "diff": d, "queued": bool(staged.get("queued"))}
     out["state"] = "plan"
+    try:                                                                # (the page's "In the video's order": a view only, never needed for an edit)
+        out["order"] = order_lines(plan, sents, words, st.get("files.json") or [])
+    except Exception:  # noqa: BLE001
+        out["order"] = []
     if plan.get("keep_cut"):
         out["locked"] = "This video is kept exactly as it is, with B-roll added. To cut words from it, make it with “Edit my footage” instead."
     return out

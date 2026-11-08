@@ -110,6 +110,15 @@ def find(sents: list[M.Sentence], words: list[dict]) -> list[dict]:
             out.append({"kind": "timeline", "at": s.start + 0.2, "why": "dates in order"})
         if len(ORDINAL.findall(joined)) >= 2 and not any(o["kind"] == "slide" and abs(o["at"] - s.start) < 20 for o in out):
             out.append({"kind": "slide", "at": s.start + 0.2, "why": "a list (first, second, third...)"})
+    try:                                                                                 # typed candidates (numbers, names, lists, quotes, scripture) with the rule that found them
+        from . import gfxcontent
+        typed = gfxcontent.candidates(sents, words)
+    except Exception:  # noqa: BLE001 - a scan that fails finds nothing
+        typed = []
+    for c in typed:
+        out[:] = [o for o in out if not (o.get("type") is None and o["kind"] == c["kind"] and c["kind"] in ("stat", "slide") and abs(o["at"] - c["at"]) < 4.0)]      # (the typed one replaces the plain hint)
+        out.append(c)
+    out.sort(key=lambda o: o["at"])
     return out
 
 

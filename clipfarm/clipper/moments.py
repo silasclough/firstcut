@@ -46,6 +46,8 @@ class Moment:
     reason: str = ""
     source: str = "llm"
     mood: str = ""                  # music mood for the "background music" option
+    rubric: dict | None = None      # {hook, flow, value (1-5), why_hook, why_flow, why_value}: what the grades were and why (clipcraft.rubric_of)
+    rehook_at: float | None = None  # seconds into a clip over 45 s where the stake is restated (a marker for punch-ins; clip_rehook)
 
     @property
     def duration(self) -> float:
@@ -115,9 +117,31 @@ def trim_crew(m: Moment, sents: list[Sentence]) -> Moment | None:
         last -= 1
     if first > last:
         return None
+    first = _last_take_start(first, last, sents)
     m.first, m.last = first, last
     m.start, m.end = sents[first].start, sents[last].end
     return m
+
+
+def _last_take_start(first: int, last: int, sents: list[Sentence]) -> int:
+    """Raw footage: when the clip opens on an earlier take of a line that is said again inside it, it starts at the LAST take of that line
+    (takes.best(group, "last"): the take the crew approved comes after the ones that fluffed). Never past `last`."""
+    from . import takes as TK
+    part = sents[first:last + 1]
+    if len(part) < 2:
+        return first
+    for g in TK.groups(part, []):
+        if g["deliberate"] or g["takes"][0]["a"] != part[0].idx:
+            continue
+        a = g["takes"][TK.best(g, "last")]["a"]
+        if first < a <= last:
+            return a
+    return first
+
+
+def leans_on_previous(text: str) -> bool:
+    """A sentence that cannot open a clip because it carries straight on from the one before it ("And...", "So...", "but...", "which...")."""
+    return bool(CONTINUES.match(text.strip()))
 
 
 def fit_length(m: Moment, sents: list[Sentence], min_len: float, max_len: float) -> Moment | None:
@@ -130,11 +154,16 @@ def fit_length(m: Moment, sents: list[Sentence], min_len: float, max_len: float)
     def dur(a, b):
         return sents[b].end - sents[a].start
 
+    back = 0                                            # a clip that opens on a continuation ("and...", "so...", a fragment) starts on the sentence it leans on
+    while first > 0 and back < 3 and leans_on_previous(sents[first].text) and dur(first - 1, last) <= hard_cap(max_len) and sents[first].start - sents[first - 1].end < 2.5:
+        first -= 1
+        back += 1
+    ref = min(m.first, first)
     forward = True
     while dur(first, last) < min_len:
         if forward and last + 1 < len(sents):
             last += 1
-        elif first > 0 and first > m.first - 2:        # grow backwards a little at most; hooks start clips
+        elif first > 0 and first > ref - 2:            # grow backwards a little at most; hooks start clips
             first -= 1
         elif last + 1 < len(sents):
             last += 1
@@ -334,6 +363,44 @@ def retitle_weak(llm, moments: list[Moment], sents: list[Sentence], max_clips: i
     return moments
 
 
+REHOOK_SCHEMA = {"type": "object", "properties": {"clips": {"type": "array", "items": {"type": "object", "properties": {
+    "clip": {"type": "integer"}, "sentence": {"type": "integer"}, "why": {"type": "string"}}, "required": ["clip", "sentence", "why"]}}}, "required": ["clips"]}
+REHOOK_SYSTEM = ("You help keep viewers watching a LONG short-form clip (over 45 seconds). For each clip you see the numbered sentences from the middle of it. "
+                 "Pick the ONE sentence that restates the stake or raises the question again (a turn, a surprise, 'but here is the thing') so a viewer who is "
+                 "drifting stays. Return the clip number, the sentence number from the list, and why in under 10 words. If none does, still give the best one.")
+
+
+def llm_rehooks(llm, moments: list[Moment], sents: list[Sentence], max_clips: int = 12) -> list[Moment]:
+    """For clips over `clipcraft.REHOOK_OVER_S`: name one sentence between 40 and 60% of the clip that restates the stake (task clip_rehook, cheap).
+    It is only a marker (`rehook_at`, seconds into the clip) for the punch-in rotation; a failed or unusable answer leaves the clip as it was."""
+    from . import clipcraft
+    todo = []
+    for k, m in enumerate(moments):
+        if m.first < 0 or m.last < 0 or m.duration <= clipcraft.REHOOK_OVER_S:
+            continue
+        lo, hi = m.start + 0.4 * m.duration, m.start + 0.6 * m.duration
+        mid = [x for x in sents[m.first:m.last + 1] if lo <= x.start <= hi]
+        if mid:
+            todo.append((k, mid))
+    if not todo:
+        return moments
+    prompt = "\n\n".join(f"Clip {k}:\n" + "\n".join(f"  [{x.idx}] {x.text}" for x in mid) for k, mid in todo[:max_clips])
+    try:
+        res = llm.complete_json("clip_rehook", REHOOK_SYSTEM, prompt + "\n\nFor every clip return its number and the chosen sentence number.", REHOOK_SCHEMA)
+    except Exception:  # noqa: BLE001 - a marker, never a reason to lose a clip
+        return moments
+    allowed = {k: {x.idx: x for x in mid} for k, mid in todo}
+    for c in res.data.get("clips", []):
+        try:
+            k, i = int(c["clip"]), int(c["sentence"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        x = allowed.get(k, {}).get(i)                                        # only a sentence from the list the code showed
+        if x is not None:
+            moments[k].rehook_at = round(x.start - moments[k].start, 2)
+    return moments
+
+
 def demote_weak_titles(moments: list[Moment]) -> list[Moment]:
     """A title that is a bare question, a label or a greeting sells nothing: those posts got 250-300 views while claims got 2,800+. The AI is told, and what still
     slips through loses 2.5 points here (the score floor then rejects it) and is refused again by clipgate."""
@@ -394,13 +461,16 @@ SCHEMA = {
         "first": {"type": "integer"}, "last": {"type": "integer"},
         "title": {"type": "string"}, "hook": {"type": "string"},
         "caption": {"type": "string"}, "hashtags": {"type": "array", "items": {"type": "string"}},
+        "hook_grade": {"type": "integer", "minimum": 1, "maximum": 5}, "flow": {"type": "integer", "minimum": 1, "maximum": 5},
+        "value": {"type": "integer", "minimum": 1, "maximum": 5},
+        "why_hook": {"type": "string"}, "why_flow": {"type": "string"}, "why_value": {"type": "string"},
         "score": {"type": "number"}, "reason": {"type": "string"},
         "mood": {"type": "string", "enum": ["chill", "upbeat", "funny", "suspense", "emotional", "epic", "adventure"]}},
-        "required": ["first", "last", "title", "hook", "caption", "hashtags", "score", "reason", "mood"]}}},
+        "required": ["first", "last", "title", "hook", "caption", "hashtags", "hook_grade", "flow", "value", "why_hook", "why_flow", "why_value", "reason", "mood"]}}},
     "required": ["clips"],
 }
 
-SYSTEM = """You are a top short-form video editor who finds the moments in long videos that go viral as \
+SYSTEM_TEMPLATE = """You are a top short-form video editor who finds the moments in long videos that go viral as \
 TikTok / Reels / YouTube Shorts clips.
 Prefer clips that tell something that HAPPENED (a short story with a setup, tension and a payoff: an incident, a confrontation, a close call, a confession) over tips, recipes, how-tos and general chat.
 A great clip: opens with a strong hook in its first sentence (a bold claim, a question, conflict, a surprising \
@@ -410,8 +480,7 @@ depend on something shown on screen.
 For each clip return:
 - first, last: sentence index range [first..last] from the transcript (inclusive). Start ON the hook. End where
   the thought fully lands (the punchline / answer / conclusion) - never on a setup; clips usually fail by
-  stopping a sentence or two early. 15-25 seconds is the sweet spot: viewers of these Shorts leave after about 7 seconds, and clips over \
-35 seconds do clearly worse. Never pad a clip to reach a length.
+  stopping a sentence or two early. {LENGTH}
 - title: on-screen hook title, max 55 characters, no clickbait lies, no emojis, and clean:
   no profanity or slurs in titles or captions (YouTube limits reach and ads for them), even if the speaker swears.
   State the claim, the stake or the surprise, with the concrete name, number or thing in it ("Cop finds suspect but is missing a second officer",
@@ -420,12 +489,21 @@ For each clip return:
 - hook: why someone keeps watching after 2 seconds (one short sentence).
 - caption: one short post caption (max 20 words) in the speaker's spirit, no hashtags.
 - hashtags: 3-5 relevant hashtags without '#'.
-- score: 1-10 for viral potential as a standalone short. Use the whole range and RANK: within one answer no
-  two clips get the same score, an average moment is a 5, and 9-10 are reserved for genuinely exceptional ones.
+- hook_grade, flow, value, why_hook, why_flow, why_value: Grade each clip 1 to 5 on three things and say why in one sentence each: hook (does the first sentence make a stranger stop: a claim, a number, a surprise, a question the clip answers), flow (does it move in order to a satisfying end with nothing missing), value (does it tell, show or make someone feel something worth their time). Be strict: a 3 is average, a 5 is rare.
 - reason: max 10 words.
 - mood: the background-music mood that fits the clip's vibe (chill, upbeat, funny, suspense, emotional,
   epic or adventure).
 Keep every field short - fewer, better clips beat many weak ones."""
+
+
+def system_for(min_len: float, max_len: float) -> str:
+    """The prompt with the length band the options (or the style) ask for: no fixed 'sweet spot' overrides what the person chose."""
+    from . import clipcraft
+    return SYSTEM_TEMPLATE.replace("{LENGTH}", clipcraft.length_band(min_len, max_len))
+
+
+SYSTEM = system_for(15, 40)                                      # (the default band, for callers and tests that want the plain text)
+RUBRIC_V = 1                                                     # part of the moments cache key: a prompt/schema change re-plans old batches
 
 
 def _fmt(t: float) -> str:
@@ -460,7 +538,7 @@ def llm_moments(llm, sents: list[Sentence], per_chunk: int, min_len: float, max_
 
         try:
             from . import glossary
-            res = llm.complete_json("clip_moments", SYSTEM + glossary.prompt_note(glossary.terms()), prompt, SCHEMA, validate=check)
+            res = llm.complete_json("clip_moments", system_for(min_len, max_len) + glossary.prompt_note(glossary.terms()), prompt, SCHEMA, validate=check)
         except Exception:  # noqa: BLE001 - one bad chunk shouldn't sink the job; heuristic covers gaps
             if progress:
                 progress(bi + 1, len(blocks))
@@ -468,11 +546,19 @@ def llm_moments(llm, sents: list[Sentence], per_chunk: int, min_len: float, max_
         for c in res.data.get("clips", []):
             if not in_range(c):
                 continue                                         # drop just the bad proposal
+            from . import clipcraft
+            rub = clipcraft.rubric_of({**c, "hook": c.get("hook_grade")})
+            try:
+                said = float(c["score"]) if c.get("score") is not None else clipcraft.fallback_score(c, HOOKY)
+                if said != said or said in (float("inf"), float("-inf")):
+                    said = clipcraft.fallback_score(c, HOOKY)
+            except (TypeError, ValueError):
+                said = clipcraft.fallback_score(c, HOOKY)
             m = Moment(0, 0, int(c["first"]), int(c["last"]), title=str(c.get("title", ""))[:70].strip(),
                        hook=str(c.get("hook", "")), caption=str(c.get("caption", "")).strip(),
                        hashtags=[h.lstrip("#").strip() for h in c.get("hashtags", []) if str(h).strip()][:6],
-                       score=float(c.get("score", 5)), reason=str(c.get("reason", "")), source=res.provider,
-                       mood=str(c.get("mood", "")))
+                       score=clipcraft.score_of(rub, said), reason=str(c.get("reason", "")), source=res.provider,
+                       mood=str(c.get("mood", "")), rubric=rub)
             if raw:
                 m = trim_crew(m, sents)
                 if m is None:

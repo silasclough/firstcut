@@ -291,6 +291,7 @@ class StudioAPI:
         return {
             "settings": s, "mac": self.mac, "models": SD.local_models(SD.ram_gb()), "ai": self.ai_state(s),
             "styles": {k: self.style_view(k) for k in SD.KINDS},
+            "style_presets": self.style_presets_state(),                  # Settings › How it edits › learned styles (styles_api.py)
             "setup": {"running": self.setup.running(), "steps": self.cached("plan", 2, self.setup.plan)},
             "library": lib, "projects": self.projects.list(), "shorts": [self.short_view(j) for j in self.short_jobs()],
             "sizes": self.cached("sizes", 300, lambda: self.sizes(s)), "moving": self.moving, "restarting": self.restart_wanted,
@@ -336,13 +337,52 @@ class StudioAPI:
         return {k: gb(v) for k, v in s["places"].items()}
 
     # ------------------------------------------------------------------ "how it edits"
-    def sync_long_style(self) -> None:
+    def style_presets_state(self) -> dict:
+        from . import styles_api
+        try:
+            return styles_api.summary(self)
+        except Exception as e:  # noqa: BLE001 - the page still loads without its presets
+            log.warning(f"could not read the style presets: {e}")
+            return {"presets": [], "running": [], "fetch_url": ""}
+
+    def sync_long_style(self, extra: dict | None = None) -> None:
         """Long videos read their rules from the Projects rules file (aivideo.Projects.brief): keep it the long-form points."""
         pts = self.styles.get("long")["points"]
         try:
             self.projects.rules_path().write_text("\n".join(f"- {p}" for p in pts) + ("\n" if pts else ""))
         except OSError:
             pass
+        try:
+            self.sync_points_style("long", pts, extra)
+        except Exception as e:  # noqa: BLE001 - reading settings from the points is a bonus; the points themselves are in the rules file already
+            log.warning(f"could not read editing settings from the points: {e}")
+
+    def sync_points_style(self, mode: str, pts: list, extra: dict | None = None) -> None:
+        """The editing settings the points state ("always fast-paced, no music"): read ONCE when the points change (one cheap call, in the background),
+        kept for the planner (Projects.points_style) and in settings["style_overrides"][mode]. No points: nothing to read."""
+        import hashlib
+        import threading
+        from . import styles_profile as SPF
+        text = "\n".join(str(p) for p in pts if str(p).strip())
+        sig = hashlib.sha1(text.encode()).hexdigest() if text else ""
+        if mode == "long" and sig == self.projects.points_sig() and (self.projects.points_style() or not text):
+            return
+        if not text:
+            self.projects.set_points_style({}, sig)
+            self.settings.update({"style_overrides": {mode: {}}})
+            return
+
+        def work() -> None:
+            try:
+                from .localai import LocalAI
+                got = {k: v for k, v in SPF.from_notes(LocalAI(self.cfg), text).items() if not str(k).startswith("_")}
+                got = {**{k: v for k, v in SPF.clean_settings(extra or {}).items() if k != "profile"}, **got}      # (a preset's numbers stand unless the lines say otherwise)
+                if mode == "long":
+                    self.projects.set_points_style(got, sig)
+                self.settings.update({"style_overrides": {mode: got}})
+            except Exception as e:  # noqa: BLE001 - the points still go into the brief as words
+                log.warning(f"reading the editing settings from the points failed: {e}")
+        threading.Thread(target=work, daemon=True, name="points-style").start()
 
     def style_action(self, kind: str, what: str, b: dict) -> dict:
         from .localai import LocalAI
@@ -561,6 +601,40 @@ class StudioAPI:
             return {"montage": None}
         return {"montage": MO.detect(notes, n_photos=n["photos"], n_videos=n["videos"]), "photos": n["photos"], "videos": n["videos"]}
 
+    @staticmethod
+    def exact_options(o: dict) -> dict:
+        """The options an AI (through the MCP) can give for exact control: an edit list, which B-roll may be used, the shortest shot, words to avoid."""
+        from . import editlist as EL
+        out: dict = {}
+        if o.get("edit_list"):
+            out["edit_list"] = EL.parse(o["edit_list"])                      # (checked here: a bad list is told at once, not after minutes of work)
+        if o.get("broll_mode") in ("auto", "none"):
+            out["broll_mode"] = o["broll_mode"]
+        if o.get("broll_files"):
+            out["broll_files"] = [str(x)[:300] for x in o["broll_files"]][:200] if isinstance(o["broll_files"], list) else []
+        if o.get("min_shot_s") not in (None, "", 0):
+            try:
+                out["min_shot_s"] = max(0.0, min(30.0, float(o["min_shot_s"])))
+            except (TypeError, ValueError):
+                raise ValueError("min_shot_s must be a number of seconds") from None
+        if o.get("avoid"):
+            out["avoid"] = [str(x)[:80] for x in o["avoid"]][:60] if isinstance(o["avoid"], list) else []
+        if o.get("exclude_files"):                                           # files or shot ids that must not be used as B-roll ("C0003", "s0041")
+            out["exclude_files"] = [str(x)[:120] for x in o["exclude_files"]][:80] if isinstance(o["exclude_files"], list) else []
+        if o.get("exclude_windows"):                                         # stretches of the finished video with no B-roll: [[start_s, end_s], ...]
+            from . import poolrules as PR
+            out["exclude_windows"] = PR.rules_from({"exclude_windows": o["exclude_windows"]})["exclude_windows"] if isinstance(o["exclude_windows"], list) else []
+        for k in ("dry_run", "auto_approve"):                                 # plan only, no render (MCP plan_long_video) / render even when an instruction is unmet (constraints.py)
+            if o.get(k) is True:
+                out[k] = True
+        if isinstance(o.get("style"), dict) and o["style"]:                  # a partial style object (styles_profile.py): checked here, applied when the cut is planned
+            from . import styles_profile as SPF
+            _new, problems = SPF.apply_partial(SPF.resolve("longform_talk"), o["style"])
+            if problems:
+                raise ValueError("style: " + "; ".join(problems))
+            out["style"] = {k: v for k, v in o["style"].items() if not str(k).startswith("_")}
+        return out
+
     def make_long(self, b: dict) -> dict:
         if b.get("mode") == "broll":                                       # keep their cut; only add B-roll (and graphics, captions if asked)
             folder, aroll = self.broll_folder(b.get("video"), b.get("broll_folder") or "")
@@ -586,8 +660,10 @@ class StudioAPI:
                 "pace": SD.ENGINE_PACE["long"].get(str(o.get("pace") or "auto"), "natural"), "long_minutes": minutes, "graphics": str(o.get("graphics") or ""), "gfx_style": str(o.get("gfx_style") or "auto"),
                 "transitions": "none" if str(o.get("transitions") or "auto") == "none" else "auto",
                 "montage": "off" if str(given.get("montage") or "") == "off" else "auto",
+                **({"plan_first": True} if str(o.get("plan_first") or "") in ("1", "true", "True") or o.get("plan_first") is True else {}),   # show the plan and wait for "Make the video"
                 **({"keep_cut": True, "aroll": str(b["aroll"])} if b.get("keep_cut") else {}),
                 "transcriber": "parakeet", "kind": "auto", "fcp": True, "library": bool(o.get("library", True)), "stock": bool(o.get("stock"))}
+        body.update(self.exact_options(o))
         proj = self.projects.create_local(src, str(b.get("title") or ""), str(b.get("notes") or ""), {}, self.default_options(self.cfg.get("clipper", {}) or {}),
                                           out_dir=s["places"]["videos"])
         if b.get("song") or b.get("track"):                              # their own song for this video (copied into the project)
@@ -601,7 +677,8 @@ class StudioAPI:
         return [j for j in self.store.list() if (j.get("source") or {}).get("app") == "studio"]
 
     def short_view(self, j: dict) -> dict:
-        clips = [{k: c.get(k) for k in ("index", "file", "thumb", "duration", "title", "rendered_at", "keep", "srt", "score")} for c in j.get("clips") or []]
+        from . import planreview as PR
+        clips = [{**{k: c.get(k) for k in ("index", "file", "thumb", "duration", "title", "rendered_at", "keep", "srt", "score")}, "notes": PR.clip_notes(c)} for c in j.get("clips") or []]
         from . import progress as PG
         return {"id": j["id"], "title": j.get("title"), "status": j.get("status"), "stage": j.get("stage"), "progress": j.get("progress", 0.0),
                 **PG.WATCH.view(j), "error": j.get("error"), "created": j.get("created"), "updated": j.get("updated"), "home": j.get("app_home"), "clips": clips,
@@ -872,25 +949,40 @@ class StudioAPI:
         im.save(out, quality=90)
         return out
 
-    def gfx_preview(self, theme: str, kind: str, src: str = "") -> Path:
-        """One sample card in one look, over the placeholder scene (frosted looks blur what is under them)."""
-        from PIL import Image, ImageFilter
+    def gfx_preview(self, theme: str, kind: str, src: str = "", tall: bool = False) -> Path:
+        """One sample card in one look, over the placeholder scene (frosted looks blur what is under them), with the caption band and the safe box drawn
+        in, so the picker shows where a real render puts things. `tall` is the 9:16 picture (a phone video); the default is 16:9."""
+        from PIL import Image, ImageDraw, ImageFilter
         from . import gfxcards as G
+        from . import placement as _PL
         from .graphics import THEMES
         kind = kind.removesuffix(".jpg")
         if theme not in THEMES or kind not in self.GFX_SAMPLES:
             raise KeyError("no such style")
         bg_file = self.gfx_backdrop()
         import hashlib
-        key = hashlib.sha1(f"{theme}:{kind}:backdrop-v1:5".encode()).hexdigest()[:20]
+        key = hashlib.sha1(f"{theme}:{kind}:backdrop-v1:7:{'tall' if tall else 'wide'}".encode()).hexdigest()[:20]
         out = Path(self.settings.get()["places"]["work"]) / "gfx" / f"{key}.jpg"
         if out.exists():
             return out
-        W, H = 1280, 720
-        bg = Image.open(bg_file).convert("RGBA").resize((W, H))
+        W, H = (720, 1280) if tall else (1280, 720)
+        base = Image.open(bg_file).convert("RGBA").resize((1280, 720))
+        if tall:                                                          # the middle of the set that holds the person, as a phone picture
+            bg = base.crop((540, 0, 945, 720)).resize((W, H), Image.LANCZOS)
+            k = H / 720.0
+            head = ((660 - 540) * k, 180 * k, (900 - 540) * k, 480 * k)
+            cap_c, cap_h = 0.605 * H, 0.09 * H                              # polish: the caption band of a phone video sits at 56-65 % of the height
+        else:
+            bg = base
+            head = (660, 180, 900, 480)
+            cap_c, cap_h = 0.84 * H, 132.0                                  # polish: centre 0.84, words about 1.35 font-heights tall
         spec = {**self.GFX_SAMPLES[kind], "style": "wipe", "at": 0.0}
         look = G.Look(theme, W, H)
-        look.avoid = [(660, 180, 900, 480)]                              # the placeholder person's head: cards keep clear, as in a real render
+        look.avoid = [head]                                               # the placeholder person's head: cards keep clear, as in a real render
+        cap_top, cap_bot = cap_c - cap_h / 2, cap_c + cap_h / 2
+        look.avoid.append((0.0, cap_top - 7, float(W), cap_bot + 7))
+        look.caption_top = cap_top
+        look.safe = _PL.safe_box(W, H)
         card = G.frame_at(G.build_scene(kind, look, spec, spec["len"]), 1.6).convert("RGBA")
         if card.size != (W, H):
             card = card.resize((W, H))
@@ -898,8 +990,17 @@ class StudioAPI:
             frosted = bg.filter(ImageFilter.GaussianBlur(22))
             bg.paste(frosted, (0, 0), card.split()[3].point(lambda a: 255 if a > 8 else 0))
         bg.alpha_composite(card)
+        over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(over)
+        sb = look.safe
+        d.rectangle((sb["x0"], sb["y0"], sb["x1"], sb["y1"]), outline=(255, 255, 255, 70), width=1)       # the safe box: where nothing is hidden by a phone's buttons
+        font = G.font("heavy", max(14, int(cap_h * 0.55)))              # (the card renderer's own bold face: the captions of a render are heavy too)
+        words = "AND THEN IT CLICKED"
+        tw = d.textlength(words, font=font)
+        d.text(((W - tw) / 2, cap_c - cap_h * 0.3), words, font=font, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))      # a sample caption
+        bg.alpha_composite(over)
         out.parent.mkdir(parents=True, exist_ok=True)
-        bg.convert("RGB").resize((640, 360), Image.LANCZOS).save(out, quality=86)
+        bg.convert("RGB").resize((360, 640) if tall else (640, 360), Image.LANCZOS).save(out, quality=86)
         return out
 
     # ------------------------------------------------------------------ a project's right-click menu
@@ -1620,6 +1721,11 @@ class StudioAPI:
             return 200, {"ok": True}
         if rest == ["busy"]:
             return 200, {"what": self.busy()}
+        if len(rest) >= 2 and rest[0] == "styles" and rest[1] in ("presets", "learn"):          # learned editing styles (styles_api.py)
+            from . import styles_api
+            got = styles_api.get(self, rest[1:])
+            if got is not None:
+                return got
         if rest and rest[0] == "collections":                              # Collections: named lists of shots to find again (shotcollections.py)
             return self.collections_api(rest[1:], None)
         if rest == ["storage"]:                                           # Settings › Storage: what the videos use, by project, and what is due
@@ -1672,6 +1778,27 @@ class StudioAPI:
             if not clip or not f.is_file():
                 return 404, {"error": "this video isn't finished yet"}
             return 200, {"path": str(f), "title": job.get("title") or ""}
+        if len(rest) == 3 and rest[0] == "long" and rest[2] == "style" and self.runner:           # the style object of a video (styles_profile.py)
+            try:
+                return 200, self.runner.style_of(rest[1])
+            except (KeyError, OSError, ValueError):
+                return 404, {"error": "no such video"}
+        if len(rest) == 3 and rest[0] == "long" and rest[2] in ("review", "checked") and self.runner:    # the plan before / what was checked after, in plain words (planreview.py)
+            from . import planreview as PR
+            try:
+                return 200, (PR.review if rest[2] == "review" else PR.checked)(self.runner, rest[1])
+            except KeyError:
+                return 404, {"error": "no such video"}
+            except (ValueError, OSError, TypeError, AttributeError) as e:
+                return 400, {"error": str(e)}
+        if len(rest) == 3 and rest[0] == "long" and rest[2] == "plan" and self.runner:            # the plan as readable lines, with the instructions checked (planapi.py)
+            from . import planapi
+            try:
+                return 200, planapi.view(self.runner, rest[1])
+            except KeyError:
+                return 404, {"error": "no such video"}
+            except (ValueError, OSError) as e:
+                return 400, {"error": str(e)}
         if len(rest) == 3 and rest[0] == "long" and rest[2] == "avoid" and self.runner:           # shots ruled out with "Don't use this"
             try:
                 return 200, {"shots": self.runner.avoided(rest[1])}
@@ -1755,6 +1882,55 @@ class StudioAPI:
             return 200, self.music_download(b)
         if len(rest) == 2 and rest[0] == "stock":
             return 200, self.stock_action(rest[1], b)
+        if len(rest) == 3 and rest[0] == "long" and rest[2] == "style" and self.runner:           # {style: partial, scope?: "always"}: change settings of the style
+            if not isinstance(b.get("style") or {}, dict):
+                return 400, {"error": "the style must be an object of settings"}
+            try:
+                out = self.runner.set_style(rest[1], dict(b.get("style") or {}), str(b.get("scope") or ""))
+            except KeyError:
+                return 404, {"error": "no such video"}
+            except (ValueError, TypeError, AttributeError) as e:
+                return 400, {"error": str(e)}
+            if b.get("scope") == "always" and out.get("flat"):
+                self.settings.update({"style_overrides": {"long": {**(self.settings.get().get("style_overrides") or {}).get("long", {}), **out["flat"]}}})
+            return 200, out
+        if len(rest) == 4 and rest[0] == "long" and rest[2] == "review" and rest[3] in ("answer", "leave-out", "take", "option") and self.runner:    # planreview.py
+            from . import planreview as PR
+            try:
+                if not isinstance(b, dict):
+                    return 400, {"error": "send an object"}
+                if rest[3] == "answer":
+                    return 200, PR.answer(self.runner, rest[1], str(b.get("question") or ""), b.get("choice"))
+                if rest[3] == "leave-out":
+                    return 200, PR.leave_out(self.runner, rest[1], str(b.get("id") or ""), b.get("out") is not False)
+                if rest[3] == "take":
+                    return 200, PR.use_take(self.runner, rest[1], str(b.get("id") or ""), b.get("a"), b.get("b"))
+                key, val = str(b.get("key") or ""), b.get("value")             # one setting of the style: pace, captions, graphics, music, profile
+                part = {"pace": {"name": val}, "captions": {"style": val}, "graphics": {"policy": val}, "music": {"policy": val}, "profile": val}.get(key)
+                if part is None:
+                    return 400, {"error": "that setting cannot be changed here"}
+                self.runner.set_style(rest[1], part)
+                return 200, PR.review(self.runner, rest[1])
+            except KeyError:
+                return 404, {"error": "no such video"}
+            except (ValueError, TypeError, OSError, AttributeError) as e:
+                return 400, {"error": str(e)}
+        if len(rest) == 3 and rest[0] == "long" and rest[2] in ("check-plan", "plan", "search", "preview", "rerender-changed") and self.runner:    # planapi.py (the MCP's plan tools)
+            from . import planapi
+            try:
+                if rest[2] == "check-plan":
+                    return 200, planapi.check(self.runner, rest[1], b.get("plan"))
+                if rest[2] == "plan":
+                    return 200, planapi.apply(self.runner, rest[1], b.get("plan"), render=b.get("render") is not False)
+                if rest[2] == "search":
+                    return 200, planapi.search(self.runner, rest[1], b.get("query"), str(b.get("mode") or "quote"))
+                if rest[2] == "preview":
+                    return 200, planapi.preview(self.runner, rest[1], float(b.get("start_s") or 0), b.get("end_s"), bool(b.get("frames_only")))
+                return 200, planapi.rerender_changed(self.runner, rest[1], b.get("changed"))
+            except KeyError:
+                return 404, {"error": "no such video"}
+            except (ValueError, TypeError, OSError) as e:
+                return 400, {"error": str(e)}
         if len(rest) == 3 and rest[0] == "long" and rest[2] == "avoid":    # "Don't use this" on a shot in the live view: {shot, undo?}
             if not self.runner:
                 return 404, {"error": "not found"}
@@ -1842,6 +2018,11 @@ class StudioAPI:
                     self.claude.logout()
                 self._cache.pop("claude", None)
             return 200, {"ok": True}
+        if len(rest) >= 2 and rest[0] == "styles" and rest[1] in ("presets", "learn"):
+            from . import styles_api
+            got = styles_api.post(self, rest[1:], b)
+            if got is not None:
+                return got
         if len(rest) == 3 and rest[0] == "styles" and rest[1] in SD.KINDS:
             return 200, self.style_action(rest[1], rest[2], b)
         if rest == ["mcp", "claude-desktop"]:                              # Settings › Connect an AI › Add to Claude Desktop

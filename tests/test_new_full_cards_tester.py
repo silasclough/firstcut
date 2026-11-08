@@ -448,7 +448,7 @@ def test_a_stat_pops_on_the_spoken_number_not_the_sentence_start_and_ignores_far
     words, sents, _ = build(text, dt=0.4)
     item = {"kind": "stat", "at": 10.2, "value": "47%", "label": "of viewers leave early"}
     said = next(w["start"] for w in words if w["text"] == "47")
-    assert abs(GP.validate(item, text, sents, 60.0, 3.2, words)["at"] - (said - 0.25)) < 0.02
+    assert abs(GP.validate(item, text, sents, 60.0, 3.2, words)["at"] - (said - 0.125)) < 0.02                  # (three frames before the word)
     assert GP.validate(item, text, sents, 60.0, 3.2, [])["at"] == 10.2 and GP.validate(item, text, sents, 60.0, 3.2, None)["at"] == 10.2
     late = [{**w, "start": w["start"] + 20, "end": w["end"] + 20} for w in words]                 # the number is said 20 s later: stay where the planner put it
     assert GP.validate(item, text, sents, 60.0, 3.2, late)["at"] == 10.2
@@ -475,8 +475,6 @@ def test_schedule_keeps_timed_cards_in_sync_with_the_words():
     assert b["times"] == sorted(b["times"]) and all(abs((b["at"] + t) - (22.0 + t0)) < 0.05 or t == 0.3 for t, t0 in zip(b["times"], [1.0, 2.0, 3.0, 4.0, 5.0]))
 
 
-@pytest.mark.xfail(reason="DEFECT gfxplan.py:350 (the final cap `min(out['len'], 12.0, ...)`): twocol/ledger/slide/recap lengths are computed up to 14-18 s to wait for the last spoken step, "
-                          "then clipped to 12 s, so on a slow speaker the last steps are squeezed into the final second or never shown.", strict=False)
 def test_a_long_timed_card_is_not_cut_before_its_last_step_is_said():
     names = ["apple", "banana", "cherry", "damson", "elder", "fig", "grape", "honey"]
     parts = ["Two buyers."] + [f"Then {n} arrives." for n in names]

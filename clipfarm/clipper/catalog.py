@@ -746,7 +746,7 @@ class Catalog:
         except Exception as e:  # noqa: BLE001
             log.warning(f"catalog: describing {rec['path']} failed: {e}")
             return False
-        rec = {**rec, "scenes": scenes, "described": getattr(res, "model", None) or self.vision_model}
+        rec = {**rec, "scenes": scenes, "described": getattr(res, "model", None) or self.vision_model, "scene_v": BR.SCENE_VERSION}
         rec["tags"] = self._described_tags(rec, [str(x.get("what") or "") for x in scenes])
         self.save(rec)
         self._live("done", step="describe", id=rec["id"], rel=rec["rel"], media="video", k=self._mid(rec),
@@ -780,9 +780,12 @@ class Catalog:
 
     def describe(self, deadline: float | None = None, limit: int | None = None, progress=None) -> dict:
         scope = self.mounted()
-        recs = [r for r in self.records() if r.get("frames") and not r.get("described") and not r.get("error")
-                and any(self.under(r.get("path", ""), root) for root in scope)]
-        recs.sort(key=lambda r: (r["kind"] != "video", r["rel"]))
+        from . import broll as BR
+        from . import footage as FT
+        night = FT.full_allowed()                                          # (records described before the richer scene fields are described again, but only at night)
+        recs = [r for r in self.records() if r.get("frames") and (not r.get("described") or (night and r.get("kind") == "video" and int(r.get("scene_v") or 1) < BR.SCENE_VERSION))
+                and not r.get("error") and any(self.under(r.get("path", ""), root) for root in scope)]
+        recs.sort(key=lambda r: (bool(r.get("described")), r["kind"] != "video", r["rel"]))
         if limit:
             recs = recs[:limit]
         done = k = 0
@@ -1196,8 +1199,11 @@ class Catalog:
         except Exception as e:  # noqa: BLE001
             log.warning(f"catalog: describing found shots failed: {e}")
             for s in out:
-                s["what"] = s.get("what") or f"(found searching for '{s.get('query') or 'footage'}') {Path(s['rel']).parent.name}"
-                s["quality"] = s.get("quality") or 6.0
+                if not s.get("what"):
+                    s["what"], s["described"] = f"(found searching for '{s.get('query') or 'footage'}') {Path(s['rel']).parent.name}", False
+                    s["quality"] = max(1.0, float(s.get("quality") or 6.0) - 2.0)                   # (only the search phrase is known: it may not show what was said)
+                else:
+                    s["quality"] = s.get("quality") or 6.0
         return out[:limit]
 
     def fill_descriptions(self, shots: list[dict]) -> None:
@@ -1220,8 +1226,8 @@ class Catalog:
                     s["what"] = " ".join(str(t["what"]).split())[:200]
                     s["quality"] = max(1.0, min(10.0, float(t.get("quality") or 6)))
                 else:
-                    s["what"] = f"(found searching for '{s.get('query') or 'footage'}') {Path(s['rel']).parent.name}"
-                    s["quality"] = s.get("quality") or 6.0
+                    s["what"], s["described"] = f"(found searching for '{s.get('query') or 'footage'}') {Path(s['rel']).parent.name}", False
+                    s["quality"] = max(1.0, float(s.get("quality") or 6.0) - 2.0)                   # (only the search phrase is known)
 
     # -- Final Cut ----------------------------------------------------------------------------------
     def fcpxml(self, shots: list[dict], name: str = "Found footage") -> str:

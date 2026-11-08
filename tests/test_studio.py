@@ -429,6 +429,21 @@ def test_every_graphics_style_has_a_look_and_a_preview(api, tmp_path):
         api.gfx_preview("glass", "chart.jpg")
 
 
+def test_the_style_preview_draws_the_caption_and_the_safe_box_in_both_shapes(api, tmp_path):
+    from PIL import Image
+    import numpy as np
+    api.settings.update({"places": {"work": str(tmp_path / "work")}})
+    wide = Image.open(api.gfx_preview("broadcast", "lower.jpg"))
+    tall = Image.open(api.gfx_preview("broadcast", "lower.jpg", tall=True))
+    assert wide.size == (640, 360) and tall.size == (360, 640)
+    assert api.gfx_preview("broadcast", "lower.jpg") != api.gfx_preview("broadcast", "lower.jpg", tall=True)
+    for im in (wide, tall):                                                        # a white caption sits in the caption band: bright pixels with a dark outline around them
+        a = np.asarray(im.convert("L"))
+        H = a.shape[0]
+        band = a[int(H * (0.55 if im is tall else 0.8)):int(H * (0.68 if im is tall else 0.92))]
+        assert (band > 240).sum() > 30
+
+
 def test_the_picked_graphics_style_reaches_the_project(home):
     s = SD.Settings(home)
     d = s.update({"defaults": {"long": {"graphics": "all", "gfx_style": "broadcast"}}})["defaults"]["long"]

@@ -374,3 +374,17 @@ def test_view_survives_a_script_map_saved_before_lines_had_times(tmp_path):
     (folder / ".aivideo" / "plan.json").write_text(json.dumps({"awaiting_approval": True, "script_map": old_map}))
     v = projects.view({"id": "p", "job": job["id"], "mode": "local", "folder": str(folder)})
     assert v["awaiting_approval"] is True and v["script_map"]
+
+
+def test_a_list_numbered_section_dot_item_is_an_outline():
+    """BUG (reported 2026-11-07): "1.01 Welcome" ... "8.10 Finale" was read as steps "01 Welcome", "01 The first seminar" ..., so the edit
+    followed three garbage steps and the person's own sections were ignored. Section.item numbers are an outline now, each beat keeping its number."""
+    from clipfarm.clipper import flow as FL
+    notes = ("Make a 4 minute video. Raw footage only.\n1.01 Welcome from the director\n1.02 Why we came\n2.01 The first seminar on prayer\n"
+             "  and the students' answers\n2.03 Students share\n3.02 Short version of the testimony\n\nNo captions.")
+    got = FL.steps(notes)
+    assert got == ["1.01 Welcome from the director", "1.02 Why we came", "2.01 The first seminar on prayer and the students' answers",
+                   "2.03 Students share", "3.02 Short version of the testimony"]
+    assert FL.steps("It should be 2.5 minutes long.\n2.5 minutes of music\n3.1 a b\n3.2 c d\n3.3 e f") == []      # decimals in sentences: not a list
+    assert FL.steps("1.01 a\n1.01 b\n0.5 c\n1.02 d") == []                                                       # numbers must go up
+    assert FL.steps("1. Welcome\n2. Why we came\n3. Prayer seminar\n") == ["Welcome", "Why we came", "Prayer seminar"]   # plain lists as before

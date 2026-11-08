@@ -131,7 +131,8 @@ def test_broll_scenes_are_validated_and_cutaways_only_go_where_words_match():
     from clipfarm.clipper import moments as M
     scenes = B._valid_scenes([{"start_s": -3, "end_s": 6, "what": "a lake at dawn", "quality": 12},
                               {"start_s": 7, "end_s": 7.2, "what": "too short", "quality": 5}, {"start_s": 1}], 0.0, 5.0)
-    assert scenes == [{"start": 0.0, "end": 5.0, "what": "a lake at dawn", "quality": 10.0}]
+    assert [{k: s[k] for k in ("start", "end", "what", "quality")} for s in scenes] == [{"start": 0.0, "end": 5.0, "what": "a lake at dawn", "quality": 10.0}]
+    assert scenes[0]["is_talking_head"] is False and scenes[0]["subject_words"] == []           # (the record-v2 fields come with their defaults)
     sents = [M.Sentence(0, 0.0, 3.0, "Hi."), M.Sentence(1, 3.0, 9.0, "We drove to the lake.")]
     pool = [{"start": 20.0, "end": 26.0, "what": "a lake", "quality": 8.0}, {"start": 30.0, "end": 31.0, "what": "tiny", "quality": 9.0}]
 
@@ -712,6 +713,49 @@ def test_the_interviewer_is_taken_out_so_only_the_guest_can_be_used(tmp_path):
     assert "fit every customer" in texts and "right shoe" in texts and "Tell me" not in texts and "Why does" not in texts
 
 
+def test_a_seminar_keeps_audience_questions_and_tags_them(tmp_path):
+    from clipfarm.clipper import localproj as LP
+    words, t = [], 0.0
+    script = [("Tell me about your shoe store?", "host"), ("We fit every customer by hand.", "guest"), ("Why does that matter?", "host"),
+              ("Because the right shoe changes how you move.", "guest")]
+    for text, who in script:
+        for w in text.split():
+            words.append({"text": w, "start": t, "end": t + 0.3})
+            t += 0.35
+        t += 0.8
+
+    class AI:
+        calls = 0
+
+        def complete_json(self, task, system, prompt, schema, **kw):
+            import re
+            AI.calls += 1
+            host = [int(m.group(1)) for m in re.finditer(r"\[(\d+)\] [^\n]*\?\s*$", prompt, re.M)]
+            return _Res({"host": host, "has_interviewer": bool(host)})
+
+    class St:
+        def __init__(self):
+            self.d = {}
+
+        def get(self, k):
+            return self.d.get(k)
+
+        def put(self, k, v):
+            self.d[k] = v
+    r = LP.LocalRunner.__new__(LP.LocalRunner)
+    st = St()
+    kept = LP.LocalRunner.guest_words(r, words, AI(), st, "auto", True)                    # a seminar: the questions stay, tagged
+    assert [w["text"] for w in kept] == [w["text"] for w in words]
+    tagged = " ".join(w["text"] for w in kept if w.get("who") == "audience")
+    assert "Tell me" in tagged and "Why does" in tagged and "fit every" not in tagged
+    assert st.d["roles.json"]["spans"] == [] and len(st.d["roles.json"]["audience"]) == 2          # (no cut treats them as the interviewer)
+    calls = AI.calls
+    st2 = LP.LocalRunner.guest_words(r, words, AI(), st, "auto", False)                    # the same recording as an interview: the host goes (no new AI call)
+    assert AI.calls == calls and "Tell me" not in " ".join(w["text"] for w in st2) and all("who" not in w for w in st2)
+    assert [w["text"] for w in LP.LocalRunner.guest_words(r, words, AI(), st, "never", False)] == [w["text"] for w in words]
+    assert "Tell me" not in " ".join(w["text"] for w in LP.LocalRunner.guest_words(r, words, AI(), st, "always", True))
+
+
 def test_a_video_that_freezes_or_has_mismatched_sound_is_not_delivered(tmp_path):
     import subprocess
 
@@ -964,6 +1008,11 @@ def test_a_photo_becomes_a_short_animated_clip(tmp_path):
     for effect in ("zoom_in", "polaroid", "film"):
         out = PH.bake(str(pic), effect, 1.5, 640, 360, 30.0, tmp_path / f"{effect}.mp4")
         assert abs(ffmpeg.duration(out) - 1.5) < 0.1
+    rate = float(__import__("clipfarm.clipper.localproj", fromlist=["timeline_rate"]).timeline_rate(23.976))     # a 23.976 timeline: its photo clips are 24000/1001, not 24 or 30
+    out = PH.bake(str(pic), "zoom_in", 1.5, 640, 360, rate, tmp_path / "rate.mp4", motion_blur=False)
+    fps = subprocess.run([ffmpeg.bin_path("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", str(out)],
+                         capture_output=True, text=True).stdout.strip()
+    assert fps == "24000/1001"
 
 
 def test_the_outline_in_the_notes_is_the_script():
@@ -1235,3 +1284,44 @@ def test_a_song_dropped_on_a_long_video_is_used_and_a_new_song_later_rerenders_t
     assert json.loads((folder / ".aivideo" / "plan.json").read_text())["music"] == {"mode": "none"}
     with pytest.raises(ValueError):
         runner.music(proj["id"], str(tmp_path / "missing.wav"))
+
+
+def test_a_dotted_outline_that_names_files_asks_before_becoming_an_exact_list(tmp_path, monkeypatch):
+    """Nobody chose the exact-list mode when a numbered outline's numbers happen to be file names: FirstCut says so and waits for a yes (WP5), then plays exactly those parts."""
+    import subprocess
+
+    from clipfarm.clipper import localproj as LP
+    from clipfarm.clipper.engine import Engine
+    from clipfarm.core import ffmpeg
+    cfg = load_config()
+    cfg.root = tmp_path
+    cfg.data["paths"].update({"state": str(tmp_path / "state")})
+    cfg.data["clipper"]["ai_videos"] = {"dir": str(tmp_path / "x"), "local": True, "data_dir": "ai", "local_projects": True, "verify_freeze": False}
+    ff = ffmpeg.bin_path("ffmpeg")
+    folder = tmp_path / "Raw"
+    folder.mkdir()
+    for name, color in (("1.01 Welcome.mov", "red"), ("1.02 Prayer.mov", "green"), ("2.01 Song.mov", "blue")):
+        subprocess.run([ff, "-y", "-v", "error", "-f", "lavfi", "-i", f"color=c={color}:size=320x240:rate=30:duration=6", "-f", "lavfi", "-i", "sine=frequency=400:duration=6",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(folder / name)], check=True, timeout=120)
+    store = Store(tmp_path / "jobs")
+    projects = AV.Projects(cfg, store, Engine(cfg, store))
+    fake = _FakeAI()
+    monkeypatch.setattr(LP, "LocalAI", lambda c: fake)
+    runner = LP.LocalRunner(cfg, store, projects)
+    proj = projects.create_local(str(folder), "Seminar", "1.01 Welcome from the director\n1.02 The prayer\n2.01 The song", {"transcriber": "openai"}, {"clips": 0})
+    projects.prepare_local(proj["id"], {"broll_mode": "none", "caption_style": "none", "music": "", "graphics": "", "library": False})
+    runner.make(proj["id"], {})
+    job = store.get(proj["job"])
+    assert job["status"] == "approval" and "play exactly those parts" in job["stage"] and "OK?" in job["stage"]
+    assert not list((folder / "Output").glob("*.mp4"))                                                                  # nothing was rendered yet
+    plan = json.loads((folder / ".aivideo" / "plan.json").read_text())
+    assert plan["exact"] and plan["exact_from_outline"] and plan["awaiting_approval"] and plan["approval"]["questions"]
+    runner.approve(proj["id"])
+    job = store.get(proj["job"])
+    assert job["status"] == "done", job
+    out = next((folder / "Output").glob("*.mp4"))
+    assert abs(ffmpeg.duration(out) - 18) < 0.8                                                                         # all three files, in order, whole
+    again = projects.create_local(str(folder), "Seminar again", "1.01 Welcome\n1.02 Prayer\n2.01 Song", {"transcriber": "openai"}, {"clips": 0})
+    projects.prepare_local(again["id"], {"edit_list": [{"file": "1.02"}, {"file": "1.01"}], "broll_mode": "none", "caption_style": "none", "music": "", "graphics": "", "library": False})
+    runner.make(again["id"], {})
+    assert store.get(again["job"])["status"] == "done"                                                                  # a list the AI gave on purpose is never asked about

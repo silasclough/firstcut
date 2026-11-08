@@ -130,3 +130,22 @@ def test_multicam_final_cut_project_is_valid_for_final_cut(tmp_path):
     assert xml.count('name="Key point"') == 1 and xml.count('name="End card"') == 1 and xml.count('name="Hook title"') >= 1
     assert 'start="61234.5s"' in xml or 'start="122469/2s"' in xml                  # the clip's own timecode origin is declared
     assert FX.validate(p) == []
+
+
+def test_switches_only_at_allowed_points_hold_at_least_five_seconds_and_follow_the_speaker():
+    from clipfarm.clipper import switching as SW
+    words, t = [], 0.0
+    for s in range(16):
+        for k in range(5):
+            words.append({"text": f"w{k}" + ("." if k == 4 else ""), "start": round(t, 2), "end": round(t + 0.4, 2), "who": "guest"})
+            t += 0.5
+        t += 0.5
+    g = {"angles": [{"id": "A", "files": [{"name": "a", "path": "/a", "t0": 0.0, "dur": 100.0}]},
+                    {"id": "B", "files": [{"name": "b", "path": "/b", "t0": 0.0, "dur": 100.0}]}], "recorders": [], "dur": 100.0}
+    pts = SW.switch_points(words, {"A": 0.9, "B": 0.9})
+    segs = [{"start": k * 2.3, "end": k * 2.3 + 2.3, "angle": "AB"[k % 2]} for k in range(int(words[-1]["end"] // 2.3))]   # a director that switches every 2.3 s at odd times
+    cl = MC.cut_list(g, [(0.0, words[-1]["end"])], segs, 5.0, points=pts, words=words)
+    allowed = [p["t"] for p in pts]
+    for a, b in zip(cl, cl[1:]):
+        assert any(abs(b["start"] - x) < 0.01 for x in allowed) and not SW.inside_a_word(b["start"], words)
+    assert all(s["end"] - s["start"] >= 5.0 - 1e-6 for s in cl[:-1])

@@ -104,3 +104,18 @@ def test_variable_frame_rate_and_mixed_sources_are_noted(tmp_path):
     whats = " | ".join(i["what"] for i in issues)
     assert "phone.mp4 has a variable frame rate" in whats and "mixes frame rates" in whats and "mixes picture sizes" in whats
     assert "camera.mp4 has a variable" not in whats
+
+
+def test_a_plain_lecture_with_no_broll_is_not_a_bad_quality_issue(tmp_path):
+    import subprocess
+
+    from clipfarm.clipper import qa
+    from clipfarm.core import ffmpeg
+    v = tmp_path / "lecture.mp4"
+    subprocess.run([ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:size=160x120:rate=10:duration=50",
+                    "-f", "lavfi", "-i", "sine=frequency=300:duration=50", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(v)], check=True)
+    for profile in (None, "seminar", "interview_clip", "longform_talk"):
+        rep = qa.check(v, None, profile=profile)
+        assert not [i for i in rep["issues"] if i["level"] == "bad" and "never changes" in i["what"]], profile
+    calm = qa.check(v, None, profile="seminar")
+    assert not [i for i in calm["issues"] if "never changes" in i["what"] or "the same picture for" in i["what"]]

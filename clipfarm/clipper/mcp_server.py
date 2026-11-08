@@ -140,15 +140,39 @@ TOOLS = [
                           "query": {**S, "description": "Only names containing these words (optional)."},
                           "kind": {"type": "string", "enum": ["videos", "photos", "folders", "all"], "description": "What to list (default videos)."}},
                          ["where"])},
-    {"name": "make_long_video", "description": "Start editing a folder of footage into one video (reads the footage where it is; nothing copied). Returns at once; the video takes minutes, check with project_status.",
+    {"name": "make_long_video", "description": "Start editing a folder of footage into one video (reads the footage where it is; nothing copied). Returns at once; the video takes minutes, check with project_status. Two ways to use it: (1) leave the cut to FirstCut: give notes (and a numbered outline in them if there is one) and it plans the edit; (2) take control: give edit_list, the exact clips in order, and FirstCut plays exactly that with no planning (use footage_details and get_transcript first to learn which clips are which, and check_edit_list to see the result before starting). Always take control when the person has told you which clips to use or in what order. B-roll, captions, music and graphics are then set separately.",
      "inputSchema": _obj({"folder": {**S, "description": "Full path of the footage folder (find_files helps)."},
-                          "notes": {**S, "description": "What the video should be, e.g. 'a 2-minute recap, open with the best line'."},
-                          "minutes": {"type": "number", "description": "Length in minutes (leave out to let the editor decide)."},
+                          "notes": {**S, "description": "What the video should be, e.g. 'a 2-minute recap, open with the best line'. With an edit_list the notes only guide B-roll and the title."},
+                          "edit_list": {"type": "array", "description": "The exact edit: clips in play order. Each entry is a file name (or its number, like '1.01') or an object. FirstCut plays these and nothing else, trimmed as given, in this order.",
+                                        "items": {"type": "object", "properties": {
+                                            "file": {**S, "description": "The clip's file name, its name without extension, or its leading number ('3.02'). Must name exactly one file."},
+                                            "start": {"type": "number", "description": "Seconds into the clip to start (default: its start)."},
+                                            "end": {"type": "number", "description": "Seconds into the clip to stop (default: its end)."},
+                                            "audio": {**S, "enum": ["own", "silent"], "description": "'own' plays the clip's sound (default); 'silent' plays the picture only."},
+                                            "label": {**S, "description": "Your name for this entry (shown in the plan and the notes)."}},
+                                            "required": ["file"], "additionalProperties": False}},
+                          "broll": {**S, "enum": ["auto", "none"], "description": "'auto' lays B-roll from clips not in the edit list over it (with an edit_list, default); 'none' plays the list alone."},
+                          "broll_files": {"type": "array", "items": S, "description": "Only these files (names or numbers) may be used as B-roll. Leave out to allow every clip that is not in the edit list."},
+                          "avoid": {"type": "array", "items": S, "description": "Words: no B-roll shot whose description or file name contains one is used (e.g. 'prison yard')."},
+                          "min_shot_seconds": {"type": "number", "description": "No B-roll shot shorter than this many seconds (e.g. 1.5)."},
+                          "song": {**S, "description": "Full path of a song to play under the whole video (an audio file on this Mac)."},
+                          "minutes": {"type": "number", "description": "Length in minutes (leave out to let the editor decide; ignored with an edit_list)."},
                           "pace": {"type": "string", "enum": ["auto", "fast", "slow"], "description": "'fast' for fast-paced cuts, 'slow' to take it slow."},
-                          "captions": {"type": "string", "enum": ["none", "clean", "bold", "pop"]},
+                          "captions": {"type": "string", "enum": ["none", "clean", "bold", "pop"], "description": "Default none."},
                           "graphics": {"type": "string", "enum": ["", "title", "all"], "description": "'' none, 'title' title and key points, 'all' full."},
-                          "music": {**S, "description": "'' none, 'auto' to match the content, or a mood: chill, upbeat, emotional."}},
-                         ["folder"])},
+                          "music": {**S, "description": "'' none, 'auto' to match the content, or a mood: chill, upbeat, emotional."},
+                          "style": {"type": "object", "description": "A partial style object (see capabilities): only the settings you give change, e.g. {\"pace\": {\"name\": \"fast\"}, \"music\": {\"policy\": \"none\"}, \"broll\": {\"share\": 0.2}}. Allowed values and ranges are in capabilities."},
+                          "title": {**S, "description": "The video's name."},
+                          "plan": {"type": "object", "description": "Render a plan you edited (from plan_long_video) instead of planning: {\"items\": [...]} in the shapes plan_long_video returned. Needs `project`. Every id is checked first; a plan with a hard problem is refused and nothing changes. Use check_plan before this to see the problems."},
+                          "project": {**S, "description": "The video the plan belongs to (its id or part of its title). Only with `plan`."}},
+                         [])},
+    {"name": "footage_details", "description": "What is in a footage folder, so you can choose clips yourself: every video's name, length, frame rate, size and whether it has sound, in the order they were shot, with the folder it is in. When the folder has been looked at by an earlier edit, each video also shows its role (a_roll, broll, voiceover_broll...), how much is spoken, the largest face, camera movement, sharpness, camera type, when it was shot, and its described scenes with shot size. Read-only. Use it before writing an edit_list, then get_transcript on a file to learn what is said in it.",
+     "inputSchema": _obj({"folder": {**S, "description": "Full path of the folder (find_files helps)."}}, ["folder"])},
+    {"name": "check_edit_list", "description": "Check an edit_list without making anything: which file each entry is, how long each plays, the total length, and what is wrong (a clip that can't be found or is named by more than one file, a trim past the end, a very short entry). Free and instant: use it until the list is right, then pass it to make_long_video.",
+     "inputSchema": _obj({"folder": {**S, "description": "Full path of the footage folder."},
+                          "edit_list": {"type": "array", "items": {"type": "object"}, "description": "The same list make_long_video takes."},
+                          "min_shot_seconds": {"type": "number", "description": "Mention entries shorter than this."}},
+                         ["folder", "edit_list"])},
     {"name": "make_short_clips", "description": "Start cutting a video (a file on this Mac, or a link such as YouTube) into vertical short clips with captions. Returns at once; check with project_status.",
      "inputSchema": _obj({"source": {**S, "description": "Full path of a video on this Mac (find_files helps), or an http(s) link."},
                           "notes": {**S, "description": "Anything to look for, e.g. 'only the funny moments'."},
@@ -160,8 +184,25 @@ TOOLS = [
      "inputSchema": _obj({"project": PROJECT,
                           "instruction": {**S, "description": "What to change, in the person's words."},
                           "length_minutes": {"type": "number", "description": "The new length in minutes (optional)."},
-                          "pace": {"type": "string", "enum": ["auto", "fast", "slow"], "description": "The new pace (optional)."}},
+                          "pace": {"type": "string", "enum": ["auto", "fast", "slow"], "description": "The new pace (optional)."},
+                          "style": {"type": "object", "description": "A partial style object (see capabilities): only the settings you give change, e.g. {\"pace\": {\"name\": \"fast\"}, \"music\": {\"policy\": \"none\"}, \"broll\": {\"share\": 0.2}}. Allowed values and ranges are in capabilities."}},
                          ["instruction"])},
+    {"name": "capabilities", "description": "What FirstCut can do and the limits, so you can plan inside them without trial and error: the style profiles with every default number, the style object's schema, caption styles, graphics themes, the shortest clip and longest video, and the checks a cut is held to. Read-only; call it before setting a style.",
+     "inputSchema": _obj({})},
+    {"name": "style_profile", "description": "Read or change the numbers that shape one video's cut (pace, B-roll share and shot length, captions, graphics, music, length): the video's style object. action 'get' shows it in words; 'set' changes only the settings in `style` (a partial object, see capabilities) and says what is wrong when a value is out of range. scope 'always' also keeps the settings it states for every later video. A change shows in the next render (change_video renders again).",
+     "inputSchema": _obj({"project": PROJECT, "action": {**S, "enum": ["get", "set"], "description": "get (default) or set."},
+                          "style": {"type": "object", "description": "A partial style object (see capabilities): only the settings you give change, e.g. {\"pace\": {\"name\": \"fast\"}, \"music\": {\"policy\": \"none\"}, \"broll\": {\"share\": 0.2}}. Allowed values and ranges are in capabilities."},
+                          "scope": {**S, "enum": ["video", "always"], "description": "'video' (default) or 'always'."}},
+                         [])},
+    {"name": "learn_style", "description": "Learn how a video is EDITED (cut rhythm, pauses, captions, music, zooms) from a YouTube video, short, channel or playlist link, an Instagram reel link (it may need a dropped file instead: no sign-in is ever used) or a video file on this Mac, and keep it as a named editing style preset. Give `preset` to add the video to an existing style (the numbers are combined) or `name` for a new one. Takes about a minute; it returns the plain lines and the measurements, or tells you to check list_style_presets if it is still running. Nothing is applied to any video until apply_style_preset.",
+     "inputSchema": _obj({"url": {**S, "description": "A YouTube, Instagram or other video link, or the full path of a video file on this Mac."},
+                          "preset": {**S, "description": "The id or name of an existing style to add this video to (optional)."},
+                          "name": {**S, "description": "The name for a new style (optional)."}}, ["url"])},
+    {"name": "list_style_presets", "description": "The editing styles learned or written so far: name, the plain lines, the person's own rules, the videos each was learned from and what was measured. Read-only.",
+     "inputSchema": _obj({})},
+    {"name": "apply_style_preset", "description": "Use a style preset for short clips or long videos: its rules and lines become the \"How it edits\" points of that mode and the settings those points state, so every later video of that kind follows it. The person can still edit the points in the app. Hard rules of the app (quality checks, real-life content only) are not changed by a style.",
+     "inputSchema": _obj({"preset": {**S, "description": "The id or name of the style."}, "mode": {**S, "enum": ["short", "long"], "description": "short = vertical clips, long = long videos."}},
+                         ["preset", "mode"])},
     {"name": "search_footage", "description": "Search the footage library on this Mac in plain words ('students walking to class at sunset'). Returns the best shots with a small picture each, the file and the time in it.",
      "inputSchema": _obj({"query": {**S, "description": "What the shot shows."},
                           "n": {"type": "integer", "minimum": 1, "maximum": 12, "description": "How many shots (default 6)."}}, ["query"])},
@@ -178,6 +219,21 @@ TOOLS = [
      "inputSchema": _obj({"project": PROJECT})},
     {"name": "show_in_finder", "description": "Show a finished video, a batch of clips or a transcript in the Finder on this Mac.",
      "inputSchema": _obj({"project": PROJECT})},
+    {"name": "transcript_search", "description": "Find a quote or a topic in a video's transcript and get where it is: word numbers, seconds, the words, and how much silence is either side (the room a cut may use). Use it to ground an instruction ('the part about forgiveness', 'where he says we were wrong') before you edit a plan. mode 'quote' finds words as said (no AI, instant); 'topic' reads the transcript for a subject (slower). Two hits far apart means ask the person which one. Not for reading the whole transcript: use get_transcript.",
+     "inputSchema": _obj({"project": PROJECT, "query": {**S, "description": "The words to find, or the topic."}, "mode": {**S, "enum": ["quote", "topic"], "description": "Default quote."}}, ["query"])},
+    {"name": "shot_details", "description": "What FirstCut knows about ONE footage file: its role (talking head, B-roll, screen...), whether the speaker is on camera, camera movement and shake, sharpness, camera type, shot time, and every scene in it with its id, seconds and description. Use it after footage_details when you must choose between a few clips. Needs a folder that was edited before. Not for searching the library: use search_footage.",
+     "inputSchema": _obj({"folder": {**S, "description": "Full path of the footage folder."}, "file": {**S, "description": "The file's name, its name without extension, or its number."}}, ["folder", "file"])},
+    {"name": "plan_long_video", "description": "Plan a long video WITHOUT rendering it: FirstCut reads the footage and your notes, decides the cut, checks every instruction in the notes in code, and returns the plan as lines (each passage with an id, its seconds and its words), the instructions with how each was understood, the problems found and what could not be met. Then you can edit the plan and send it back with make_long_video(plan=...). Same arguments as make_long_video (the first call takes minutes: it returns at once with an id if the plan is not ready, then call plan_long_video again with that `project`). Use make_long_video when you just want the video.",
+     "inputSchema": _obj({"folder": {**S, "description": "Full path of the footage folder. Leave out when you give `project`."}, "notes": {**S, "description": "What the video should be and any rules (order, parts to keep or cut, footage not to use, length)."},
+                          "minutes": {"type": "number", "description": "Length in minutes."}, "pace": {**S, "enum": ["auto", "fast", "slow"]}, "title": {**S},
+                          "project": {**S, "description": "Read the plan of a video already planned (its id or part of its title)."}}, [])},
+    {"name": "check_plan", "description": "Check a plan you edited, without rendering: unknown ids, passages that end before they start, a trim past the end of a file, a line played twice, a required section missing, a part that should be cut still in, the length against what was asked, a cut inside a word. Returns each problem in plain words with a hint. Hard problems stop make_long_video(plan=...). Use it after every edit of a plan.",
+     "inputSchema": _obj({"project": PROJECT, "plan": {"type": "object", "description": "{\"items\": [{\"id\":\"i0\",\"kind\":\"talk\",\"a\":12,\"b\":15}, {\"kind\":\"visual\",\"start\":140.0,\"end\":146.5}]}: sentence numbers (a, b) come from plan_long_video; times are seconds in the footage."}}, ["plan"])},
+    {"name": "render_preview", "description": "A cheap look at a finished video without a full render: with frames_only, one still at each cut in the range (up to 12, as pictures); otherwise a 480-pixel MP4 of the range (at most 60 s; returns its path). Use it to check one passage after a change. Not for judging colour or sound quality.",
+     "inputSchema": _obj({"project": PROJECT, "start_s": {"type": "number", "description": "Start second in the finished video (default 0)."}, "end_s": {"type": "number", "description": "End second (default start + 20)."},
+                          "frames_only": {"type": "boolean", "description": "Stills at the cuts instead of a clip."}})},
+    {"name": "rerender", "description": "Render a finished or planned video again from its saved plan. FirstCut re-encodes the whole video (B-roll placement is kept when the cut did not change); it cannot re-encode only the changed passages, and says so. Use change_video for a change in words; use make_long_video(plan=...) to render a plan you edited.",
+     "inputSchema": _obj({"project": PROJECT, "changed_segment_ids": {"type": "array", "items": S, "description": "The passages you changed (noted in the answer only)."}})},
 ]
 
 STOP = {"the", "a", "an", "of", "to", "in", "on", "with", "and", "shot", "clip", "b-roll", "broll", "video", "one", "that", "this", "my", "is", "at"}
@@ -377,15 +433,320 @@ def tool_find_files(eng: Engine, a: dict) -> list[dict]:
 
 
 def tool_make_long_video(eng: Engine, a: dict) -> list[dict]:
+    if isinstance(a.get("plan"), dict):                                        # a plan an AI edited (plan_long_video): checked in code, then rendered
+        p = _long(eng, a.get("project"))
+        r = eng.post(f"/api/app/long/{urllib.parse.quote(p['id'])}/plan", {"plan": a["plan"]})
+        return _txt(f"Rendering “{p.get('title')}” from your plan ({r.get('totals', {}).get('length_s', 0):.0f} s). It takes minutes; project_status says when it is done."
+                    + ((" Things to look at: " + "; ".join(x["message"] for x in r.get("problems") or [])[:600]) if r.get("problems") else ""))
+    if not a.get("folder"):
+        raise ToolError("give the footage `folder` (or a `plan` with its `project`)")
     folder = str(resolve_place(a.get("folder")) if a.get("folder") else "")
     opts = {}
+    if a.get("dry_run") is True:
+        opts["dry_run"] = True
     if a.get("minutes") is not None:
         opts["long_minutes"] = float(a["minutes"])
     for k_in, k_out in (("pace", "pace"), ("captions", "caption_style"), ("graphics", "graphics"), ("music", "music")):
         if a.get(k_in) is not None:
             opts[k_out] = a[k_in]
-    r = eng.post("/api/app/long", {"source": folder, "notes": str(a.get("notes") or ""), "options": opts})
-    return _txt(f"Started making a video from {folder} (id {r.get('id')}). It reads the footage where it is. Check on it with project_status.")
+    if isinstance(a.get("style"), dict) and a["style"]:
+        opts["style"] = a["style"]
+    if a.get("edit_list"):
+        opts["edit_list"] = a["edit_list"]
+        opts.setdefault("caption_style", "none")                               # (an exact edit is not captioned unless asked)
+    for k_in, k_out in (("broll", "broll_mode"), ("broll_files", "broll_files"), ("avoid", "avoid"), ("min_shot_seconds", "min_shot_s")):
+        if a.get(k_in) not in (None, "", []):
+            opts[k_out] = a[k_in]
+    body = {"source": folder, "notes": str(a.get("notes") or ""), "options": opts}
+    if a.get("title"):
+        body["title"] = str(a["title"])[:120]
+    if a.get("song"):
+        body["song"] = str(resolve_place(a["song"]))
+    r = eng.post("/api/app/long", body)
+    if a.get("dry_run") is True:
+        return r
+    how = f"{len(a['edit_list'])} clips in the order you gave" if a.get("edit_list") else "FirstCut plans the cut"
+    return _txt(f"Started making a video from {folder} (id {r.get('id')}): {how}. It reads the footage where it is. Check on it with project_status.")
+
+
+def _plan_text(v: dict) -> str:
+    """A plan view (planapi.view) as text an AI can read and edit: passages with ids, the instructions, the problems."""
+    lines = [f"Plan for “{v.get('title')}” ({v.get('totals', {}).get('length_s', 0):.0f} s). Status: {v.get('stage') or v.get('status')}.", "", "PASSAGES (edit these):"]
+    for it in v.get("items") or []:
+        if it.get("kind") == "talk":
+            lines.append(f"- {it['id']} talk sentences {it.get('a')}-{it.get('b')} ({it.get('from_s')}-{it.get('to_s')} s)" + (f" satisfies {it['satisfies']}" if it.get("satisfies") else "")
+                         + f": {it.get('text', '')}")
+        else:
+            lines.append(f"- {it['id']} visual {it.get('start')}-{it.get('end')} s")
+    cons = v.get("constraints") or []
+    if cons:
+        lines += ["", "INSTRUCTIONS AS UNDERSTOOD:"] + [f"- {c['id']} {c['type']} ({'hard' if c.get('hard') else 'soft'}) {c['status']}: “{c['source'][:100]}” {c.get('note', '')}" for c in cons]
+    probs = v.get("problems") or []
+    if probs:
+        lines += ["", "PROBLEMS:"] + [f"- {'MUST FIX' if p.get('hard') else 'look'} {p['code']}: {p['message']}" + (f" Hint: {p['fix_hint']}" if p.get("fix_hint") else "") for p in probs[:20]]
+    if v.get("unmet"):
+        lines += ["", "NOT MET: " + "; ".join(f"{u['constraint']} ({u['why']})" for u in v["unmet"])]
+    if (v.get("approval") or {}).get("questions"):
+        lines += ["", "QUESTIONS FOR THE PERSON: " + " | ".join(v["approval"]["questions"])]
+    lines += ["", "Send an edited plan back with check_plan, then make_long_video(plan=..., project=...)."]
+    return "\n".join(lines)
+
+
+def tool_plan_long_video(eng: Engine, a: dict) -> list[dict]:
+    if a.get("project") and not a.get("folder"):
+        p = _long(eng, a.get("project"))
+        v = eng.get(f"/api/app/long/{urllib.parse.quote(p['id'])}/plan")
+        return _txt(_plan_text(v))
+    r = tool_make_long_video(eng, {**a, "dry_run": True})
+    pid = r.get("id") if isinstance(r, dict) else None
+    if not pid:
+        return _txt("Planning started.")
+    import time as _t
+    for _ in range(12):                                                         # a plan from cached transcripts is ready in seconds; a first one takes minutes
+        _t.sleep(2.0)
+        try:
+            v = eng.get(f"/api/app/long/{urllib.parse.quote(pid)}/plan")
+        except ToolError:
+            continue
+        if v.get("awaiting_approval") or v.get("dry_run"):
+            return _txt(_plan_text(v))
+    return _txt(f"Planning {a.get('folder')} (id {pid}) is still working: reading the footage the first time takes minutes. Call plan_long_video with project '{pid}' to read the plan when project_status says it is waiting for approval.")
+
+
+def tool_check_plan(eng: Engine, a: dict) -> list[dict]:
+    p = _long(eng, a.get("project"))
+    r = eng.post(f"/api/app/long/{urllib.parse.quote(p['id'])}/check-plan", {"plan": a.get("plan")})
+    probs = r.get("problems") or []
+    head = "The plan passes every hard check." if r.get("ok") else "The plan has problems that must be fixed:"
+    lines = [head + f" Length {r.get('totals', {}).get('length_s', 0):.0f} s."] + [f"- {'MUST FIX' if x.get('hard') else 'look'} {x['code']}: {x['message']}" + (f" Hint: {x['fix_hint']}" if x.get("fix_hint") else "") for x in probs[:20]]
+    return _txt("\n".join(lines))
+
+
+def tool_transcript_search(eng: Engine, a: dict) -> list[dict]:
+    p = _long(eng, a.get("project"))
+    r = eng.post(f"/api/app/long/{urllib.parse.quote(p['id'])}/search", {"query": a.get("query"), "mode": a.get("mode") or "quote"})
+    hits = r.get("hits") or []
+    if not hits:
+        return _txt(f"“{r.get('query')}” was not found in the transcript ({r.get('mode')} search).")
+    lines = [f"{len(hits)} place(s) for “{r.get('query')}” ({r.get('mode')} search)" + (" — more than one place, far apart: ask which is meant" if r.get("ambiguous") else "") + ":"]
+    for h in hits:
+        lines.append(f"- words {h['first_word']}-{h['last_word']}, {_mmss(h['start_s'])}-{_mmss(h['end_s'])} (silence before {h['lead_silence_s']} s, after {h['trail_silence_s']} s): {h['text'][:160]}")
+    return _txt("\n".join(lines))
+
+
+def tool_shot_details(eng: Engine, a: dict) -> list[dict]:
+    from . import editlist as EL
+    files = _scan_folder(str(a.get("folder") or ""))
+    f, cands = EL.find_file(str(a.get("file") or ""), files)
+    if f is None:
+        raise ToolError("which file? " + ("; ".join(cands[:6]) if cands else f"none matches {a.get('file')!r}"))
+    notes_ = _facts_notes(str(a.get("folder") or ""), [f]).get(f["name"], "")
+    return _txt(f"{f.get('rel') or f['name']}: {float(f['dur']):.1f} s, {int(f.get('w') or 0)}x{int(f.get('h') or 0)} at {float(f.get('fps') or 0):g} fps, "
+                + ("with sound" if f.get("audio") else "silent") + (notes_ or " (nothing worked out about it yet: it was never edited from this folder)"))
+
+
+def tool_render_preview(eng: Engine, a: dict) -> list[dict]:
+    p = _long(eng, a.get("project"))
+    r = eng.post(f"/api/app/long/{urllib.parse.quote(p['id'])}/preview", {"start_s": a.get("start_s") or 0, "end_s": a.get("end_s"), "frames_only": bool(a.get("frames_only"))})
+    if a.get("frames_only"):
+        out: list[dict] = [{"type": "text", "text": f"{len(r.get('frames') or [])} still(s), one at each cut:"}]
+        for fr in r.get("frames") or []:
+            out.append({"type": "text", "text": f"at {fr['at']:.1f} s"})
+            try:
+                out.append({"type": "image", "data": base64.b64encode(_small_jpeg(Path(fr["path"]).read_bytes(), 480)).decode(), "mimeType": "image/jpeg"})
+            except OSError:
+                pass
+        return out
+    return _txt(f"A 480 px preview of {r.get('from_s')}-{r.get('to_s')} s is at {r.get('path')}")
+
+
+def tool_rerender(eng: Engine, a: dict) -> list[dict]:
+    p = _long(eng, a.get("project"))
+    r = eng.post(f"/api/app/long/{urllib.parse.quote(p['id'])}/rerender-changed", {"changed": a.get("changed_segment_ids") or []})
+    return _txt(f"Rendering “{p.get('title')}” again. {r.get('note', '')} project_status says when it is done.")
+
+
+def _scan_folder(folder: str) -> list[dict]:
+    from .localproj import scan
+    root = resolve_place(folder)
+    if not root.is_dir():
+        raise ValueError(f"{root} is not a folder")
+    return scan(root)
+
+
+def _facts_notes(folder: str, files: list[dict]) -> dict[str, str]:
+    """{file name: ", role a_roll (why), speech 0.82, ... ; scenes: ..."} from what an earlier edit of this folder already worked out (the facts cache and
+    the scene descriptions in the folder's .aivideo). Nothing is analysed here and nothing is written: a folder never edited has none."""
+    from . import footage as FT
+    try:
+        root = resolve_place(folder)
+    except Exception:  # noqa: BLE001 - the facts are a bonus on top of the list
+        return {}
+    cache = root / ".aivideo" / "facts"
+    try:
+        broll = json.loads((root / ".aivideo" / "broll.json").read_text())
+    except (OSError, ValueError):
+        broll = {}
+    try:
+        pool = (json.loads((root / ".aivideo" / "plan.json").read_text()) or {}).get("pool") or []
+    except (OSError, ValueError):
+        pool = []
+    def _r1(v) -> float:
+        try:
+            return round(float(v), 1)
+        except (TypeError, ValueError):
+            return -1.0
+    sid_of = {(s.get("file"), _r1(s.get("fstart", -1))): s.get("sid") for s in pool if isinstance(s, dict) and s.get("sid")}
+    by = {}
+    for f in files:
+        rec = FT.load_cached(cache, Path(f["path"]), "fast") if (cache.is_dir() and f.get("path")) else None
+        bits = []
+        if rec:
+            sp, fa, mo, q, cam = (rec.get("speech") or {}), (rec.get("faces") or {}), (rec.get("motion") or {}), (rec.get("quality") or {}), (rec.get("camera") or {})
+            bits.append(f"role {rec.get('role')} ({rec.get('role_why')})")
+            if sp.get("ratio") is not None:
+                bits.append(f"speech {sp['ratio']:.2f}")
+            if fa.get("largest_ratio_median"):
+                bits.append(f"largest face {fa['largest_ratio_median']:.2f} of the frame height")
+            if mo.get("type") and mo["type"] != "unknown":
+                bits.append(f"camera {mo['type']}")
+            if "blur_floor_ok" in q:
+                bits.append("sharp" if q["blur_floor_ok"] else "soft or flat")
+            if rec.get("slowmo_eligible"):
+                bits.append("fine in slow motion")
+            if cam.get("family") not in (None, "", "unknown"):
+                bits.append(f"{cam['family']} camera")
+            if cam.get("created"):
+                bits.append(f"shot {str(cam['created'])[:16].replace('T', ' ')}")
+            if rec.get("duplicates_of"):
+                bits.append(f"same shot as {rec['duplicates_of']}")
+        scs = (broll.get(f["name"]) or {}).get("scenes") or []
+        if scs:
+            parts = []
+            for s in scs[:8]:
+                try:
+                    sid = sid_of.get((f["name"], _r1(s["start"])))
+                    parts.append(f"{(sid + ' ') if sid else ''}{float(s['start']):.1f}-{float(s['end']):.1f} s {str(s.get('what') or '')[:70]}"
+                                 + (f" [{s['shot_size']}{', talking head' if s.get('is_talking_head') else ''}]" if s.get("shot_size") or s.get("is_talking_head") else ""))
+                except (TypeError, ValueError, KeyError, AttributeError):
+                    continue                                              # (one odd scene in a cache never hides the rest of the folder)
+            bits.append("scenes: " + "; ".join(parts))
+        by[f["name"]] = (", " + ", ".join(bits)) if bits else ""
+    return by
+
+
+def tool_footage_details(eng: Engine, a: dict) -> list[dict]:
+    files = _scan_folder(str(a.get("folder") or ""))
+    if not files:
+        return _txt("No videos in that folder.")
+    lines = [f"{len(files)} videos, in the order they were shot ({sum(float(f['dur']) for f in files) / 60:.1f} minutes in all):"]
+    notes_ = _facts_notes(str(a.get("folder") or ""), files)
+    for f in files[:400]:
+        lines.append(f"- {f.get('rel') or f['name']}: {float(f['dur']):.1f} s, {int(f.get('w') or 0)}x{int(f.get('h') or 0)} at {float(f.get('fps') or 0):g} fps, "
+                     + ("with sound" if f.get("audio") else "silent") + notes_.get(f["name"], ""))
+    if len(files) > 400:
+        lines.append(f"... and {len(files) - 400} more")
+    return _txt("\n".join(lines))
+
+
+def tool_capabilities(eng: Engine, a: dict) -> list[dict]:
+    from . import styles_profile as SPF
+    return _txt(json.dumps(SPF.capabilities(), indent=1))
+
+
+def tool_style_profile(eng: Engine, a: dict) -> list[dict]:
+    p = _long(eng, a.get("project"))
+    pid = urllib.parse.quote(p["id"])
+    if str(a.get("action") or "get") == "set":
+        if not isinstance(a.get("style"), dict) or not a["style"]:
+            raise ToolError("give the settings to change in `style` (see capabilities)")
+        r = eng.post(f"/api/app/long/{pid}/style", {"style": a["style"], "scope": "always" if a.get("scope") == "always" else ""})
+        return _txt(f"Changed the style of “{p.get('title')}”:\n{r.get('describe', '')}\nIt takes effect when the video renders again (change_video does that)."
+                    + (" These settings are kept for every later video too." if a.get("scope") == "always" else ""))
+    r = eng.get(f"/api/app/long/{pid}/style")
+    return _txt(f"Style of “{p.get('title')}”:\n{r.get('describe', '')}\n\n" + json.dumps(r.get("style") or {}, indent=1)
+                + ("\n\nProblems: " + "; ".join(r["problems"]) if r.get("problems") else ""))
+
+
+def _preset(eng: Engine, ref) -> dict:
+    items = eng.get("/api/app/styles/presets").get("presets") or []
+    r = str(ref or "").strip().lower()
+    hit = next((p for p in items if p["id"].lower() == r), None) or next((p for p in items if (p.get("name") or "").lower() == r), None) \
+        or next((p for p in items if r and r in (p.get("name") or "").lower()), None)
+    if hit is None:
+        raise ToolError("no style called that: " + (", ".join(f"“{p.get('name')}”" for p in items) or "none have been made yet (learn_style makes one)"))
+    return hit
+
+
+def _style_text(p: dict) -> str:
+    out = [f"Style “{p.get('name')}” (id {p['id']})"]
+    if p.get("rules"):
+        out.append("Rules:\n" + "\n".join(f"- {x}" for x in p["rules"]))
+    out.append("Lines:\n" + ("\n".join(f"- {x}" for x in p.get("points") or []) or "- (none yet)"))
+    if p.get("evidence"):
+        out.append("What was measured:\n" + "\n".join(f"- {x}" for x in p["evidence"]))
+    if p.get("sources"):
+        out.append("Learned from: " + "; ".join(s.get("title") or s.get("url") or "a video" for s in p["sources"]))
+    return "\n\n".join(out)
+
+
+def tool_learn_style(eng: Engine, a: dict) -> list[dict]:
+    url = str(a.get("url") or "").strip()
+    if not url:
+        raise ToolError("give a video link or the path of a video file in `url`")
+    body: dict = {"file" if url.startswith(("/", "~", "file://")) else "url": url}
+    if a.get("preset"):
+        body["preset_id"] = _preset(eng, a["preset"])["id"]
+    if a.get("name"):
+        body["name"] = str(a["name"])
+    job = eng.post("/api/app/styles/learn", body)["job"]
+    t0 = time.time()
+    while time.time() - t0 < 150:
+        time.sleep(3.0)
+        r = eng.get(f"/api/app/styles/learn/{job}")
+        if r.get("state") == "error":
+            raise ToolError(r.get("error") or "that video could not be learned from")
+        if r.get("state") == "done" and r.get("preset"):
+            return _txt(_style_text(r["preset"]) + "\n\nNothing is applied yet: apply_style_preset uses it for short clips or long videos.")
+    return _txt("Still learning (" + str((eng.get(f"/api/app/styles/learn/{job}") or {}).get("text") or "working") + "). Check list_style_presets in a minute.")
+
+
+def tool_list_style_presets(eng: Engine, a: dict) -> list[dict]:
+    items = eng.get("/api/app/styles/presets").get("presets") or []
+    return _txt("\n\n---\n\n".join(_style_text(p) for p in items) if items else "No styles yet: learn_style makes one from a video link.")
+
+
+def tool_apply_style_preset(eng: Engine, a: dict) -> list[dict]:
+    p = _preset(eng, a.get("preset"))
+    mode = str(a.get("mode") or "")
+    if mode not in ("short", "long"):
+        raise ToolError("mode is short (vertical clips) or long (long videos)")
+    r = eng.post(f"/api/app/styles/presets/{urllib.parse.quote(p['id'])}/apply", {"mode": mode})
+    return _txt(f"“{p.get('name')}” is now how {'short clips' if mode == 'short' else 'long videos'} are edited:\n" + "\n".join(f"- {x}" for x in r.get("points") or []))
+
+
+def tool_check_edit_list(eng: Engine, a: dict) -> list[dict]:
+    from . import editlist as EL
+    files = _scan_folder(str(a.get("folder") or ""))
+    try:
+        entries = EL.parse(a.get("edit_list"))
+        items, problems, how = EL.items_for(entries, files, float(a.get("min_shot_seconds") or 0))
+    except ValueError as e:
+        return _txt(f"The edit list isn't ready: {e}")
+    by = {f["name"]: f for f in files}
+    lines, total = [], 0.0
+    for k, it in enumerate(items, 1):
+        d = float(it["end"]) - float(it["start"])
+        total += d
+        f = by.get(it.get("file")) or {}
+        lines.append(f"{k}. {it.get('file')} {float(it['start']) - float(f.get('start') or 0):.1f}-{float(it['end']) - float(f.get('start') or 0):.1f} s ({d:.1f} s), "
+                     + (how.get(it.get("file")) or "own") + " sound")
+    spare = [f for f in files if f["name"] not in how]
+    out = [f"{len(items)} clips, {total:.1f} s ({total / 60:.1f} min) in all:", *lines,
+           f"{len(spare)} other clips in the folder could be B-roll." if spare else "No other clips in the folder: there is nothing for B-roll."]
+    if problems:
+        out += ["", "Notes:", *[f"- {p}" for p in problems]]
+    return _txt("\n".join(out))
 
 
 def tool_make_short_clips(eng: Engine, a: dict) -> list[dict]:
@@ -424,9 +785,15 @@ def tool_change_video(eng: Engine, a: dict) -> list[dict]:
     if text and extra and text[-1] not in ".!?":
         text += "."
     text = " ".join([text] + extra).strip()
+    if isinstance(a.get("style"), dict) and a["style"]:                       # settings first (a value out of range is told here, nothing is changed)
+        eng.post(f"/api/app/long/{urllib.parse.quote(p['id'])}/style", {"style": a["style"]})
+        text = text or "Apply the new editing settings."
     if not text:
         raise ToolError("say what to change")
-    eng.post(f"/api/ai/projects/{urllib.parse.quote(p['id'])}/revise", {"instruction": text[:1500]})
+    body = {"instruction": text[:1500]}
+    if pace in ("fast", "slow"):                                              # (a pace change is a style change: the pause between lines changes, not only the words)
+        body["pace"] = "fast" if pace == "fast" else "slow"
+    eng.post(f"/api/ai/projects/{urllib.parse.quote(p['id'])}/revise", body)
     return _txt(f"Changing “{p.get('title')}”: {text} It renders again, usually a few minutes; project_status says when it's done.")
 
 
@@ -630,7 +997,14 @@ class Server:
                     "capabilities": {"tools": {"listChanged": False}, "resources": {"listChanged": False}},
                     "serverInfo": SERVER,
                     "instructions": "FirstCut edits video on this Mac. Start long jobs (make_long_video, make_short_clips, get_transcript, change_video) "
-                                    "and check on them with project_status: they take minutes. Paths are full paths on this Mac. Nothing here deletes anything."}
+                                    "and check on them with project_status: they take minutes. Paths are full paths on this Mac. Nothing here deletes anything. "
+                                    "You are the editor and FirstCut is your tool: when the person says which clips to use, in what order, or what to avoid, do not leave "
+                                    "that to FirstCut's own planning. Look at the footage (footage_details, get_transcript on the clips), decide the cut yourself, "
+                                    "write it as an edit_list, check it with check_edit_list, then start make_long_video with it, the B-roll rules (broll, avoid, "
+                                    "min_shot_seconds) and the song. Use free-text notes only for what you cannot express as a list. When the person gives rules in words "
+                                    "(keep this part, cut that, open with this, no B-roll while he prays, avoid that camera, a length), plan first: plan_long_video returns "
+                                    "the plan and checks every rule in code; ground a quote or a topic with transcript_search, look at a file with shot_details, fix the "
+                                    "problems, check_plan, then make_long_video with the plan. Say what you could not do; never claim a rule was met unless check_plan says so."}
         if method == "ping":
             return {}
         if method == "tools/list":

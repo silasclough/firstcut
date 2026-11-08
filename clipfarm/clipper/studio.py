@@ -102,6 +102,7 @@ def defaults() -> dict:
     return {
         "appearance": "system",                                       # system | light | dark
         "updates": "auto",                                            # auto (download, restart when idle) | ask | off (updates.swift)
+        "style_overrides": {"short": {}, "long": {}},                  # styles_profile.py: the editing settings the "How it edits" points state, per mode (null = not stated)
         "storage": {"auto_days": 0, "also_finalcut": False},          # storage.py: remove the videos of projects older than 7|14|30|60 days (0 = never); the plans stay
         "ai": {"use": "chatgpt", "fallback": True, "local_model": None, "claude_edit": "sonnet", "claude_quick": "haiku", "chatgpt_model": "",
                "backup": "auto",                                     # when `use` runs out of usage: "claude" | "chatgpt" | "local" | "" (wait)
@@ -111,7 +112,7 @@ def defaults() -> dict:
                    "catalog": str(h / "Catalog"), "work": str(Path.home() / "Library" / "Caches" / APP_NAME)},
         "defaults": {"short": {"min_len": 20, "max_len": 35, "caption_style": "bold", "layout": "auto", "music": "", "clips": 8, "pace": "auto", "voices": "auto"},
                      "long": {"long_minutes": 0, "caption_style": "none", "library": True, "music": "", "graphics": "", "gfx_style": "auto", "stock": False,
-                              "pace": "auto", "transitions": "auto", "log": "convert", "voices": "auto"}},   # voices: "auto" | "always" | "never" (voiceclean)  # pace: "auto" | "fast" | "slow"; log: "convert" (log footage -> normal
+                              "pace": "auto", "transitions": "auto", "log": "convert", "voices": "auto", "plan_first": ""}},   # voices: "auto" | "always" | "never" (voiceclean)  # pace: "auto" | "fast" | "slow"; log: "convert" (log footage -> normal
                                                                         # colour in what FirstCut renders, never in Final Cut) | "leave"
         "library": {"folders": [], "when": "open", "recent": {}, "look": "", "picked": [], "load": "adapt",    # when: "open" | "night" | "off"; load: "adapt" | "gentle" | "full" (loadgov.py)
                     "describe_with": "account"},                     # who describes the catalogue's shots: "account" (default) | "local"
@@ -120,6 +121,7 @@ def defaults() -> dict:
         "setup": {"done": False},
         "mcp": {"enabled": False},                                      # Settings › Connect an AI: let AI apps use FirstCut (mcp_server.py)
         "glossary": [],                                               # names and words spelled the person's way (glossary.py)
+        "styles": {"fetch_url": ""},                                  # stylefetch.py: the person's OWN fallback address for reels that need a sign-in (empty = none)
     }
 
 
@@ -254,6 +256,16 @@ def clean(ch: dict) -> dict:
             if not isinstance(v, bool):
                 raise ValueError("also_finalcut is true or false")
             out["storage"]["also_finalcut"] = v
+    so = _section(ch, "style_overrides")
+    if so:
+        from . import styles_profile as SPF
+        out["style_overrides"] = {}
+        for mode in ("short", "long"):
+            if mode in so:
+                if not isinstance(so[mode], dict):
+                    raise ValueError("style_overrides are a set of settings")
+                cl = SPF.clean_settings(so[mode])
+                out["style_overrides"][mode] = {k: cl.get(k) for k in SPF.SETTING_KEYS}        # (a setting the points no longer state is cleared: null)
     ai = _section(ch, "ai")
     if ai:
         out["ai"] = {}
@@ -277,6 +289,10 @@ def clean(ch: dict) -> dict:
         if "chatgpt_model" in ai:                                         # "" = the app's choice
             m = str(ai.get("chatgpt_model") or "").strip()
             out["ai"]["chatgpt_model"] = m if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,60}", m) else ""
+    stl = _section(ch, "styles")
+    if stl and "fetch_url" in stl:
+        u = str(stl.get("fetch_url") or "").strip()
+        out["styles"] = {"fetch_url": u if re.fullmatch(r"https?://[^\s]{3,300}", u) else ""}
     mcp = _section(ch, "mcp")
     if mcp and "enabled" in mcp:
         out["mcp"] = {"enabled": bool(mcp["enabled"])}
@@ -423,9 +439,9 @@ def overlay(s: dict, root: Path) -> dict:
                        "models": {"script": s["ai"].get("claude_edit") or "sonnet", "default": s["ai"].get("claude_edit") or "sonnet",
                                   "cheap": s["ai"].get("claude_quick") or "haiku"},
                        "efforts": {"script": "medium", "default": "low", "cheap": "low"},
-                       "cheap_tasks": ["broll_pick", "broll_queries", "montage_story", "video_title", "video_kind", "video_length", "hook_text", "key_points", "music_vibe",
+                       "cheap_tasks": ["broll_pick", "broll_queries", "montage_story", "video_title", "video_kind", "video_length", "style_from_notes", "style_learn", "hook_text", "key_points", "music_vibe",
                                        "broll_suitable", "clip_title", "style_merge", "broll_describe", "photo_describe", "gfx_place",
-                                       "catalog_describe", "stock_queries", "video_chapters"],
+                                       "catalog_describe", "stock_queries", "video_chapters", "transcript_topic_span", "scene_match"],
                        "fallback": fallback, "fallback_on_limit": fallback},
             "ollama": {"base_url": url, "model": text, "vision_model": m["vision"], "fallback_models": []},
             "provider_chain": ["ollama"],
@@ -525,6 +541,13 @@ class Styles:
             pts = tidy_points(res.data.get("points"))
             if not pts and cur:
                 return self.get(kind)
+            return self._save(kind, pts, cur, [p for p in pts if p not in cur])
+
+    def replace(self, kind: str, points) -> dict:
+        """The whole list set at once (a style preset applied): the old list stays one undo away."""
+        with self.lock:
+            cur = self.get(kind)["points"]
+            pts = tidy_points(points)
             return self._save(kind, pts, cur, [p for p in pts if p not in cur])
 
     def remove(self, kind: str, index: int) -> dict:

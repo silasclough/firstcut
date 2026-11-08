@@ -161,3 +161,28 @@ def without(intervals: list[tuple[float, float]], spans: list[tuple[float, float
                 nxt.append((sb, b))
         out = nxt
     return [(a, b) for a, b in out if b - a >= min_len]
+
+
+def zero_cross(path, t: float, window_s: float = 0.002, sr: int = 48000) -> float:
+    """The time (s) of the zero crossing of the sound in `path` nearest to `t`, within +-window_s (t itself when there is none or the sound can't be read).
+    A cut that starts on a zero crossing, under a few-millisecond fade, makes no click."""
+    import subprocess
+
+    from ..core import ffmpeg
+    t0 = max(0.0, float(t) - window_s)
+    try:
+        p = subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "error", "-ss", f"{t0:.6f}", "-t", f"{2 * window_s + 0.001:.6f}", "-i", str(path), "-vn", "-ac", "1",
+                            "-ar", str(sr), "-f", "f32le", "-"], capture_output=True, timeout=60)
+    except Exception:  # noqa: BLE001 - the cut simply stays where it was planned
+        return float(t)
+    x = np.frombuffer(p.stdout[: len(p.stdout) // 4 * 4], dtype="<f4")
+    if x.size < 3 or not np.isfinite(x).all():
+        return float(t)
+    centre = (float(t) - t0) * sr
+    idx = np.nonzero(np.signbit(x[:-1]) != np.signbit(x[1:]))[0]                    # the sample just before each sign change
+    if idx.size == 0:
+        return float(t)
+    k = int(idx[np.argmin(np.abs(idx + 0.5 - centre))])
+    k += int(abs(x[k + 1]) < abs(x[k]))                                             # the nearer of the two samples around the crossing
+    return max(0.0, t0 + k / sr)
+

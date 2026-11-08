@@ -23,31 +23,46 @@ STYLES = ("standard", "auto", "youtube", "business")
 PROFILE_OF = {"youtube": "promo", "business": "business"}        # (a reel is short: the promo profile's budget, with the YouTube look)
 
 
-SCHEMA = {"type": "object", "properties": {"style": {"type": "string", "enum": ["none", "business", "youtube"]}, "why": {"type": "string"}}, "required": ["style"]}
+SCHEMA = {"type": "object", "properties": {"style": {"type": "string", "enum": ["none", "business", "youtube"]}, "why": {"type": "string"},
+                                           "caption_style": {"type": "string", "enum": ["karaoke", "phrase"]}}, "required": ["style"]}
 SYSTEM = (
     "You decide whether a short vertical clip is INFORMATIONAL. Informational = the speaker is teaching or explaining something: facts, numbers, names of companies, people or places, "
     "history, science, news, business, how-tos, a list of points, an explanation of why something happened. If it is informational, answer 'business' (calm: podcasts, interviews, "
     "explainers, history, documentary-style talk) or 'youtube' (energetic: fast tips, tech and news commentary, hot takes) and it gets graphics. "
     "If it is NOT informational - streamer or gameplay footage with banter, reactions, comedy, pranks, a personal or emotional story, vibes, a moment where the person or the "
-    "picture is the whole point - answer 'none'. Judge by what is SAID, not by the genre of the channel. When unsure, 'none'.")
+    "picture is the whole point - answer 'none'. Judge by what is SAID, not by the genre of the channel. When unsure, 'none'. "
+    "Also answer caption_style: karaoke (one to three words at a time) for educational or step-by-step talk; phrase (three to five words) for stories, emotion, comedy and interviews.")
+
+
+def decide_full(router, source: dict | None, title: str, transcript: str) -> dict:
+    """-> {"style": "none" | "business" | "youtube", "why": ..., "caption_style": "karaoke" | "phrase" | None}. Streamer-kind sources never get graphics (no AI asked) and are always
+    phrase captions; everything else: is it informational, and does it want karaoke or phrase captions?"""
+    s = source or {}
+    meta = " ".join(str(s.get(k) or "") for k in ("title", "topic", "channel", "uploader"))
+    if s.get("kind") in ("streamer", "twitch"):
+        return {"style": "none", "why": "streamer footage: no graphics", "caption_style": "phrase"}
+    try:
+        res = router.complete_json("edit_style", SYSTEM, f"Source video: {meta}\nClip title: {title}\nWhat is said in the clip:\n{transcript[:1500]}", SCHEMA).data
+        cs = res.get("caption_style") if res.get("caption_style") in ("karaoke", "phrase") else None
+        return {"style": res.get("style") if res.get("style") in ("none", "business", "youtube") else "none", "why": str(res.get("why") or "")[:160], "caption_style": cs}
+    except Exception as e:  # noqa: BLE001 - not sure = no graphics
+        log.warning(f"edit style: could not decide ({e}); no graphics")
+        return {"style": "none", "why": "could not decide", "caption_style": None}
 
 
 def decide(router, source: dict | None, title: str, transcript: str) -> tuple[str, str]:
     """For the 'auto' edit style: -> ("none" | "business" | "youtube", why). Streamer-kind sources never get graphics (no AI asked); everything else: is it informational?."""
-    s = source or {}
-    meta = " ".join(str(s.get(k) or "") for k in ("title", "topic", "channel", "uploader"))
-    if s.get("kind") in ("streamer", "twitch"):
-        return "none", "streamer footage: no graphics"
-    try:
-        res = router.complete_json("edit_style", SYSTEM, f"Source video: {meta}\nClip title: {title}\nWhat is said in the clip:\n{transcript[:1500]}", SCHEMA).data
-        return res.get("style") if res.get("style") in ("none", "business", "youtube") else "none", str(res.get("why") or "")[:160]
-    except Exception as e:  # noqa: BLE001 - not sure = no graphics
-        log.warning(f"edit style: could not decide ({e}); no graphics")
-        return "none", "could not decide"
+    r = decide_full(router, source, title, transcript)
+    return r["style"], r["why"]
+
+
+def caption_mood(router, source: dict | None, title: str, transcript: str) -> str | None:
+    """'karaoke' | 'phrase' | None (the AI did not say) for the clip's captions: the same question `decide` asks, kept for the caption look."""
+    return decide_full(router, source, title, transcript).get("caption_style")
 
 
 def apply(engine, job_id: str, out: Path, cap_words: list[dict], out_len: float, style: str, W: int, H: int, fps: float,
-          hook_title: bool = True, source: dict | None = None, title: str = "", cap_y: float | None = None) -> dict | None:
+          hook_title: bool = True, source: dict | None = None, title: str = "", cap_y: float | None = None, hook_end: float | None = None) -> dict | None:
     """Add the style's graphics to the finished clip `out` in place. -> {"cards": n, "theme": ..., "credits": [...]} or None if nothing was added."""
     if style == "auto" and out_len >= 12 and cap_words:
         style, why = decide(engine.router_for_now()[0], source, title, " ".join(w["text"] for w in cap_words))
@@ -63,7 +78,7 @@ def apply(engine, job_id: str, out: Path, cap_words: list[dict], out_len: float,
         prof = dict(localproj.PROFILES[PROFILE_OF[style]])
         if style == "business":
             prof["kinds"] = [k for k in prof["kinds"] if k != "hub"]
-        cards = gfxplan.plan(router, localproj.seg(cap_words), "", prof, out_len, hook_end=2.8 if hook_title else 0.0, words=cap_words, cfg=cfg)
+        cards = gfxplan.plan(router, localproj.seg(cap_words), "", prof, out_len, hook_end=(float(hook_end) if hook_end is not None else 2.8 if hook_title else 0.0), words=cap_words, cfg=cfg)
     except Exception as e:  # noqa: BLE001 - a style never stops a reel from being made
         log.warning(f"edit style {style}: planning failed ({e}); keeping the plain reel")
         return None
@@ -79,7 +94,17 @@ def apply(engine, job_id: str, out: Path, cap_words: list[dict], out_len: float,
         zones = facezones.zones(out, float(c["at"]), float(c["len"]), engine.models_dir, W / H) if cfg.get("clipper.ai_videos.graphics_avoid_faces", True) else []
         if cap_y:
             zones = [*zones, (0.0, max(0.0, cap_y - 0.06), 1.0, min(1.0, cap_y + 0.10))]                 # the captions: no graphic goes over them
-        mov, rects = polish.render_card(cfg, "card", str(c.get("title") or c["kind"]), float(c["len"]), work / f"card{k}.mov", {"theme": theme, "spec": c}, W, H, c, zones)
+        ex = {"theme": theme, "spec": c}
+        if cap_y:
+            ex["caption_top"] = max(0.0, cap_y - 0.06) * H                                                  # (a lower third sits just above the captions)
+        if cfg.get("clipper.graphics.safe_zones", True):
+            ex["safe"] = True
+        if cfg.get("clipper.ai_videos.graphics_avoid_faces", True) and cfg.get("clipper.graphics.timed_zones", True):
+            try:
+                ex["timed"] = facezones.timed_zones(out, float(c["at"]), float(c["len"]), engine.models_dir, W, H)
+            except Exception:  # noqa: BLE001
+                pass
+        mov, rects = polish.render_card(cfg, "card", str(c.get("title") or c["kind"]), float(c["len"]), work / f"card{k}.mov", ex, W, H, c, zones)
         if not mov:
             continue
         items.append((float(c["at"]), float(c["len"]), Path(mov)))

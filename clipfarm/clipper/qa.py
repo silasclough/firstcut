@@ -121,9 +121,61 @@ def camera_health(paths: dict[str, str], probe_s: float = 40.0) -> list[dict]:
     return rows
 
 
-def check(video: Path, target_s: float | None = None, cameras: dict[str, str] | None = None) -> dict:
+def freeze_at_end_of_piece(short_decodes: list[dict] | None, min_frames: int = 3) -> list[dict]:
+    """Issues for pieces whose picture ran out before the piece did (the cut cloned the last frame to fill it, a freeze nobody asked for).
+    short_decodes: what localproj.assemble recorded ([{"at", "frames", "file"}]); a clone of up to 2 frames is not worth a word."""
+    out = []
+    for sd in short_decodes or []:
+        n = int(sd.get("frames") or 0)
+        if n < min_frames:
+            continue
+        at = sd.get("at")
+        out.append({"level": "warn", "what": f"the picture of {sd.get('file') or 'a clip'} ran out {n} frames early" + (f" at {at:.1f} s" if at is not None else "") +
+                                             ": the last frame is held to fill the gap",
+                    "start": at, "end": None if at is None else at + n / 24.0,
+                    "do": "Look at that spot in Final Cut: the file's data ends before its header says. Trim the shot or cover it with B-roll."})
+    return out
+
+
+CLICK_JUMP = 0.15                           # a kink this big (second difference, of full scale) at a cut, AND 6x the median and 1.5x the largest kink of the sound around it, is a click (proposal; measured on `say` speech: natural kinks reach 0.13, a hard splice 0.28)
+CLICK_WINDOW_S = 0.001
+CLICK_MAX_S = 2400.0                        # the click check reads the sound of the first 40 minutes only
+
+
+def clicks(video: Path, times: list[float], jump: float = CLICK_JUMP, window: float = CLICK_WINDOW_S) -> list[tuple[float, float]]:
+    """[(time of the cut, the jump)] where the sound jumps by more than `jump` of full scale between two neighbouring samples within `window` s of a cut, and
+    much more than the sound around it does (a loud drum hit is not a click). Reads the finished file's sound."""
+    import numpy as np
+    sr = 48000
+    times = [float(t) for t in times if 0.05 < float(t) < CLICK_MAX_S]
+    if not times:
+        return []
+    p = subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "error", "-t", f"{CLICK_MAX_S:.0f}", "-i", str(video), "-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"],
+                       capture_output=True, timeout=900)
+    x = np.frombuffer(p.stdout[: len(p.stdout) // 4 * 4], dtype="<f4").astype(np.float64)
+    if x.size < 2 * sr // 100:
+        return []
+    d = np.abs(np.diff(x, 2))                                                     # the SECOND difference: a step (a splice) is a spike; a sharp voice pulse or a drum hit rises over several samples and is not
+    out: list[tuple[float, float]] = []
+    for t in times:
+        i = int(t * sr)
+        a, b = max(0, i - int(window * sr)), min(d.size, i + int(window * sr) + 1)
+        if b <= a:
+            continue
+        j = float(d[a:b].max())
+        ctx = np.concatenate([d[max(0, a - 960):a], d[b:b + 960]])                # 20 ms either side
+        base = float(np.median(ctx)) if ctx.size else 0.0
+        hi = float(ctx.max()) if ctx.size else 0.0
+        if j > jump and j > 6.0 * max(base, 1e-4) and j > 1.5 * hi:                # (louder than anything the sound itself does around it)
+            out.append((round(t, 3), round(j, 2)))
+    return out
+
+
+def check(video: Path, target_s: float | None = None, cameras: dict[str, str] | None = None, short_decodes: list[dict] | None = None,
+          max_hold: float | None = None, profile: str | None = None, audio_cuts: list[float] | None = None) -> dict:
+    hold_s = float(max_hold) if max_hold else MAX_HOLD_S                       # (the video's style says how long one picture may stay: pace.max_hold_s)
     dur = ffmpeg.duration(video)
-    issues: list[dict] = []
+    issues: list[dict] = freeze_at_end_of_piece(short_decodes)
     lufs, peak, hot = loud_and_peaks(video)
     gaps = [(a, b) for a, b in silences(video) if a > 1.0 and (b < dur - 1.5 or b - a >= 2.5)]       # (a short silence at the very end is a fade-out)
     for a, b in gaps:
@@ -131,13 +183,19 @@ def check(video: Path, target_s: float | None = None, cameras: dict[str, str] | 
                        "start": a, "end": b, "do": "Listen there in Final Cut: a camera without a microphone, or a gap between takes. Cover it with "
                                                    "room tone or music, or tighten the cut."})
     cuts = cut_times(video)
+    try:                                                         # a click at a cut: the sound jumps where two pieces meet (at the cuts the render knows, else the picture's)
+        for t, j in clicks(video, list(audio_cuts) if audio_cuts else cuts[:400])[:6]:
+            issues.append({"level": "bad", "what": f"the sound clicks at {t:.1f} s (a jump of {j:.2f} between two samples where two pieces meet)", "start": max(0.0, t - 0.05), "end": t + 0.05,
+                           "code": "click_at_cut", "do": "Listen there in Final Cut: put a few milliseconds of audio fade (or a crossfade) on that cut."})
+    except Exception as e:  # noqa: BLE001 - a check is never a reason to lose a video
+        log.debug(f"click check failed: {e}")
     marks = [0.0] + cuts + [dur]
     holds = [(y - x, x) for x, y in zip(marks, marks[1:])]
     longest, at = max(holds) if holds else (dur, 0.0)
     first = sum(1 for t in cuts if t < dur / 2)
     second = len(cuts) - first
-    if longest > MAX_HOLD_S + 2.0:
-        issues.append({"level": "warn", "what": f"the same picture for {longest:.0f} s starting at {at:.0f} s (the rule is {MAX_HOLD_S:.0f})",
+    if longest > hold_s + 2.0 and profile not in ("seminar", "interview_clip"):
+        issues.append({"level": "warn", "what": f"the same picture for {longest:.0f} s starting at {at:.0f} s (the rule is {hold_s:.0f})",
                        "start": at, "end": at + longest, "do": "Put a B-roll shot or a camera change in that stretch (Replace… on the video's page, or in Final Cut)."})
     flashes = [(x, d) for d, x in holds if d < FLASH_S and 0.2 < x < dur - FLASH_S]
     for x, d in flashes[:6]:
@@ -147,10 +205,11 @@ def check(video: Path, target_s: float | None = None, cameras: dict[str, str] | 
         if b - a >= FREEZE_S and not any(a <= c <= b for c in cuts):
             issues.append({"level": "warn", "what": f"the picture doesn't move for {b - a:.0f} s (a frozen frame, or a still card)", "start": a, "end": b,
                            "do": "If it isn't meant to be still, look at the source clip there: it may have stuttered or dropped frames."})
-    if dur > 40 and first == 0:
-        issues.append({"level": "bad", "what": "the picture never changes in the first half (no camera switch, no B-roll)", "start": 0.0, "end": dur / 2,
+    calm = profile in ("seminar", "interview_clip")                          # a lecture or an interview is meant to stay on the speaker
+    if dur > 40 and first == 0 and not calm:
+        issues.append({"level": "warn", "what": "the picture never changes in the first half (no camera switch, no B-roll)", "start": 0.0, "end": dur / 2,
                        "do": "Add B-roll to the first half, or make it again with a B-roll folder."})
-    elif dur > 40 and first * 2 < second and second >= 4:
+    elif dur > 40 and first * 2 < second and second >= 4 and not calm:
         issues.append({"level": "warn", "what": f"the first half is much quieter visually than the second ({first} picture changes against {second})",
                        "start": 0.0, "end": dur / 2, "do": "A couple more cutaways early on would keep people watching."})
     if target_s and (dur < 0.8 * target_s or dur > 1.25 * target_s):
@@ -182,3 +241,63 @@ def report_md(qa: dict) -> str:
     lines += ["", f"Length {qa['duration']} s, loudness {qa['lufs']} LUFS, {qa['cuts']} picture changes ({qa['cuts_first_half']} in the first half, "
               f"{qa['cuts_second_half']} in the second), longest unchanged picture {qa['longest_hold']} s."]
     return "\n".join(lines) + "\n"
+
+
+# ------------------------------------------------------------------------------------------------------------------ placement (frame level)
+def _rect_overlap(a: tuple, b: tuple) -> float:
+    ix = max(0.0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+    return ix * iy
+
+
+def frame_check(cards: list[dict], caption_groups: list[dict], zones: list[dict], safe: dict, W: int, H: int, captions_on_top: bool = True,
+                frame_fn=None) -> list[dict]:
+    """The frame-level look at what polish placed: for every card's midpoint and every caption group's midpoint, does anything sit where it should not?
+    cards: [{"at", "len", "kind", "rect": (x, y, w, h) | None, "full": bool, "ink": (r, g, b)}]; caption_groups: [{"t0", "t1", "rect": (x, y, w, h)}];
+    zones: placement zones with times (faces: kind "face" / "mouth_eyes"); frame_fn(t) -> RGB array (for the contrast check) or None.
+    -> issues {"level", "what", "start", "end", "code", "do"}: graphic_over_face, card_over_caption / caption_under_card, text_outside_safe_box,
+    card_touches_edge, low_contrast."""
+    from . import placement as PL
+    out: list[dict] = []
+    for c in cards:
+        rect = c.get("rect")
+        t0, t1 = float(c["at"]), float(c["at"]) + float(c["len"])
+        mid = (t0 + t1) / 2
+        what = str(c.get("kind") or "graphic")
+        if not rect or c.get("full"):
+            continue
+        for z in zones:
+            if z["kind"] in ("face", "mouth_eyes") and z["t0"] <= mid < z["t1"]:
+                a = _rect_overlap(tuple(rect), (z["box"][0], z["box"][1], z["box"][2] - z["box"][0], z["box"][3] - z["box"][1]))
+                zone_area = max(1.0, (z["box"][2] - z["box"][0]) * (z["box"][3] - z["box"][1]))
+                if a / zone_area > (0.05 if z["kind"] == "mouth_eyes" else 0.15):
+                    out.append({"level": "bad", "what": f"a {what} graphic covers a face at {mid:.1f} s", "start": t0, "end": t1, "code": "graphic_over_face",
+                                "do": "Make the graphic again so it sits beside the speaker, or shorten it."})
+                    break
+        for g in caption_groups:
+            if g["t0"] <= mid < g["t1"] and _rect_overlap(tuple(rect), tuple(g["rect"])) > 0.0:
+                code = "card_over_caption" if captions_on_top else "caption_under_card"
+                out.append({"level": "bad" if not captions_on_top else "warn", "what": f"a {what} graphic and the captions share the same place at {mid:.1f} s",
+                            "start": t0, "end": t1, "code": code, "do": "Move the graphic above the captions, or end it before the words start."})
+                break
+        if not PL.inside(tuple(rect), safe, slack=0.01 * W):
+            out.append({"level": "warn", "what": f"a {what} graphic reaches outside the safe area at {mid:.1f} s (under the app's buttons or the TV edge)",
+                        "start": t0, "end": t1, "code": "text_outside_safe_box", "do": "Place it inside the safe area."})
+        if rect[0] < 0.01 * W or rect[1] < 0.01 * H or rect[0] + rect[2] > 0.99 * W or rect[1] + rect[3] > 0.99 * H:
+            out.append({"level": "warn", "what": f"a {what} graphic touches the edge of the picture at {mid:.1f} s", "start": t0, "end": t1,
+                        "code": "card_touches_edge", "do": "Keep a margin around it."})
+        if frame_fn is not None and not c.get("panel"):                                  # (a card on its own glass or plate is judged on the plate, not the picture)
+            fr = frame_fn(mid)
+            if fr is not None:
+                ratio = PL.local_contrast(fr, tuple(rect), tuple(c.get("ink") or (255, 255, 255)))
+                if ratio < PL.CONTRAST_MIN:
+                    out.append({"level": "warn", "what": f"the words of a {what} graphic are hard to read at {mid:.1f} s (contrast {ratio:.1f}:1, wanted {PL.CONTRAST_MIN}:1)",
+                                "start": t0, "end": t1, "code": "low_contrast", "do": "Use a card with a plate, or another look for this video."})
+    for g in caption_groups:
+        mid = (g["t0"] + g["t1"]) / 2
+        for c in cards:
+            if c.get("full") and not captions_on_top and float(c["at"]) <= mid < float(c["at"]) + float(c["len"]):
+                out.append({"level": "bad", "what": f"the captions are under a full-screen card at {mid:.1f} s", "start": float(c["at"]), "end": float(c["at"]) + float(c["len"]),
+                            "code": "caption_under_card", "do": "Show the captions above the card."})
+                break
+    return out

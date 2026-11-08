@@ -16,6 +16,7 @@ from ..core.log import get_logger
 log = get_logger("clipper.photos")
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff"}
 PHOTO_DIR = re.compile(r"b[\s_-]?roll|photo|picture|still|image|pics", re.I)
+MIN_LONG_SIDE = 800                                  # (proposal) a picture outside a photo folder must be at least this big on its long side to count as a photo
 SCENE_S = 4.0                                        # a photo is offered as a 4 second scene (the planner may use less)
 VIRTUAL_BASE = 1_000_000.0                           # photo scenes live far past the footage on the shared timeline
 EFFECTS = ["zoom_in", "polaroid", "pan_right", "zoom_out", "pan_left"]            # (no film-strip border: the creator dislikes it)
@@ -30,11 +31,15 @@ def scan(folder: Path, skipped) -> list[dict]:
         if p.suffix.lower() not in PHOTO_EXT or p.name.startswith(".") or not p.is_file():
             continue
         rel = p.relative_to(folder)
-        if skipped(rel.parts[:-1]) or not any(PHOTO_DIR.search(x) for x in rel.parts[:-1]):
+        if skipped(rel.parts[:-1]):
             continue
+        named_dir = any(PHOTO_DIR.search(x) for x in rel.parts[:-1])
         if is_graphic(p, rel.parts):
             log.info(f"{rel} is a graphic, not a photo: it is never used as full-screen B-roll")
             continue
+        if not named_dir:                                                # (a photo anywhere in the folder counts when it is a real picture: big enough, not a graphic)
+            if _long_side(p) < MIN_LONG_SIDE:
+                continue
         out.append({"name": p.name, "path": str(p), "size": p.stat().st_size, "mtime": int(p.stat().st_mtime)})
     return out[:60]
 
@@ -76,8 +81,13 @@ def describe(ai, photos: list[dict], cache: dict) -> list[dict]:
 
 def scenes(photos: list[dict]) -> list[dict]:
     """The described photos as pool scenes (like B-roll scenes, with a made-up place on the timeline)."""
-    return [{"start": VIRTUAL_BASE + k * 10.0, "end": VIRTUAL_BASE + k * 10.0 + SCENE_S, "what": f"(still photo) {p['what']}",
-             "quality": max(6.0, float(p["quality"])), "file": p["name"], "photo": p["path"]} for k, p in enumerate(photos)]
+    out = []
+    for k, p in enumerate(photos):
+        sz = _size(p["path"]) if p.get("path") else None
+        out.append({"start": VIRTUAL_BASE + k * 10.0, "end": VIRTUAL_BASE + k * 10.0 + SCENE_S, "what": f"(still photo) {p['what']}",
+                    "quality": max(6.0, float(p["quality"])), "raw_quality": float(p["quality"]), "file": p["name"], "photo": p["path"],
+                    "fstart": 0.0, "fend": SCENE_S, **({"w": sz[0], "h": sz[1]} if sz else {})})
+    return out
 
 
 def _film_frame(W: int, H: int, out: Path) -> Path:
@@ -95,6 +105,16 @@ def _film_frame(W: int, H: int, out: Path) -> Path:
             d.rounded_rectangle([x, y, x + hole_w, y + hole_h], radius=3, fill=(235, 232, 220, 255))
     im.save(out)
     return out
+
+
+def _long_side(path: Path) -> int:
+    """The long side in pixels, from the file header only (0 when it cannot be read)."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return int(max(im.size))
+    except Exception:  # noqa: BLE001 - heif without a plugin, a broken file: not a photo for us
+        return 0
 
 
 def _size(path: str) -> tuple[int, int] | None:
@@ -158,5 +178,6 @@ def bake(path: str, effect: str, seconds: float, W: int, H: int, fps: float, out
     return out
 
 
-def key(path: str, effect: str, seconds: float, W: int, H: int) -> str:
-    return hashlib.sha1(json.dumps([path, effect, round(seconds, 2), W, H]).encode()).hexdigest()[:14]
+def key(path: str, effect: str, seconds: float, W: int, H: int, fps: float = 30.0, blur: bool = True) -> str:
+    extra = ([] if abs(float(fps) - 30.0) < 1e-3 else [round(float(fps), 3)]) + ([] if blur else ["nb"])        # (a clip baked at 30 fps with blur keeps its old name)
+    return hashlib.sha1(json.dumps([path, effect, round(seconds, 2), W, H, *extra]).encode()).hexdigest()[:14]

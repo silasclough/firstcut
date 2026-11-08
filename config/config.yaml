@@ -120,6 +120,12 @@ quality:
   max_script_attempts: 4
   max_stage_attempts: 3
 clipper:
+  render:
+    bitrate_mbit_per_1080p: 10
+    intermediate: auto
+    hw_decode: true
+    stall_s: 120
+    single_pass: true
   ai_videos:
     local_projects: false
     chatgpt_plan:

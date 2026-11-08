@@ -48,7 +48,8 @@ def angle_label(rel: str) -> str | None:
 def signature(f: dict) -> tuple:
     """What a camera stamps on its files: the letters of the file name, the picture size, the frame rate."""
     prefix = re.sub(r"[^A-Za-z]+", "", Path(f["name"]).stem)[:6].upper()
-    return (prefix, f.get("w"), f.get("h"), round(float(f.get("fps") or 0)))
+    family = (((f.get("facts") or {}).get("camera") or {}).get("family")) or ""          # (a GoPro and a Sony that both wrote 1080p25 files are two cameras)
+    return (prefix, f.get("w"), f.get("h"), round(float(f.get("fps") or 0)), family)
 
 
 def assign_angles(files: list[dict]) -> dict[str, str]:
@@ -286,12 +287,57 @@ def refine_offsets(items: list[dict], placed: dict[str, dict], probes: int = 5) 
 
 
 # ----------------------------------------------------------------------------------------- the group
+ANGLE_ROLES = ("a_roll", "multicam_angle")
+ON_CAMERA_MIN = 0.3                  # a file whose speaker is on camera at least this share of the time can be an angle even if its role is unsure
+
+
+def angle_candidates(files: list[dict]) -> tuple[list[dict], str]:
+    """-> (the files that may be camera angles, a plain note when the face test could not be used). A file the footage record calls B-roll can never
+    be an angle, even if its microphone heard the room; with a record, an angle is a_roll / multicam_angle or has the speaker on camera. When fewer
+    than two files pass that, the sound test alone decides (every non-B-roll file with sound), and the note says so."""
+    base = [f for f in files if f["audio"] and f["dur"] >= 15 and not f.get("broll")]
+    withrec = [f for f in base if (f.get("facts") or {}).get("role")]
+    if not withrec:
+        return base, ""                                                   # (no footage record: the sound test of before)
+    notbroll = [f for f in base if (f.get("facts") or {}).get("role") != "broll"]
+
+    def on_cam(f: dict) -> float:
+        return float((((f.get("facts") or {}).get("faces") or {}).get("on_camera_speaker_ratio")) or 0.0)
+    passing = [f for f in notbroll if (f.get("facts") or {}).get("role") in ANGLE_ROLES or on_cam(f) >= ON_CAMERA_MIN]
+    if len(passing) >= 2:
+        return passing, ""
+    return notbroll, "fewer than two files show the speaker on camera: the angles are found by sound alone"
+
+
+def angle_shows(clips: list[dict], by_name: dict[str, dict]) -> str:
+    """What an angle shows, from the footage record's measured faces: 'a medium close-up of one person', 'a wide shot of the room' ('' = unknown)."""
+    from .footage import shot_size_from_ratio
+    ratios, counts = [], []
+    for c in clips:
+        fa = (by_name.get(c["name"]) or {}).get("facts") or {}
+        fc = fa.get("faces") or {}
+        if fc.get("measured") is False and not fc.get("largest_ratio_median"):
+            continue
+        if "largest_ratio_median" in fc:
+            ratios.append(float(fc.get("largest_ratio_median") or 0.0))
+            counts.append(int(fc.get("count_median") or 0))
+    if not ratios:
+        return ""
+    r, n = float(np.median(ratios)), int(np.median(counts))
+    if n == 0 or r <= 0:
+        return "a wide shot of the room (no face large enough to see)"
+    size = (shot_size_from_ratio(r) or "").replace("_", " ")
+    who = "one person" if n == 1 else f"{n} people"
+    return f"a {size} of {who}" if size else f"{who} on screen"
+
+
 def detect_group(files: list[dict], audios: list[dict], progress=None) -> dict | None:
     """Find out whether this footage is a multicam shoot. -> a group, or None.
 
     files: the scanned videos (with "rel", "w", "h", "fps", "audio", "dur", "path"); audios: separate audio recordings.
     A group needs 2+ different cameras that really overlap in sound. Everything else stays an ordinary file."""
-    cand = [f for f in files if f["audio"] and f["dur"] >= 15 and not f.get("broll")]
+    cand, cand_note = angle_candidates(files)                       # (the footage record decides who may be an angle; the sound test then finds who overlaps)
+    by_name = {f["name"]: f for f in files}
     angle_of = assign_angles(cand)
     if len(cand) < 2 and not audios:
         return None                                              # two cameras of the SAME model look identical: only the sound can tell
@@ -318,9 +364,10 @@ def detect_group(files: list[dict], audios: list[dict], progress=None) -> dict |
     recs = [{"name": a["name"], "path": a["path"], "t0": placed["rec:" + a["name"]]["t0"], "dur": a["dur"], "tc": a.get("tc", 0.0),
              "ch": a.get("ch", 2)} for a in audios if "rec:" + a["name"] in placed]
     end = max([c["t0"] + c["dur"] for cl in angles.values() for c in cl] + [r["t0"] + r["dur"] for r in recs])
-    return {"angles": [{"id": k, "files": v} for k, v in sorted(angles.items())], "recorders": recs, "dur": round(end, 3),
-            "files": sorted(f["name"] for f in long_vids), "short": short,
-            "unmatched": sorted(f["name"] for f in cand if f["name"] not in placed)}
+    short_ok = [n for n in short if (by_name.get(n, {}).get("facts") or {}).get("role") not in ANGLE_ROLES]          # (a short a_roll clip stays a talking clip, not B-roll)
+    return {"angles": [{"id": k, "files": v, "shows": angle_shows(v, by_name)} for k, v in sorted(angles.items())], "recorders": recs, "dur": round(end, 3),
+            "files": sorted(f["name"] for f in long_vids), "short": short_ok, "short_a_roll": sorted(set(short) - set(short_ok)),
+            "unmatched": sorted(f["name"] for f in cand if f["name"] not in placed), **({"note": cand_note} if cand_note else {})}
 
 
 def split_overlaps(angles: dict[str, list[dict]]) -> dict[str, list[dict]]:
@@ -475,6 +522,14 @@ DIRECTOR_SYSTEM = (
     "The words you are directing are all spoken by the GUEST (the person being interviewed), so cut between angles that show the guest; "
     "show the interviewer only if they are the only usable angle. Avoid angles where the frame is blurry, badly framed, or the person is "
     "out of shot. Return the switches as segments covering each requested stretch.")
+
+
+def director_system(min_hold: float = MIN_HOLD, lo: float = 9.0, hi: float = 12.0) -> str:
+    """DIRECTOR_SYSTEM with the hold numbers of the video's style (the defaults give the text above)."""
+    return (DIRECTOR_SYSTEM.replace("roughly every 9 to 12 seconds (never more than 12 seconds", f"roughly every {lo:g} to {hi:g} seconds (never more than {hi:g} seconds")
+            .replace("Hold every shot at least 6 seconds", f"Hold every shot at least {min_hold:g} seconds"))
+
+
 DIRECTOR_SCHEMA = {"type": "object", "properties": {"segments": {"type": "array", "items": {"type": "object", "properties": {
     "start": {"type": "number"}, "end": {"type": "number"}, "angle": {"type": "string"}, "why": {"type": "string"}},
     "required": ["start", "end", "angle"]}}}, "required": ["segments"]}
@@ -565,7 +620,8 @@ def director_windows(stretches: list[tuple[float, float]], window_s: float = 240
     return out
 
 
-def choose_angles(ai, group: dict, stretches: list[tuple[float, float]], brief: str = "", words: list[dict] | None = None) -> list[dict]:
+def choose_angles(ai, group: dict, stretches: list[tuple[float, float]], brief: str = "", words: list[dict] | None = None,
+                  hold: tuple[float, float, float] | None = None, points: list[dict] | None = None, wide_share: float | None = None) -> list[dict]:
     """The director: -> [{"start","end","angle"}] over the kept stretches (master seconds), after enforcing hold times."""
     ids = [a["id"] for a in group["angles"]]
     segs: list[dict] = []
@@ -575,22 +631,40 @@ def choose_angles(ai, group: dict, stretches: list[tuple[float, float]], brief: 
         if not sheets:
             continue
         spoken = " ".join(w["text"] for w in (words or []) if any(a <= w["start"] < b for a, b in win))[:3000]
+        shows = [f"{a['id']}: {a['shows']}" for a in group["angles"] if a.get("shows")]
         prompt = ((f"The creator's notes: {brief}\n" if brief else "") + f"Angles: {', '.join(ids)}.\n"
+                  + (("What the cameras show (measured): " + "; ".join(shows) + ".\n") if shows else "")
                   + (f"This is part {k + 1} of {len(wins)} of the video (the rest is directed separately).\n" if len(wins) > 1 else "")
+                  + _rules_text(points, win, hold, wide_share)
                   + "Stretches to direct (seconds on the shared timeline): " + "; ".join(f"{a:.1f}-{b:.1f}" for a, b in win) +
                   f"\nWhat is said: {spoken}\nThe images are contact sheets, one per angle per batch of moments: " +
                   " | ".join(c for _, c in sheets) + ".")
         try:
-            res = ai.complete_json("multicam_director", DIRECTOR_SYSTEM, prompt, DIRECTOR_SCHEMA, images=[b for b, _ in sheets])
+            res = ai.complete_json("multicam_director", director_system(*hold) if hold else DIRECTOR_SYSTEM, prompt, DIRECTOR_SCHEMA, images=[b for b, _ in sheets])
             for s in res.data.get("segments") or []:
                 if str(s.get("angle")) in ids:
                     segs.append({"start": float(s["start"]), "end": float(s["end"]), "angle": str(s["angle"])})
         except Exception as e:  # noqa: BLE001 - fall back to the main angle for this part
             log.warning(f"the director failed for part {k + 1} ({e}); using the widest angle there")
-    return cut_list(group, stretches, segs)
+    return cut_list(group, stretches, segs, hold[0] if hold else MIN_HOLD, points=points, words=words)
 
 
-def cut_list(group: dict, stretches: list[tuple[float, float]], segs: list[dict]) -> list[dict]:
+def _rules_text(points: list[dict] | None, win: list[tuple[float, float]], hold, wide_share: float | None) -> str:
+    """The switching rules as the director's prompt text (the code enforces them again in cut_list whatever the model answers)."""
+    if not points:
+        return ""
+    times = [p["t"] for p in points if any(a <= p["t"] <= b for a, b in win)][:60]
+    if not times:
+        return ""
+    mh = hold[0] if hold else MIN_HOLD
+    wide = f" Return to the wide about {wide_share:.0%} of the time or when two people talk at once." if wide_share else ""
+    return (f"You may only change angle at these times: {', '.join(f'{t:.1f}' for t in times)}. Hold every angle at least {mh:g} s; during one person's "
+            f"monologue stay 15 to 30 s on the angle that shows them; cut to a listener for a reaction only when the speaker pauses or the listener reacts."
+            + wide + "\n")
+
+
+def cut_list(group: dict, stretches: list[tuple[float, float]], segs: list[dict], min_hold: float = MIN_HOLD,
+             points: list[dict] | None = None, words: list[dict] | None = None) -> list[dict]:
     """The AI's segments -> a clean list over exactly the kept stretches: every moment has an angle that HAS footage there, no
     shot shorter than MIN_HOLD (it joins its neighbour), and the very long ones left alone. -> [{"start","end","angle"}]."""
     ids = [a["id"] for a in group["angles"]]
@@ -613,10 +687,13 @@ def cut_list(group: dict, stretches: list[tuple[float, float]], segs: list[dict]
     i = 0
     while i < len(out):
         s = out[i]
-        if s["end"] - s["start"] < MIN_HOLD and i > 0 and abs(out[i - 1]["end"] - s["start"]) < 1e-6 \
+        if s["end"] - s["start"] < min_hold and i > 0 and abs(out[i - 1]["end"] - s["start"]) < 1e-6 \
                 and cover(angle_files(group, out[i - 1]["angle"]), (s["start"] + s["end"]) / 2):
             out[i - 1]["end"] = s["end"]
             out.pop(i)
             continue
         i += 1
+    if points or words:                                                        # the switching rules hold whatever the model answered (switching.py)
+        from . import switching as SW
+        out = SW.apply(out, points or [], words or [], min_hold)
     return out

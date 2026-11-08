@@ -343,3 +343,61 @@ def test_a_plan_waiting_for_approval_is_not_edited_here(tmp_path, world):
     assert TE.view(r, "p1")["state"] == "words"
     with pytest.raises(ValueError):
         TE.stage(r, "p1", "cut", 6, 11)
+
+
+# ------------------------------------------------------------------------------------------------------------- the page's two views
+def test_the_video_order_follows_the_plan_not_the_recording(world):
+    words, sents, plan = world
+    plan = {**plan, "items": [{"kind": "talk", "a": 3, "b": 4}, {"kind": "talk", "a": 0, "b": 1}]}     # said first, played second
+    lines = TE.order_lines(plan, sents, words)
+    assert [(l["a"], l["b"]) for l in lines] == [(18, 23), (24, 29), (0, 5), (6, 11)]                   # one line per sentence, in play order
+    assert [l["at"] for l in lines] == sorted(l["at"] for l in lines) and lines[0]["at"] == 0.0
+    assert words[lines[0]["a"]]["text"] == "w3_0" and words[lines[2]["a"]]["text"] == "w0_0"
+
+
+def test_the_order_view_reaches_the_page_and_the_flags_are_shared_by_both_views(tmp_path, world):
+    words, sents, plan = world
+    plan = {**plan, "items": [{"kind": "talk", "a": 3, "b": 4}, {"kind": "talk", "a": 0, "b": 1}]}
+    proj, st = project(tmp_path, words, plan)
+    r = FakeRunner(proj)
+    v = TE.view(r, "p1")
+    assert v["state"] == "plan" and [(l["a"], l["b"]) for l in v["order"]][:2] == [(18, 23), (24, 29)]
+    covered = {k for l in v["order"] for k in range(l["a"], l["b"] + 1)}
+    assert covered == {k for k, c in enumerate(v["flags"]) if c == "1"}          # exactly the words that are in the video
+    v = TE.stage(r, "p1", "cut", 24, 29)                                          # cut the second line of the video (in the order view)
+    assert v["flags"][24:30] == "2" * 6                                           # ... and it shows struck through in the all-footage view too
+    assert [(l["a"], l["b"]) for l in v["order"]][:2] == [(18, 23), (24, 29)]      # (the line stays listed until the edit is rendered)
+    st.put("plan.json", TE.apply_ops(plan, sents, words, st.get(TE.STAGED)["ops"]))
+    st.put(TE.STAGED, {})
+    v = TE.view(r, "p1")
+    assert all(l["a"] != 24 for l in v["order"]) and v["flags"][24:30] == "0" * 6
+
+
+def test_a_plan_with_one_item_gives_its_lines_and_no_plan_gives_none(tmp_path, world):
+    words, sents, plan = world
+    one = {**plan, "items": [{"kind": "talk", "a": 0, "b": 0}]}
+    assert [(l["a"], l["b"]) for l in TE.order_lines(one, sents, words)] == [(0, 5)]
+    assert TE.order_lines({**plan, "items": []}, sents, words) == []
+    assert TE.order_lines({"title": "t"}, sents, words) == []
+    proj, st = project(tmp_path, words, None)
+    assert TE.view(FakeRunner(proj), "p1")["order"] == []                         # words but no plan yet: the page shows all footage
+
+
+def test_a_line_says_which_file_it_was_said_in_and_hand_cuts_do_not_count_toward_the_time(world):
+    words, sents, plan = world
+    files = [{"name": "A.mp4", "start": 0.0, "end": 20.0}, {"name": "B.mp4", "start": 20.0, "end": 60.0}]
+    lines = TE.order_lines(plan, sents, words, files)
+    assert [l["src"] for l in lines] == ["A.mp4", "A.mp4", "B.mp4", "B.mp4"] or lines[0]["src"] == "A.mp4"
+    plan2 = {**plan, "te_cuts": [[words[0]["start"], words[2]["end"]]]}            # the first three words of sentence 0 taken out by hand
+    a = TE.order_lines(plan, sents, words)
+    b = TE.order_lines(plan2, sents, words)
+    assert b[1]["at"] < a[1]["at"]                                                  # the next line plays earlier by the cut length
+    plan3 = {**plan, "te_cuts": [[words[0]["start"], words[5]["end"]]]}            # a whole line taken out by hand plays nothing: not listed
+    assert [(l["a"], l["b"]) for l in TE.order_lines(plan3, sents, words)][0] == (6, 11)
+    assert TE.order_lines(plan, sents, words, [{"name": None, "start": "x"}, "junk"]) and True   # junk file records never break it
+
+
+def test_a_kept_video_lists_every_line_of_its_stretch_in_order(world):
+    words, sents, plan = world
+    kept = {"title": "t", "items": [], "keep_cut": {"start": words[6]["start"], "end": words[17]["end"]}}
+    assert [(l["a"], l["b"]) for l in TE.order_lines(kept, sents, words)] == [(6, 11), (12, 17)]

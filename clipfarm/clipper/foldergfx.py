@@ -326,8 +326,8 @@ def box_for(role: str, gw: int, gh: int, W: int, H: int, avoid: list | None = No
     if abs((gw / gh) / (W / H) - 1.0) < 0.04 and gw >= W * 0.5:
         return 0, 0, W, H
     avoid = avoid or []
-    caps_top = min([z[1] for z in avoid if z[0] <= 0.01 and z[2] >= 0.99 and z[3] >= 0.99] or [0.84])     # the captions band, when there is one
-    faces = [z for z in avoid if not (z[0] <= 0.01 and z[2] >= 0.99 and z[3] >= 0.99)]
+    caps_top = min([z[1] for z in avoid if z[0] <= 0.01 and z[2] >= 0.99] or [0.84])     # the captions band (a full-width zone), when there is one
+    faces = [z for z in avoid if not (z[0] <= 0.01 and z[2] >= 0.99)]
     mx, my = int(W * 0.06), int(H * 0.06)
     for shrink in (1.0, 0.8, 0.65):
         if role == "lower":
@@ -429,16 +429,25 @@ def logo_card(logo: str, W: int, H: int, secs: float, out: Path, fps: float = 30
     return out
 
 
-def bug_frame(logo: str, W: int, H: int, out: Path) -> Path:
-    """A small logo in the top-right corner (inside the safe area), slightly see-through, on a transparent full frame."""
+def bug_frame(logo: str, W: int, H: int, out: Path, side: str | None = None) -> Path:
+    """A small logo in a corner, inside the safe area (placement.safe_box), see-through, on a transparent full frame. 9:16: 8-10 % of the width at 60 %
+    opacity, top-left inside the platform's safe box (the top-right is where the app puts its own buttons); 16:9: about 6 % of the height, top-right
+    inside title-safe. `side` ("left"/"right") overrides the corner (a lower third uses the other side)."""
     from PIL import Image
+
+    from . import placement as PL
+    safe = PL.safe_box(W, H)
+    portrait = H > W
     im = _trim(load_rgba(logo))
-    s = min(W * 0.085 / im.width, H * 0.085 / im.height, 2.0)
+    s = min(W * 0.09 / im.width, H * 0.5 / im.height, 2.0) if portrait else min(H * 0.06 / im.height, W * 0.2 / im.width, 2.0)
     w, h = max(2, int(im.width * s)), max(2, int(im.height * s))
     im = im.resize((w, h), Image.LANCZOS)
-    im.putalpha(im.getchannel("A").point(lambda v: int(v * 0.8)))
+    im.putalpha(im.getchannel("A").point(lambda v: int(v * (0.6 if portrait else 0.7))))
     frame = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    frame.alpha_composite(im, (W - int(W * 0.045) - w, int(H * 0.05)))
+    pad = max(6, int(min(W, H) * 0.012))
+    left = (side or ("left" if portrait else "right")) == "left"
+    x = safe["x0"] + pad if left else safe["x1"] - pad - w
+    frame.alpha_composite(im, (int(x), int(safe["y0"] + pad)))
     frame.save(out)
     return out
 

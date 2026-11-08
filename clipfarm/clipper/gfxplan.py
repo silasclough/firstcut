@@ -14,12 +14,14 @@ from difflib import SequenceMatcher
 
 from ..core.log import get_logger
 from . import flow as FL
+from . import gfxcontent as GC
 from . import moments as M
 
 log = get_logger("clipper.gfxplan")
 
 SCHEMA = {"type": "object", "properties": {"graphics": {"type": "array", "items": {"type": "object", "properties": {
-    "kind": {"type": "string", "enum": ["slide", "chart", "stat", "quote", "lower", "entity", "chips", "compare", "timeline", "hub", "statement", "fullslide", "bigstat", "fullquote", "chapter", "search", "twocol", "ledger", "recap", "animation", "drawchart", "count", "kinetic"]},
+    "kind": {"type": "string", "enum": ["slide", "chart", "stat", "quote", "lower", "entity", "chips", "compare", "timeline", "hub", "statement", "fullslide", "bigstat", "fullquote", "chapter", "search", "twocol", "ledger", "recap", "animation", "drawchart", "count", "kinetic", "reference"]},
+    "ref": {"type": "string"}, "passage": {"type": "string"},
     "concept": {"type": "string"},
     "emphasis": {"type": "string"}, "number": {"type": "string"}, "answer": {"type": "string"},
     "titles": {"type": "array", "items": {"type": "string"}}, "steps": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
@@ -57,6 +59,7 @@ SYSTEM = (
     "'recap' (the bottom line: 'bullets' = 2-4 short points the speaker states near the END of the video, 'title' optional). "
     "'quote' (a short memorable line the speaker says, copied word for word, at most 16 words; who = the speaker's name if it is said); "
     "'lower' (a name and role, ONLY when someone says who they are, or is introduced - name and role as said). "
+    "'reference' (a scripture reference such as 'John 3:16', 'ref', ONLY when the speaker says it; 'passage' = the words read aloud after it, word for word, if any). "
     "'chips' (2-6 short facts as small pills when the speaker rattles off specs or attributes, e.g. 'M5 PRO', '15-CORE CPU': put them in 'bullets', 1-4 words each, "
     "as said); "
     "'compare' (two numbers set against each other, like a price range or before and after: 'labels' = the two names, 'values' = the two numbers exactly as said, "
@@ -195,21 +198,32 @@ def _validate(item: dict, spoken: str, sents: list[M.Sentence], out_len: float, 
         if words:                                                                        # the panel pops up on the very word that says the number
             hit = _find_said(re.sub(r"[^\d]", "", value), words, at)
             if hit is not None and abs(hit - at) <= 8.0:
-                out["at"] = round(max(hook_end + 0.2, hit - 0.25), 2)
+                out["at"] = round(max(hook_end + 0.2, GC.entrance(hit, sents, hook_end)), 2)
     elif kind == "quote":
         text = " ".join(str(item.get("text") or "").split())
         w = _norm(text)
-        if not (4 <= len(w) <= 18):
+        if len(w) > GC.QUOTE_MAX_WORDS:                                                   # too long to read at 3 words a second: only the clause being spoken, never a smaller type
+            cl = GC.clause(text.split())
+            if cl is None:
+                return None
+            text = " ".join(cl)
+            w = _norm(text)
+        if not (4 <= len(w) <= GC.QUOTE_MAX_WORDS):
             return None
         if " ".join(w) not in " ".join(_norm(spoken)) and max((SequenceMatcher(None, w, _norm(s.text)).find_longest_match(0, len(w), 0, len(_norm(s.text))).size
                                                               for s in sents), default=0) < 0.85 * len(w):
             return None                                                                   # not said (word for word): no quote card
+        if GC.QUOTES_VERBATIM and words:                                                  # the words of the card are the transcript's own: never reworded, only fillers may go
+            exact = GC.verbatim_text(text, words)
+            if exact is None:
+                return None
+            text = exact
         out.update({"text": text, "who": " ".join(str(item.get("who") or "").split()), "len": min(7.5, 2.6 + 0.34 * len(w))})
         if words:                                                                          # the card comes up as the speaker BEGINS the quoted words, not when the sentence around it starts
             for k in (0, 1, 2):
                 t = _find_said(" ".join(w[k:k + 4]), words, at) if len(w) >= k + 4 else None
                 if t is not None:
-                    out["at"] = round(max(hook_end + 0.2, t - 0.1 - 0.3 * k), 2)
+                    out["at"] = round(max(hook_end + 0.2, GC.entrance(t - 0.3 * k, sents, hook_end)), 2)
                     break
     elif kind == "animation":
         concept = " ".join(str(item.get("concept") or "").split())[:240]
@@ -331,6 +345,18 @@ def _validate(item: dict, spoken: str, sents: list[M.Sentence], out_len: float, 
         if not 2 <= len(text.split()) <= 7 or not cw or sum(1 for x in cw if x in spoken_words or x.rstrip("s") in spoken_words) < 0.5 * len(cw):
             return None                                                                  # a heading must be about what is said
         out.update({"text": text, "number": re.sub(r"[^\d]", "", str(item.get("number") or ""))[:2].zfill(2) if re.search(r"\d", str(item.get("number") or "")) else "", "len": 3.4})
+    elif kind == "reference":
+        ref = " ".join(str(item.get("ref") or "").split())
+        rm = re.match(r"^((?:[123] )?[A-Za-z][A-Za-z ]+?) (\d{1,3})(?::(\d{1,3})(?:-(\d{1,3}))?)?$", ref)
+        if not rm:
+            return None
+        book_ok = all(t in _norm(spoken) for t in _norm(rm.group(1))[-1:])
+        if not book_ok or not window_has_number(window, rm.group(2)):
+            return None                                                                   # a reference is only a reference when it is said
+        passage = " ".join(str(item.get("passage") or "").split())
+        if passage and " ".join(_norm(passage)) not in " ".join(_norm(spoken)):
+            passage = ""                                                                  # (the passage is shown only when it is read word for word)
+        out.update({"ref": ref, "passage": passage, "len": round(3.0 + 0.3 * len(passage.split()), 2)})
     elif kind == "lower":
         name = " ".join(str(item.get("name") or "").split())
         parts = _norm(name)
@@ -399,8 +425,26 @@ def _validate(item: dict, spoken: str, sents: list[M.Sentence], out_len: float, 
     nwords = sum(len(str(v).split()) for k, v in out.items() if k in ("text", "quote", "title", "label", "who", "role", "sub") and isinstance(v, str))
     nwords += sum(len(str(b).split()) for k in ("bullets", "chips") for b in (out.get(k) or []))
     out["len"] = max(out["len"], 1.0 + 0.3 * nwords) if kind not in ("stat",) else out["len"]
-    out["len"] = round(min(out["len"], 18.0 if out.get("times") else 12.0, out_len - out["at"] - 0.6), 2)
+    cap = 12.0
+    if out.get("times"):                                                                  # a timed card holds a second and a half after its last item is said, however slow the speaker
+        last = max(float(t) for t in out["times"])
+        out["len"] = max(out["len"], last + 1.0)
+        cap = max(18.0, last + 1.5)
+    out["len"] = round(min(out["len"], cap, out_len - out["at"] - 0.6), 2)
     return out if out["len"] >= 2.4 else None
+
+
+def window_has_number(window: str, chapter: str) -> bool:
+    """The chapter of a reference is said near the card: as digits ("3") or as a number word ("three")."""
+    from . import gfxdetect
+    toks = _norm(window)
+    for t in toks:
+        if t == chapter:
+            return True
+        v = gfxdetect.number_of(t)
+        if v is not None and float(v).is_integer() and str(int(v)) == chapter:
+            return True
+    return bool(re.search(r"\b" + re.escape(chapter) + r"\b", window))
 
 
 def _find_said(name: str, words: list[dict], near: float) -> float | None:
@@ -478,17 +522,22 @@ GAP = 0.6                                              # seconds between two gra
 
 
 def _min_len(v: dict) -> float:
+    if v.get("times"):
+        try:
+            return min(v["len"], max(float(t) for t in v["times"]) + 1.0)                 # (a card timed to speech is never cut before its last item is said)
+        except (TypeError, ValueError):
+            pass
     return v["len"] if v["kind"] in ("statement", "quote") else max(2.4, 0.6 * v["len"])        # (words that are timed to speech keep their length)
 
 
-def schedule(cards: list[dict], out_len: float) -> list[dict]:
+def schedule(cards: list[dict], out_len: float, gap: float = GAP) -> list[dict]:
     """Time order, never overlapping. When two collide the earlier one is shown a little shorter, or the later one starts a little later (not the speech-timed
     cards): a graphic is only dropped when there is truly no room, instead of whenever the speaker is quick."""
     out: list[dict] = []
     for v in sorted((dict(c) for c in cards), key=lambda x: x["at"]):
         if out:
             prev = out[-1]
-            need = prev["at"] + prev["len"] + GAP - v["at"]
+            need = prev["at"] + prev["len"] + gap - v["at"]
             if need > 0:
                 take = min(max(0.0, prev["len"] - _min_len(prev)), need)
                 prev["len"] = round(prev["len"] - take, 2)
@@ -505,14 +554,17 @@ def schedule(cards: list[dict], out_len: float) -> list[dict]:
     return out
 
 
-def plan(ai, sents: list[M.Sentence], brief: str, profile: dict, out_len: float, hook_end: float = 3.2, words: list[dict] | None = None, cfg=None) -> list[dict]:
+def plan(ai, sents: list[M.Sentence], brief: str, profile: dict, out_len: float, hook_end: float = 3.2, words: list[dict] | None = None, cfg=None,
+         style: dict | None = None, chapters: list[dict] | None = None, captions_on: bool = False, cuts: list[float] | None = None, fps: float = 24.0) -> list[dict]:
     """-> the graphics for this video, in time order, never overlapping, at most one per `graphics_per_s` seconds on average."""
-    kinds = [k for k in profile.get("kinds", []) if k in ("slide", "chart", "stat", "quote", "lower", "entity", "chips", "compare", "timeline", "hub", "statement", "fullslide", "bigstat", "fullquote", "chapter", "search", "twocol", "ledger", "recap", "animation", "drawchart", "count", "kinetic")]
+    kinds = [k for k in profile.get("kinds", []) if k in ("slide", "chart", "stat", "quote", "lower", "entity", "chips", "compare", "timeline", "hub", "statement", "fullslide", "bigstat", "fullquote", "chapter", "search", "twocol", "ledger", "recap", "animation", "drawchart", "count", "kinetic", "reference")]
     for anim, cousin in (("drawchart", "chart"), ("count", "bigstat"), ("kinetic", "statement")):     # the animated full-screen kinds (skiagfx; Pillow
         if cousin in kinds and anim not in kinds:                                               #  without it) go wherever their cousin may
             kinds.append(anim)
     if cfg is None:
         kinds = [k for k in kinds if k not in ("entity", "hub")]
+    kinds = GC.allowed_kinds(kinds, style)                                              # the genre gate: what this style's policy allows (none: names only; title: + chapters, references; informational: + numbers, lists, quotes)
+    from_outline = bool(chapters) and bool(((style or {}).get("graphics") or {}).get("chapter_cards_from_outline"))
     if "animation" in kinds:                                             # animated diagrams need Hyperframes (node + Chrome): never designed
         try:                                                             # by the AI on a Mac that can't render them (the app on a friend's Mac)
             from .animate_hf import cli as _hf
@@ -523,7 +575,7 @@ def plan(ai, sents: list[M.Sentence], brief: str, profile: dict, out_len: float,
     if not sents or not kinds or out_len < 12:
         return []
     system = SYSTEM
-    cap = max(1, int(out_len / float(profile.get("graphics_per_s", 40))))
+    cap = GC.cap_per_video(style, out_len, max(1, int(out_len / float(profile.get("graphics_per_s", 40)))))          # (style.graphics.max_per_minute, else the profile's old rule)
     ecap = max(1, int(out_len / float(profile.get("entities_per_s", 25)))) if ("entity" in kinds or "hub" in kinds) else 0           # pictures of named things have a budget of their own
     acap = min(3, max(1, int(out_len / 75))) if "animation" in kinds else 0                                                          # custom animated diagrams: slow to make, so few
     if re.search(r"graphics? test|test (?:of )?the graphics|test every (?:kind|type)", brief or "", re.I):                  # a test of the engine: one of each kind is wanted
@@ -532,7 +584,7 @@ def plan(ai, sents: list[M.Sentence], brief: str, profile: dict, out_len: float,
         system = SYSTEM.replace("Prefer FEWER, better graphics to many.", "This is a test of the graphics engine: use as many different kinds as the transcript supports, one of each.")
     lines = "\n".join(f"[{s.start:.1f}-{s.end:.1f}] {s.text}" for s in sents)
     from . import gfxdetect
-    found = gfxdetect.find(sents, words or [])                                           # moments with a recognisable shape (ranges, figures, dates, lists, claims)
+    found = gfxdetect.find(sents, words or [])                                           # moments with a recognisable shape (ranges, figures, names, lists, quotes, scripture)
     hint = ("\n\nMOMENTS THAT PROBABLY WANT A GRAPHIC (found by a scan of the transcript; use the kind named, or a better one, unless it truly does not fit):\n"
             + gfxdetect.prompt_lines(found)) if found else ""
     prompt = ((f"The creator's notes: {brief}\n" if brief else "") + f"Kind of video: {profile.get('label', 'video')}. Allowed graphics: {', '.join(kinds)}. "
@@ -545,8 +597,17 @@ def plan(ai, sents: list[M.Sentence], brief: str, profile: dict, out_len: float,
     spoken = " ".join(s.text for s in sents)
     out: list[dict] = []
     proposed = list(res.get("graphics") or [])
+    coded: list[tuple[dict, str]] = []
+    for o in found:                                                                       # numbers, names, lists, quotes and scripture found by code come first (the AI may add other kinds around them)
+        if o.get("type") and o.get("item") and o["kind"] in kinds and not (words is None):
+            coded.append((o["item"], o.get("rule") or o["type"]))
+    if coded:
+        proposed = [i for i in proposed if not (isinstance(i, dict) and any(i.get("kind") == c[0]["kind"] and abs(_at_of(i) - _at_of(c[0])) < 6.0 for c in coded))] + [c[0] for c in coded]
+    if from_outline:
+        proposed = [i for i in proposed if not (isinstance(i, dict) and i.get("kind") == "chapter")]          # the outline decides where chapters are
+    rules = {id(c[0]): c[1] for c in coded}
     for o in found:                                                                       # a recognised range the AI left out is built by code (it needs no judgement)
-        if o.get("item") and "compare" in kinds and not any(g.get("kind") in ("compare", "chart", "stat") and abs(float(g.get("at", 0) or 0) - o["at"]) < 8.0 for g in proposed):
+        if o.get("item") and o["kind"] == "compare" and "compare" in kinds and not any(g.get("kind") in ("compare", "chart", "stat") and abs(float(g.get("at", 0) or 0) - o["at"]) < 8.0 for g in proposed):
             log.info(f"graphics: adding a compare the AI missed at {o['at']:.1f}s ({o['why']})")
             proposed.append(o["item"])
     for it in sorted((i for i in proposed if isinstance(i, dict)), key=_at_of):
@@ -560,9 +621,20 @@ def plan(ai, sents: list[M.Sentence], brief: str, profile: dict, out_len: float,
         if v is None:
             log.info(f"graphics: dropped a {it.get('kind')} (not supported by the transcript): {str(it)[:240]}")
             continue
+        v["rule"] = rules.get(id(it)) or "chosen by the AI from what is said"
+        if isinstance(style, dict):                                                       # the readability lengths and the exit on a sentence end (a style asks for them)
+            v = GC.snap_exit(GC.retime(v, style, out_len), sents, cuts, out_len)
+        if GC.repeats_caption(v, words or [], captions_on):
+            log.info(f"graphics: dropped a {v['kind']} at {v['at']:.1f}s (it repeats the caption)")
+            continue
         out.append(v)
+    if from_outline and "chapter" in {"chapter", *kinds}:                                  # chapter cards sit on the outline's steps, at least ten seconds apart
+        out.extend(GC.chapter_cards(chapters, out_len, 10.0, hook_end))
     final, ne, ng, na = [], 0, 0, 0
     for v in sorted(out, key=lambda x: x["at"]):                                        # keep within each budget
+        if v["kind"] == "chapter" and from_outline:
+            final.append(v)                                                             # (outline chapters are structure, not decoration: they are outside the budget)
+            continue
         if v["kind"] in ("entity", "hub"):
             if ne >= ecap:
                 continue
@@ -575,7 +647,7 @@ def plan(ai, sents: list[M.Sentence], brief: str, profile: dict, out_len: float,
         ne += v["kind"] in ("entity", "hub")
         na += v["kind"] == "animation"
         ng += v["kind"] not in ("entity", "hub", "animation")
-    cards = schedule(final, out_len)
+    cards = schedule(final, out_len, gap=GC.min_gap(style, GAP) if isinstance(style, dict) else GAP)
     last_full, k = -99.0, 0
     keep = []
     for v in cards:                                                                      # a full-screen card at most every 14 s (the picture is the speaker; it is a cutaway, not the whole video), and neighbours get different transitions
@@ -628,6 +700,8 @@ def check_notes(cards: list[dict], sents: list[M.Sentence]) -> str:
         except Exception:  # noqa: BLE001 - a malformed card is skipped in the list, never an error
             continue
         lines.append(body.replace("\n", " "))
+        if c.get("rule"):
+            lines.append(f"  - rule: {str(c['rule'])[:160]}")
         if said:
             lines.append(said)
         shown += 1

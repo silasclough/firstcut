@@ -10,6 +10,14 @@ Timeline: one asset-clip per kept stretch of the source (every dead-air cut is a
 extend), the music as a connected clip under the first one (spanning the whole timeline) with its ducking
 as volume keyframes, each caption group as a Basic Title (font / size / colour / outline editable), and
 the optional hook title on top. All times are snapped to the sequence's frame grid, as FCP requires.
+
+One writer (build_project; build() is an adapter over it) writes, for every FirstCut project: roles on every clip (dialogue.speaker1/2/audience/
+recorder/camera, music, effects, video.B-roll, video.Speaker), chapter / to-do / plain markers inside the clip that holds them, notes and keywords on
+B-roll, switched-off alternate takes rated "reject", a second "source clips" event (role and scenes as keywords, usable stretches as favourites),
+conform-rate where a clip's rate differs from the sequence, a linear timeMap for slow motion, the punch-in as scale + position on the face, audioRate /
+channels / colour space from the probe, and the project note. fcpextras.preflight() checks the result without Final Cut; fcpxml.validate() uses
+Final Cut's (or Motion's) own DTD when this Mac has it. Lanes: 1 B-roll, 2 speaker window of a layout, hook_lane/+1 titles, +2 graphic clips,
++3 captions, -1/-2 music, -3 recorder, -4 alternate takes.
 """
 
 from __future__ import annotations
@@ -19,6 +27,8 @@ from fractions import Fraction
 from pathlib import Path
 from urllib.parse import quote
 from xml.sax.saxutils import escape as _escape
+
+from . import fcpextras as XT
 
 
 def escape(s) -> str:
@@ -43,6 +53,40 @@ def std_rate(fr) -> Fraction:
     f = float(fr or 30.0)
     best = min(STANDARD, key=lambda r: abs(float(r) - f))
     return best if abs(float(best) - f) / float(best) < 0.002 else Fraction(f).limit_denominator(1001)
+
+
+SRC_RATES = {Fraction(24000, 1001): "23.98", Fraction(24): "24", Fraction(25): "25", Fraction(30000, 1001): "29.97", Fraction(30): "30",
+             Fraction(60): "60", Fraction(48000, 1001): "47.95", Fraction(48): "48", Fraction(50): "50", Fraction(60000, 1001): "59.94"}
+
+
+def conform_rate_lines(src_fr, seq_fr, indent: str) -> list[str]:
+    """A clip whose own frame rate differs from the sequence's gets a conform-rate (Final Cut does not conform 59.94 into 29.97 by itself: it drops or
+    repeats frames silently otherwise). Rates within 0.2% of each other (30 and 29.97) are the same rate; a rate not in Final Cut's list writes nothing."""
+    try:
+        s, q = std_rate(src_fr), Fraction(seq_fr)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return []
+    if q and abs(float(s) - float(q)) / float(q) < 0.002 or s not in SRC_RATES:
+        return []
+    return [f'{indent}<conform-rate srcFrameRate="{SRC_RATES[s]}"/>']
+
+
+def zoom_transform(zoom: float, xy, seq_w: int, seq_h: int) -> str:
+    """adjust-transform attributes for a punch-in: scale about the middle, moved so `xy` (the face, fractions of the frame, y down) lands in the
+    middle of the picture, kept inside it (position is in percent of the frame HEIGHT, y up: Apple's adjust-transform)."""
+    s_ = max(1.0, XT.num(zoom, 1.0))
+    scale = f'scale="{_fmt(s_)} {_fmt(s_)}"'
+    try:
+        cx, cy = float(xy[0]), float(xy[1])
+    except (TypeError, ValueError, IndexError):
+        return scale
+    if not (XT.num(cx, -1) >= 0 and XT.num(cy, -1) >= 0):
+        return scale
+    lo, hi = 0.5 / s_, 1 - 0.5 / s_
+    cx, cy = min(max(cx, lo), hi), min(max(cy, lo), hi)
+    px = -(cx - 0.5) * s_ * (seq_w / max(1, seq_h)) * 100
+    py = (cy - 0.5) * s_ * 100
+    return f'position="{_fmt(px)} {_fmt(py)}" {scale}'
 
 
 class Clock:
@@ -99,12 +143,12 @@ def graphic_position(text: str, kind: str, seq_w: int, seq_h: int) -> tuple[tupl
 
 
 def _title_lines(clk, ref: str, lane: int, offset_s: str, dur_s: str, text: str, kind: str, seq_w: int, seq_h: int, style: "CaptionStyle", ts: int,
-                 rect=None, theme: str | None = None, off: bool = False) -> list[str]:
+                 rect=None, theme: str | None = None, off: bool = False, name: str | None = None) -> list[str]:
     """One editable Basic Title in Final Cut for a graphic of the finished video (hook card, key point, end card), where the video has it.
     `off`: the graphic is also a rendered clip (the exact look of the app) laid over the picture, so this editable copy is switched off (enabled="0"):
     turn it on in Final Cut, and turn the clip off, to change the words."""
     g = graphic_title(text, kind, seq_w, seq_h, rect, theme)
-    name = {"hook": "Hook title", "end": "End card"}.get(kind, "Key point") + (" (editable copy, switched off)" if off else "")
+    name = (name or {"hook": "Hook title", "end": "End card"}.get(kind, "Key point")) + (" (editable copy, switched off)" if off else "")
     enabled = ' enabled="0"' if off else ""
     return [f'              <title ref="{ref}" lane="{lane}" offset="{offset_s}" name="{escape(name)}" duration="{dur_s}"{enabled}>',
             f'                <param name="Position" key="{TITLE_POSITION_KEY}" value="{_fmt(g["pos"][0])} {_fmt(g["pos"][1])}"/>',
@@ -146,6 +190,19 @@ def _gain_at(keyframes: list[tuple[float, float]], t: float, default: float = 0.
         if t0 <= t <= t1:
             return v0 + (v1 - v0) * ((t - t0) / (t1 - t0) if t1 > t0 else 0.0)
     return keyframes[-1][1]
+
+
+def _audio_note(it: dict) -> list[str]:
+    """A note on a spine clip whose voice was cleaned in the finished video (Final Cut has the raw recording)."""
+    return ['              <note>voice cleaned in the MP4; raw here</note>'] if it.get("cleaned") else []
+
+
+def _audio_lines(it: dict) -> list[str]:
+    """For a multicam clip: the note, then the speech-level gain of the stretch as Adjust Volume (they come before the angles in the DTD)."""
+    out = _audio_note(it)
+    if it.get("gain_db"):
+        out.append(f'              <adjust-volume amount="{_fmt(it["gain_db"])}dB"/>')
+    return out
 
 
 def _music_lines(clk: "Clock", music: "MusicBed", ref: str, offset_f: int, total_f: int) -> list[str]:
@@ -282,120 +339,21 @@ def build(name: str, source: Media, segments: list[tuple[float, float]], seq_w: 
           captions: list[tuple[float, float, str]] | None = None, music: MusicBed | None = None,
           hook: tuple[str, float] | None = None, style: CaptionStyle | None = None,
           source_colorspace: str = "1-1-1 (Rec. 709)", cutaways: list[tuple[float, float, float]] | None = None,
-          titles: list[dict] | None = None, overlays: list[dict] | None = None, subs: list[tuple[float, float, str]] | None = None) -> str:
-    """segments: kept (source_in, source_out) stretches in order. captions: (timeline_start, timeline_end, text) drawn as titles (only
-    when the video has them burned in). subs: the same words as REAL captions, always (Final Cut shows them when its captions are on).
-    cutaways: (timeline_start, source_in, length) B-roll pictures laid over the talking (audio muted), on lane 1;
-    captions and the hook move up a lane to stay on top of them."""
-    clk = Clock(fps)
-    style = style or CaptionStyle()
-    captions = captions or []
-    cutaways = sorted(cutaways or [])
-    titles = sorted(titles or [], key=lambda t: t["at"])
-    cap_lane, hook_lane = (2, 3) if cutaways else (1, 2)
-    subs = caption_spans(subs)
-    src_fps = Clock(source.fps)
-    out: list[str] = []
-    A = out.append
-    A('<?xml version="1.0" encoding="UTF-8"?>')
-    A("<!DOCTYPE fcpxml>")
-    A(f'<fcpxml version="{VERSION}">')
-    A("  <resources>")
-    A(f'    <format id="r1" frameDuration="{clk.at(1)}" width="{seq_w}" height="{seq_h}" colorSpace="1-1-1 (Rec. 709)"/>')
-    A(f'    <format id="r2" frameDuration="{src_fps.at(1)}" width="{source.width}" height="{source.height}" '
-      f'colorSpace="{source_colorspace}"/>')
-    A(f'    <asset id="r3" name="{escape(Path(source.path).stem)}" start="0s" duration="{src_fps.t(source.duration)}" '
-      f'hasVideo="{int(source.has_video)}" format="r2" videoSources="{int(source.has_video)}" '
-      f'hasAudio="{int(source.has_audio)}" audioSources="{int(source.has_audio)}" '
-      f'audioChannels="{source.audio_channels}" audioRate="{source.audio_rate}">')
-    A(f'      <media-rep kind="original-media" src="{escape(file_url(source.path))}"/>')
-    A("    </asset>")
-    if music:
-        A(f'    <asset id="r4" name="{escape(music.name)}" start="0s" duration="{clk.t(music.duration)}" hasAudio="1" '
-          f'audioSources="1" audioChannels="2" audioRate="44100">')
-        A(f'      <media-rep kind="original-media" src="{escape(file_url(music.path))}"/>')
-        A("    </asset>")
-    if captions or hook or titles:
-        A(f'    <effect id="r5" name="Basic Title" uid="{BASIC_TITLE_UID}"/>')
-    A("  </resources>")
-
-    # timeline layout: frame-exact offsets so consecutive clips butt together
-    clips, pos = [], 0
+          titles: list[dict] | None = None, overlays: list[dict] | None = None, subs: list[tuple[float, float, str]] | None = None, **extra) -> str:
+    """The project of ONE joined source file: an adapter over build_project (the one writer), so every feature exists once.
+    segments: kept (source_in, source_out) stretches in order. cutaways: (timeline_start, source_in, length) B-roll pictures of the same file laid
+    over the talking (their sound off). captions: (start, end, text) drawn as titles (only when the video has them burned in); subs: the same
+    words as REAL captions, always. extra: markers, project_note, alt_takes, source_clips, sync_clip, version (see build_project)."""
+    items, pos = [], 0.0
     for a, b in segments:
-        start_f, len_f = clk.frames(a), max(1, clk.frames(b) - clk.frames(a))
-        clips.append((pos, start_f, len_f))
-        pos += len_f
-    total_f = pos
-
-    A("  <library>")
-    A(f'    <event name="{escape(event_name(name))}">')
-    A(f'      <project name="{escape(name)}">')
-    A(f'        <sequence format="r1" duration="{clk.at(total_f)}" tcStart="0s" tcFormat="NDF" '
-      f'audioLayout="stereo" audioRate="48k">')
-    A("          <spine>")
-    ts = 0
-    for i, (off_f, start_f, len_f) in enumerate(clips):
-        A(f'            <asset-clip ref="r3" offset="{clk.at(off_f)}" name="{escape(Path(source.path).stem)} {i + 1}" '
-          f'start="{clk.at(start_f)}" duration="{clk.at(len_f)}" format="r2" tcFormat="NDF" audioRole="dialogue">')
-        if seq_w != source.width or seq_h != source.height:
-            A('              <adjust-conform type="fill"/>')
-        if i == 0 and music:                          # connected under clip 1, running the whole timeline
-            out.extend(_music_lines(clk, music, "r4", start_f, total_f))
-        for (c_at, c_src, c_len) in cutaways:                 # B-roll that starts inside this clip rides on it (picture only)
-            c_f = clk.frames(c_at)
-            if not (off_f <= c_f < off_f + len_f):
-                continue
-            A(f'              <asset-clip ref="r3" lane="1" offset="{clk.at(start_f + (c_f - off_f))}" name="B-roll" '
-              f'start="{clk.at(clk.frames(c_src))}" duration="{clk.at(max(1, clk.frames(c_len)))}" format="r2" tcFormat="NDF">')
-            if seq_w != source.width or seq_h != source.height:
-                A('                <adjust-conform type="fill"/>')
-            A('                <adjust-volume amount="-96dB"/>')
-            A("              </asset-clip>")
-        if i == 0 and hook:
-            text, secs = hook
-            ts += 1
-            A(f'              <title ref="r5" lane="{hook_lane}" offset="{clk.at(start_f)}" name="Hook title" '
-              f'duration="{clk.t(min(secs, total_f * float(clk.frame)))}">')
-            A(f'                <param name="Position" key="{TITLE_POSITION_KEY}" value="0 {_fmt(seq_h * 0.36)}"/>')
-            A(f'                <text><text-style ref="ts{ts}">{escape(text)}</text-style></text>')
-            A(f'                <text-style-def id="ts{ts}"><text-style font="Arial Black" fontSize="{_fmt(style.size * 0.8)}" '
-              f'fontColor="0.04 0.04 0.04 1" backgroundColor="1 1 1 1" alignment="center"/></text-style-def>')
-            A("              </title>")
-        seg_a, seg_b = off_f, off_f + len_f
-        for t in titles:                              # hook / key points / end card that START inside this clip ride on it
-            t_f = clk.frames(t["at"])
-            if seg_a <= t_f < seg_b:
-                ts += 1
-                out.extend(_title_lines(clk, "r5", hook_lane + (0 if t["kind"] == "hook" else 1), clk.at(start_f + (t_f - seg_a)),
-                                        clk.t(t["len"]), t["text"], t["kind"], seq_w, seq_h, style, ts, t.get("rect"), t.get("theme"), bool(t.get("off"))))
-        for (c0, c1, text) in captions:               # captions that START inside this clip ride on it
-            c0f, c1f = clk.frames(c0), clk.frames(c1)
-            if not (seg_a <= c0f < seg_b):
-                continue
-            dur_f = max(1, min(c1f, seg_b + 2 * clk.frames(1.0)) - c0f)
-            ts += 1
-            words = text.upper() if style.uppercase else text
-            A(f'              <title ref="r5" lane="{cap_lane}" offset="{clk.at(start_f + (c0f - seg_a))}" name="Caption" '
-              f'duration="{clk.at(dur_f)}">')
-            A(f'                <param name="Position" key="{TITLE_POSITION_KEY}" value="0 {_fmt(style.y * seq_h)}"/>')
-            A(f'                <text><text-style ref="ts{ts}">{escape(words)}</text-style></text>')
-            A(f'                <text-style-def id="ts{ts}"><text-style font="{escape(style.font)}" '
-              f'fontSize="{_fmt(style.size)}" fontColor="{style.color}" bold="1" strokeColor="{style.stroke}" '
-              f'strokeWidth="{_fmt(style.stroke_width)}" alignment="center"/></text-style-def>')
-            A("              </title>")
-        for (c0, c1, text) in subs:                   # real captions that START inside this clip ride on it
-            c0f = clk.frames(c0)
-            if seg_a <= c0f < seg_b:
-                ts += 1
-                out.extend(_caption_lines(hook_lane + 3, clk.at(start_f + (c0f - seg_a)), clk.at(max(1, clk.frames(c1) - c0f)), text, ts))
-        A("            </asset-clip>")
-    A("          </spine>")
-    A("        </sequence>")
-    A("      </project>")
-    A("    </event>")
-    A("  </library>")
-    A("</fcpxml>")
-    return "\n".join(out) + "\n"
+        items.append({"kind": "clip", "out": pos, "dur": max(0.0, b - a), "path": source.path, "start": a, "w": source.width, "h": source.height,
+                      "fps": float(source.fps), "audio": source.has_audio, "file_dur": source.duration, "tc": 0.0,
+                      "ar": source.audio_rate, "ach": source.audio_channels})
+        pos += max(0.0, b - a)
+    cuts = [{"at": at, "len": ln, "path": source.path, "start": src, "w": source.width, "h": source.height, "fps": float(source.fps),
+             "file_dur": source.duration} for at, src, ln in (cutaways or [])]
+    return build_project(name, seq_w, seq_h, fps, None, items, captions=captions, music=music, hook=hook, style=style, cutaways=cuts,
+                         source_colorspace=source_colorspace, titles=titles, overlays=overlays, subs=subs, **extra)
 
 
 def validate(xml_path: Path) -> list[str]:
@@ -403,7 +361,12 @@ def validate(xml_path: Path) -> list[str]:
     import shutil
     import subprocess
     import tempfile
-    dtd = DTD_DIR / f"FCPXMLv{VERSION.replace('.', '_')}.dtd"
+    import re
+    try:                                                  # the DTD of the version the file says (clipper.fcpxml_version can move to 1.13)
+        ver = re.search(r'<fcpxml version="([\d.]+)"', Path(xml_path).read_text()[:400]).group(1)
+    except (OSError, AttributeError):
+        ver = VERSION
+    dtd = DTD_DIR / f"FCPXMLv{ver.replace('.', '_')}.dtd"
     if not dtd.exists():                                  # (Final Cut installed under another name, e.g. "Final Cut Pro Creator Studio", or only Motion)
         import glob
         name = f"Contents/Frameworks/Interchange.framework/Versions/A/Resources/{dtd.name}"
@@ -416,6 +379,15 @@ def validate(xml_path: Path) -> list[str]:
         r = subprocess.run(["xmllint", "--noout", "--dtdvalid", str(local), str(Path(xml_path).resolve())],
                            capture_output=True, text=True, cwd=tmp)
     return [ln for ln in r.stderr.splitlines() if ln.strip()] if r.returncode else []
+
+
+def has_dtd() -> bool:
+    """True when Final Cut's (or Motion's) own DTD and xmllint are on this Mac: validate() can then really check a project."""
+    import glob
+    import shutil
+    name = f"Contents/Frameworks/Interchange.framework/Versions/A/Resources/FCPXMLv{VERSION.replace('.', '_')}.dtd"
+    return bool(shutil.which("xmllint")) and (bool((DTD_DIR / f"FCPXMLv{VERSION.replace('.', '_')}.dtd").exists())
+                                                or bool(glob.glob(f"/Applications/Final Cut Pro*.app/{name}") or glob.glob(f"/Applications/Motion*.app/{name}")))
 
 
 def colorspace_of(video_stream: dict) -> str:
@@ -437,12 +409,14 @@ def _res_id(prefix: str, n: int) -> str:
 
 
 
-def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict | None, items: list[dict],
+def build_project(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict | None, items: list[dict],
                    captions: list[tuple[float, float, str]] | None = None, music: MusicBed | None = None,
                    hook: tuple[str, float] | None = None, style: CaptionStyle | None = None,
                    cutaways: list[dict] | None = None, source_colorspace: str = "1-1-1 (Rec. 709)", titles: list[dict] | None = None,
                    overlays: list[dict] | None = None, subs: list[tuple[float, float, str]] | None = None,
-                   transitions: list[dict] | None = None) -> str:
+                   transitions: list[dict] | None = None, markers: list[dict] | None = None, project_note: str | None = None,
+                   alt_takes: list[dict] | None = None, source_clips: list[dict] | None = None, sync_clip: bool = False,
+                   version: str | None = None) -> str:
     """A Final Cut project built from the ORIGINAL files. With a multicam shoot (`group`) the main timeline is a REAL multicam clip:
     every camera is an angle of one multicam media, synced where the sound lined up, and each angle switch is an ordinary cut of that
     clip - so any switch can be changed afterwards with the angle viewer. Without one (group None), it is plain clips of the original
@@ -459,8 +433,18 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
     subs: the words as REAL captions (always; Final Cut shows them when View › Captions is on).
     transitions (transitions.py): "dissolve" = a stock Cross Dissolve (with Audio Crossfade) on the spine, centred on the cut; "broll" = that B-roll
       clip runs half a transition longer each side and its opacity ramps in and out; "fade_in" / "fade_out" = opacity ramps over black on the
-      first / last clip. Nothing moves: the sequence is exactly as long as without them."""
+      first / last clip. Nothing moves: the sequence is exactly as long as without them.
+    markers (fcpextras.markers_from_plan): chapter / to-do / plain markers on the finished video's clock, written inside the clip that holds them.
+    project_note: the sequence's note. alt_takes: [{"kept": {"path", "start"}, "path", "start", "dur", "w", "h", "fps", "note"}] the takes that were not
+      used, as switched-off connected clips (lane -4) under the kept one, rated "reject". source_clips: [{"path", "dur", "w", "h", "fps", "role",
+      "keywords", "scenes": [{"start", "end", "what"}], "usable": [(a, b)], "reject": [(a, b, why)]}] -> a second event with every footage file, its
+      role and scenes as keywords, usable stretches as favourites and unusable ones as rejects.
+    sync_clip: a recorder's sound under a camera clip is one sync-clip (the camera's own sound deactivated) instead of a loose clip on lane -3
+      with the camera muted. (Off by default: the least-tested form of the format; see the WP13 notes.)
+    LANES: 1 B-roll; 2 speaker window of a layout; hook_lane/hook_lane+1 titles; +2 graphic clips; +3 captions; -1 / -2 music; -3 recorder; -4 alternate takes."""
     from . import transitions as TR
+    markers = XT.normalise_markers(markers)
+    used_markers: set[int] = set()
     clk = Clock(fps)
     style = style or CaptionStyle()
     captions = captions or []
@@ -478,6 +462,14 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
         if c["len"] >= 0.3 and c["start"] >= 0:
             safe.append(c)
     cutaways = safe
+    prog = sum(max(1, clk.frames(i["dur"])) for i in items) * float(clk.frame)          # (the program's length: nothing may run past it)
+    if prog > 0:
+        cutaways = [{**c, "len": min(c["len"], prog - c["at"])} for c in cutaways if c["at"] < prog - 0.1]
+        cutaways = [c for c in cutaways if c["len"] >= 0.3]
+        captions = [(a, min(b, prog), t) for a, b, t in captions if a < prog - 0.04]
+        subs = [(a, min(b, prog), t) for a, b, t in (subs or []) if a < prog - 0.04]
+        overlays = [{**o, "len": min(o["len"], prog - o["at"])} for o in (overlays or []) if o["at"] < prog - 0.1]
+        titles = [{**t, **({"dur": min(t["dur"], prog - t["at"])} if t.get("dur") else {})} for t in (titles or []) if t["at"] < prog - 0.04]
     titles = sorted(titles or [], key=lambda t: t["at"])
     laid = any(c.get("layout") for c in cutaways)
     cap_lane, hook_lane = ((3, 4) if laid else (2, 3)) if cutaways else (1, 2)    # (a layout's speaker window is lane 2)
@@ -493,29 +485,33 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
     assets: dict[str, str] = {}
     asset_lines: list[str] = []
 
-    def fmt(w, h, fr) -> str:
-        key = (int(w), int(h), std_rate(fr))
+    def fmt(w, h, fr, cs: str | None = None) -> str:
+        key = (int(w), int(h), std_rate(fr), cs or source_colorspace)
         if key not in fmt_ids:
             fmt_ids[key] = f"f{len(fmt_ids) + 2}"
         return fmt_ids[key]
+
+    cs_of: dict[str, str] = {}                                   # path -> that file's colour space (from its probe); the default is the caller's
 
     def tcf(path: str) -> str:
         return "DF" if dfs.get(path) else "NDF"
 
     def asset(path: str, dur: float, w: int, h: int, fr: float, has_video: bool = True, has_audio: bool = True, tc: float = 0.0,
-              df: bool = False, channels: int = 2) -> str:
+              df: bool = False, channels: int = 2, rate: int = 48000, cs: str | None = None) -> str:
         if path in assets:
             return assets[path]
+        if cs:
+            cs_of[path] = cs
         aid = f"a{len(assets) + 1}"
         assets[path] = aid
         tcs[path] = float(tc or 0.0)
         dfs[path] = bool(df)
         sf = clocks[path] = Clock(std_rate(fr)) if (has_video and fr) else clk
-        f = fmt(w, h, fr) if has_video else None
+        f = fmt(w, h, fr, cs) if has_video else None
         fmt_attr = f' format="{f}"' if f else ""
         asset_lines.append(f'    <asset id="{aid}" name="{escape(Path(path).stem)}" start="{sf.t(tc or 0.0)}" duration="{sf.t(dur)}" '
                            f'hasVideo="{int(has_video)}"{fmt_attr} videoSources="{int(has_video)}" '
-                           f'hasAudio="{int(has_audio)}" audioSources="{int(has_audio)}" audioChannels="{int(channels or 2)}" audioRate="48000">')
+                           f'hasAudio="{int(has_audio)}" audioSources="{int(has_audio)}" audioChannels="{int(channels or 2)}" audioRate="{int(rate or 48000)}">')
         asset_lines.append(f'      <media-rep kind="original-media" src="{escape(file_url(path))}"/>')
         asset_lines.append("    </asset>")
         return aid
@@ -539,9 +535,10 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
         mc_lines.append(f'        <mc-angle name="{escape(ang["id"])}" angleID="{escape(ang["id"])}">')
 
         def video_line(c, offset):
-            aid = asset(c["path"], c["dur"], c["w"], c["h"], c["fps"], tc=c.get("tc", 0.0), df=c.get("tc_df", False))
+            aid = asset(c["path"], c["dur"], c["w"], c["h"], c["fps"], tc=c.get("tc", 0.0), df=c.get("tc_df", False), rate=c.get("ar") or 48000,
+                        channels=c.get("ach") or 2, cs=c.get("cs"))
             return (f'          <asset-clip ref="{aid}" offset="{offset}" name="{escape(Path(c["path"]).stem)}" '
-                    f'start="{clocks[c["path"]].t(c.get("tc", 0.0))}" duration="{clk.t(c["dur"])}" format="{fmt(c["w"], c["h"], c["fps"])}" '
+                    f'start="{clocks[c["path"]].t(c.get("tc", 0.0))}" duration="{clk.t(c["dur"])}" format="{fmt(c["w"], c["h"], c["fps"], cs_of.get(c["path"]))}" '
                     f'tcFormat="{tcf(c["path"])}"/>')
         angle_clips(ang["files"], video_line)
         mc_lines.append("        </mc-angle>")
@@ -558,14 +555,22 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
     for it in items:
         if it["kind"] == "clip":
             asset(it["path"], it.get("file_dur") or (it["start"] + it["dur"] + 1), it["w"], it["h"], it["fps"], has_audio=bool(it.get("audio", True)),
-                  tc=it.get("tc", 0.0), df=it.get("tc_df", False))
+                  tc=it.get("tc", 0.0), df=it.get("tc_df", False), rate=it.get("ar") or 48000, channels=it.get("ach") or 2, cs=it.get("cs"))
             if it.get("aud"):
                 au = it["aud"]
                 asset(au["path"], au.get("dur") or (au["start"] + it["dur"] + 1), 0, 0, 0, has_video=False, tc=au.get("tc", 0.0),
                       channels=au.get("ch") or 2)
+    sources = [sc for sc in (source_clips or []) if isinstance(sc, dict) and sc.get("path") and sc.get("w") and sc.get("h")]
+    for sc in sources:                                           # every footage file, for the "source clips" event (a file the program never used too)
+        asset(sc["path"], XT.num(sc.get("dur"), 1.0) or 1.0, sc["w"], sc["h"], sc.get("fps") or 30, has_audio=bool(sc.get("audio", True)), tc=sc.get("tc", 0.0),
+              df=sc.get("tc_df", False), rate=sc.get("ar") or 48000, channels=sc.get("ach") or 2, cs=sc.get("cs"))
+    for alt in alt_takes or []:                                  # (the alternate takes' files: usually the same file as the kept take)
+        if isinstance(alt, dict) and alt.get("path") and alt.get("w") and alt.get("h"):
+            asset(alt["path"], alt.get("file_dur") or (XT.num(alt.get("start")) + XT.num(alt.get("dur")) + 1), alt["w"], alt["h"], alt.get("fps") or 30,
+                  tc=alt.get("tc", 0.0), df=alt.get("tc_df", False), rate=alt.get("ar") or 48000, channels=alt.get("ach") or 2, cs=alt.get("cs"))
     for c in cutaways:
-        asset(c["path"], c.get("file_dur") or (c["start"] + c["len"] + 1), c["w"], c["h"], c["fps"], has_audio=False, tc=c.get("tc", 0.0),
-              df=c.get("tc_df", False))
+        asset(c["path"], c.get("file_dur") or (c["start"] + c["len"] + 1), c["w"], c["h"], c["fps"], has_audio=bool(c.get("nat_db") is not None),
+              tc=c.get("tc", 0.0), df=c.get("tc_df", False), rate=c.get("ar") or 48000, channels=c.get("ach") or 2, cs=c.get("cs"))
     overlays = sorted(overlays or [], key=lambda o: o["at"])                    # slides / charts / quotes: transparent clips of their own length
     for o in overlays:
         asset(o["path"], o["len"] + 0.05, o["w"], o["h"], o["fps"], has_audio=False)
@@ -573,11 +578,11 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
     total = sum(max(1, clk.frames(i["dur"])) for i in items)
     A('<?xml version="1.0" encoding="UTF-8"?>')
     A("<!DOCTYPE fcpxml>")
-    A(f'<fcpxml version="{VERSION}">')
+    A(f'<fcpxml version="{version or VERSION}">')
     A("  <resources>")
     A(f'    <format id="r1" frameDuration="{clk.at(1)}" width="{seq_w}" height="{seq_h}" colorSpace="1-1-1 (Rec. 709)"/>')
-    for (w, h, fr), fid in fmt_ids.items():
-        A(f'    <format id="{fid}" frameDuration="{Clock(fr).at(1)}" width="{w}" height="{h}" colorSpace="{source_colorspace}"/>')
+    for (w, h, fr, cs), fid in fmt_ids.items():
+        A(f'    <format id="{fid}" frameDuration="{Clock(fr).at(1)}" width="{w}" height="{h}" colorSpace="{cs}"/>')
     out.extend(asset_lines)
     if angles:
         A(f'    <media id="mc1" name="{escape(name)} multicam">')
@@ -600,6 +605,8 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
     A(f'    <event name="{escape(event_name(name))}">')
     A(f'      <project name="{escape(name)}">')
     A(f'        <sequence format="r1" duration="{clk.at(total)}" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">')
+    if project_note:
+        A(f"          <note>{escape(project_note)}</note>")
     A("          <spine>")
     pos = 0
     ts = 0
@@ -621,9 +628,11 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
             ramp += [(0, 0.0), (fade_in["n"], 1.0)]
         if idx == len(items) - 1 and fade_out and d_f > fade_out["n"]:
             ramp += [(d_f - fade_out["n"], 1.0), (d_f, 0.0)]
+        synced, tagname = False, "asset-clip"
         if it["kind"] == "mc" and angles:
             t_f = clk.frames(it["t"])
             A(f'            <mc-clip ref="mc1" offset="{clk.at(off_f)}" name="{escape(name)}" start="{clk.at(t_f)}" duration="{clk.at(d_f)}">')
+            out.extend(_audio_lines(it))                              # (the note and the speech-level gain of this stretch, as in the finished video)
             vid = it["video"]
             vang = next((a for a in angles if a["id"] == vid), None)
             ref = vang["files"][0] if vang and vang["files"] else None
@@ -634,7 +643,7 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
                 if conform:
                     A('                <adjust-conform type="fill"/>')
                 if it.get("zoom"):                                  # a punch-in that hides a jump cut (the picture's own transform lives in the angle's source)
-                    A(f'                <adjust-transform scale="{_fmt(it["zoom"])} {_fmt(it["zoom"])}"/>')
+                    A(f'                <adjust-transform {zoom_transform(it["zoom"], it.get("zoom_xy"), seq_w, seq_h)}/>')
                 if ramp:
                     out.extend(_blend_lines([(clk.at(t_f + a), v) for a, v in ramp], "                "))
                 A("              </mc-source>")
@@ -647,23 +656,53 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
         else:
             aid = assets[it["path"]]
             st_f = clk.frames(it["start"] + tcs.get(it["path"], 0.0))
-            A(f'            <asset-clip ref="{aid}" offset="{clk.at(off_f)}" name="{escape(Path(it["path"]).stem)}" start="{clk.at(st_f)}" '
-              f'duration="{clk.at(d_f)}" format="{fmt(it["w"], it["h"], it["fps"])}" tcFormat="{tcf(it["path"])}">')
+            synced = bool(sync_clip and it.get("aud") and it.get("audio", True))
+            who_role = XT.audio_role("dialogue", it.get("who"))
+            tagname = "sync-clip" if synced else "asset-clip"
+            role_attr = "" if synced else f' audioRole="{who_role}"'
+            ref_attr = "" if synced else f'ref="{aid}" '
+            sync_name = " (synced)" if synced else ""
+            A(f'            <{tagname} {ref_attr}offset="{clk.at(off_f)}" name="{escape(Path(it["path"]).stem)}{sync_name}" '
+              f'start="{clocks[it["path"]].t(it["start"] + tcs.get(it["path"], 0.0))}" duration="{clk.at(d_f)}" format="{fmt(it["w"], it["h"], it["fps"], cs_of.get(it["path"]))}" tcFormat="{tcf(it["path"])}"{role_attr}>')
+            out.extend(_audio_note(it))
+            out.extend(conform_rate_lines(it["fps"], fps, "              ") if not synced else [])
             if it["w"] != seq_w or it["h"] != seq_h:
                 A('              <adjust-conform type="fill"/>')
             if it.get("zoom"):
-                A(f'              <adjust-transform scale="{_fmt(it["zoom"])} {_fmt(it["zoom"])}"/>')
+                A(f'              <adjust-transform {zoom_transform(it["zoom"], it.get("zoom_xy"), seq_w, seq_h)}/>')
             if ramp:
                 out.extend(_blend_lines([(clk.at(st_f + a), v) for a, v in ramp], "              "))
-            if it.get("aud") and it.get("audio", True):
+            if it.get("aud") and it.get("audio", True) and not synced:
                 A('              <adjust-volume amount="-96dB"/>')                 # the synced recording below is the sound
+            elif it.get("gain_db"):
+                A(f'              <adjust-volume amount="{_fmt(it["gain_db"])}dB"/>')   # the speech-level gain of this stretch (the finished video has it too)
             start_inner = st_f
         if idx == 0 and music:
             out.extend(_music_lines(clk, music, "am", start_inner, total))
         if it["kind"] == "clip" and it.get("aud"):                              # the clean recording, in sync, under this clip
             au = it["aud"]
+            rec_start = clk.t(au["start"] + float(au.get("tc") or 0.0))
+            if synced:                                                          # the camera clip is the sync clip's own spine; its sound is deactivated, not muted
+                A(f'              <spine>')
+                A(f'                <asset-clip ref="{aid}" offset="{clk.at(start_inner)}" name="{escape(Path(it["path"]).stem)}" start="{clk.at(start_inner)}" '
+                  f'duration="{clk.at(d_f)}" audioRole="dialogue.camera"/>')
+                A(f'              </spine>')
+            src_attr = ' srcEnable="audio"' if synced else ""
             A(f'              <asset-clip ref="{assets[au["path"]]}" lane="-3" offset="{clk.at(start_inner)}" name="{escape(Path(au["path"]).stem)}" '
-              f'start="{clk.t(au["start"] + float(au.get("tc") or 0.0))}" duration="{clk.at(d_f)}" audioRole="dialogue"/>')
+              f'start="{rec_start}" duration="{clk.at(d_f)}" audioRole="dialogue.recorder"{src_attr}/>')
+        if it["kind"] == "clip":                                                 # takes that were not used: switched-off clips under the kept one
+            for alt in alt_takes or []:
+                kept = alt.get("kept") or {}
+                k0 = XT.num(kept.get("start"), -1.0)
+                if kept.get("path") != it["path"] or not (it["start"] - 1e-3 <= k0 < it["start"] + it["dur"]) or alt.get("path") not in assets:
+                    continue
+                a_len = max(1, min(clk.frames(XT.num(alt.get("dur"), 0.0)), d_f))
+                A(f'              <asset-clip ref="{assets[alt["path"]]}" lane="-4" offset="{clk.at(start_inner + clk.frames(k0 - it["start"]))}" '
+                  f'name="Alternate take" start="{clocks[alt["path"]].t(XT.num(alt.get("start")) + tcs.get(alt["path"], 0.0))}" duration="{clk.at(a_len)}" enabled="0" '
+                  f'audioRole="dialogue.alternate take">')
+                A(f'                <note>{escape(alt.get("note") or "Another take of this line. Switched off: the kept take is the one above.")}</note>')
+                A(f'                <rating value="reject" note="alternate take; the kept one plays in the cut"/>')
+                A("              </asset-clip>")
         if idx == 0 and hook:
             text, secs = hook
             ts += 1
@@ -685,11 +724,24 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
                 bh = (bev["n"] // 2) if bev else 0
                 if bh and (c_f - off_f < bh or c_start_f < bh or (c.get("file_dur") and c["start"] + c["len"] + bh * float(clk.frame) > c["file_dur"] - 0.05)):
                     bh = 0                                          # (no media / no room around it: this shot keeps its hard cuts)
+                c_start_s = c["start"] + tcs.get(c["path"], 0.0)
                 if bh:                                              # a dissolve in and out over the speaker: half a transition earlier and later
                     c_off_f, c_start_f, c_len_f = c_off_f - bh, c_start_f - bh, c_len_f + 2 * bh
+                    c_start_s -= bh * float(clk.frame)
+                nat = c.get("nat_db")
+                role_attrs = ' videoRole="video.B-roll"' + (' audioRole="effects"' if nat is not None else ' srcEnable="video"')      # (no sound asked for: only its picture is used, not a -96 dB fader)
                 A(f'              <asset-clip ref="{assets[c["path"]]}" lane="1" offset="{clk.at(c_off_f)}" name="B-roll" '
-                  f'start="{clk.at(c_start_f)}" duration="{clk.at(c_len_f)}" '
-                  f'format="{fmt(c["w"], c["h"], c["fps"])}" tcFormat="{tcf(c["path"])}">')
+                  f'start="{clocks[c["path"]].t(c_start_s)}" duration="{clk.at(c_len_f)}" '
+                  f'format="{fmt(c["w"], c["h"], c["fps"], cs_of.get(c["path"]))}" tcFormat="{tcf(c["path"])}"{role_attrs}>')
+                if XT.broll_note(c):
+                    A(f'                <note>{escape(XT.broll_note(c))}</note>')
+                out.extend(conform_rate_lines(c["fps"], fps, "                "))
+                if c.get("speed") and 0.05 <= XT.num(c["speed"]) < 0.999:      # slow motion: the picture plays slower than the file ran (the MP4 does the same)
+                    sp = XT.num(c["speed"])
+                    A(f'                <timeMap frameSampling="floor" preservesPitch="1">')
+                    A(f'                  <timept time="0s" value="0s" interp="linear"/>')
+                    A(f'                  <timept time="{clk.at(c_len_f)}" value="{clk.at(max(1, int(round(c_len_f * sp))))}" interp="linear"/>')
+                    A(f'                </timeMap>')
                 out.extend(_adjust_lines(g["broll"], c["w"] != seq_w or c["h"] != seq_h, "                "))
                 tl0 = c_off_f - start_inner + off_f                 # (the clip's first frame on the sequence's timeline)
                 marks = {0, c_len_f}
@@ -707,7 +759,10 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
                             v = min(1.0, m / (2 * bh), (c_len_f - m) / (2 * bh))
                         return v * TR.opacity_at(transitions, (tl0 + m) * float(clk.frame))
                     out.extend(_blend_lines([(clk.at(c_start_f + m), max(0.0, min(1.0, env(m)))) for m in sorted(marks)], "                "))
-                A('                <adjust-volume amount="-96dB"/>')
+                if nat is not None:
+                    A(f'                <adjust-volume amount="{_fmt(nat)}dB"/>')
+                if XT.broll_keywords(c) != "B-roll" or c.get("noun"):
+                    A(XT.keyword_line(XT.broll_keywords(c), "                "))
                 A("              </asset-clip>")
         for c in cutaways:                                      # a layout: the speaker's own picture over the B-roll, for the part of
             if not c.get("layout"):                             #  the shot inside this piece (each piece is its own moment of the speaker)
@@ -725,7 +780,7 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
                 A("              </mc-clip>")
             elif it["kind"] != "mc":
                 A(f'              <asset-clip ref="{assets[it["path"]]}" lane="2" offset="{at_s}" name="Speaker ({c["layout"]})" start="{at_s}" '
-                  f'duration="{dur_s}" format="{fmt(it["w"], it["h"], it["fps"])}" tcFormat="{tcf(it["path"])}">')
+                  f'duration="{dur_s}" format="{fmt(it["w"], it["h"], it["fps"], cs_of.get(it["path"]))}" tcFormat="{tcf(it["path"])}" videoRole="video.Speaker">')
                 out.extend(_adjust_lines(g, it["w"] != seq_w or it["h"] != seq_h, "                "))
                 A('                <adjust-volume amount="-96dB"/>')
                 A("              </asset-clip>")
@@ -742,7 +797,7 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
             if off_f <= t_f < off_f + d_f:
                 ts += 1
                 out.extend(_title_lines(clk, "rt", hook_lane + (0 if t["kind"] == "hook" else 1), clk.at(start_inner + (t_f - off_f)),
-                                        clk.t(t["len"]), t["text"], t["kind"], seq_w, seq_h, style, ts, t.get("rect"), t.get("theme"), bool(t.get("off"))))
+                                        clk.t(t["len"]), t["text"], t["kind"], seq_w, seq_h, style, ts, t.get("rect"), t.get("theme"), bool(t.get("off")), t.get("name")))
         for (c0, c1, text) in captions:
             c0f, c1f = clk.frames(c0), clk.frames(c1)
             if not (off_f <= c0f < off_f + d_f):
@@ -761,11 +816,64 @@ def build_multicam(name: str, seq_w: int, seq_h: int, fps: Fraction, group: dict
             if off_f <= c0f < off_f + d_f:
                 ts += 1
                 out.extend(_caption_lines(hook_lane + 3, clk.at(start_inner + (c0f - off_f)), clk.at(max(1, clk.frames(c1) - c0f)), text, ts))
-        A("            </mc-clip>" if it["kind"] == "mc" and angles else "            </asset-clip>")
+        out.extend(XT.marker_lines(clk, markers, off_f, off_f + d_f, lambda f_, s0=start_inner, o0=off_f: s0 + (f_ - o0), "              ", used_markers))
+        if synced:                                                              # (after the markers, the DTD's order): the camera's sound is off, the recorder's on
+            A('              <sync-source sourceID="storyline"><audio-role-source role="dialogue.camera" active="0"/></sync-source>')
+            A('              <sync-source sourceID="connected"><audio-role-source role="dialogue.recorder"/></sync-source>')
+        A("            </mc-clip>" if it["kind"] == "mc" and angles else f"            </{tagname}>")
     A("          </spine>")
     A("        </sequence>")
     A("      </project>")
     A("    </event>")
+    if sources:
+        out.extend(_source_event(name, sources, assets, clocks, tcs, tcf, fmt, cs_of))
     A("  </library>")
     A("</fcpxml>")
     return "\n".join(out) + "\n"
+
+
+def _source_event(name: str, sources: list[dict], assets: dict, clocks: dict, tcs: dict, tcf, fmt, cs_of: dict) -> list[str]:
+    """The second event ("<video> source clips", Eddie's pattern): one browser clip per footage file with its role as a keyword, its scenes as keyword
+    ranges, its usable stretches as favourites and its black / frozen / blurry ones as rejects, plus a keyword collection for each distinct keyword.
+    Every time is on that file's own frame grid; a range that does not fit inside the file is dropped."""
+    out = [f'    <event name="{escape(event_name(name))} source clips">']
+    words: list[str] = []
+    for sc in sources:
+        path = sc["path"]
+        clk_f, tc = clocks[path], tcs.get(path, 0.0)
+        dur = XT.num(sc.get("dur"), 0.0)
+
+        def rng(a, b):
+            a, b = XT.num(a, -1.0), XT.num(b, -1.0)
+            if a < 0 or b - a < 0.1 or (dur and b > dur + 0.05):
+                return None
+            f0 = clk_f.frames(a + tc)
+            return clk_f.at(f0), clk_f.at(max(1, clk_f.frames(b) - clk_f.frames(a)))
+        out.append(f'      <asset-clip ref="{assets[path]}" name="{escape(Path(path).stem)}" start="{clk_f.t(tc)}" duration="{clk_f.t(dur)}" '
+                   f'format="{fmt(sc["w"], sc["h"], sc.get("fps") or 30, cs_of.get(path))}" tcFormat="{tcf(path)}">')
+        role = {"a_roll": "A-roll", "broll": "B-roll", "recorder": "Recorder", "voiceover_broll": "B-roll"}.get(str(sc.get("role") or ""), "")
+        top = [w for w in ([role] + list(sc.get("keywords") or [])) if w]
+        if top:
+            out.append(XT.keyword_line(", ".join(dict.fromkeys(str(w)[:40] for w in top[:6])), "        "))
+            words += [str(w)[:40] for w in top[:6]]
+        for scene in (sc.get("scenes") or [])[:40]:
+            r = rng((scene or {}).get("start"), (scene or {}).get("end"))
+            if r and (scene or {}).get("what"):
+                out.append(XT.keyword_line(str(scene["what"])[:40], "        ", *r))
+                words.append(str(scene["what"])[:40])
+        for a, b in (sc.get("usable") or [])[:20]:
+            r = rng(a, b)
+            if r:
+                out.append(f'        <rating start="{r[0]}" duration="{r[1]}" value="favorite" note="usable stretch"/>')
+        for item in (sc.get("reject") or [])[:20]:
+            r = rng(item[0], item[1]) if len(item) >= 2 else None
+            if r:
+                out.append(f'        <rating start="{r[0]}" duration="{r[1]}" value="reject" note="{escape(item[2] if len(item) > 2 else "not usable")}"/>')
+        out.append("      </asset-clip>")
+    for w in list(dict.fromkeys(words))[:30]:
+        out.append(f'      <keyword-collection name="{escape(w)}"/>')
+    out.append("    </event>")
+    return out
+
+
+build_multicam = build_project                      # (the old name: the one builder is for every FirstCut project, a multicam shoot or not)

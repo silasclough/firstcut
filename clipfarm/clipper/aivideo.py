@@ -236,6 +236,9 @@ class Projects:
             opts["library"] = bool(body["library"])
         if "stock" in body:                                              # stock B-roll (Pixabay / Pexels) for what your own footage doesn't show
             opts["stock"] = bool(body["stock"])
+        for k in ("edit_list", "broll_mode", "broll_files", "min_shot_s", "avoid", "exclude_files", "exclude_windows", "dry_run", "auto_approve", "plan_first"):    # exact control given by an AI over the MCP (editlist.py), and the person asking to see the plan first
+            if k in body:
+                opts[k] = body[k]
         if "kind" in body:                                               # ad / promo / story; "auto" = the AI reads the notes
             opts["kind"] = _kind(body["kind"])
         if "graphics" in body:
@@ -460,6 +463,43 @@ class Projects:
             log.warning(f"turning feedback into rules failed ({e})")
             rules = [feedback] if fallback else []
         return self.add_rules(rules)
+
+    def points_path(self) -> Path:
+        return self.dir / "style_points.json"
+
+    def points_style(self) -> dict:
+        """The editing settings the person's "How it edits" points state (styles_profile.from_notes over them, kept when they last changed)."""
+        s = self._points_file().get("settings")
+        return s if isinstance(s, dict) else {}
+
+    def points_sig(self) -> str:
+        return str(self._points_file().get("sig") or "")
+
+    def _points_file(self) -> dict:
+        try:
+            d = json.loads(self.points_path().read_text())
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def set_points_style(self, settings: dict, sig: str = "") -> None:
+        p = self.points_path()
+        try:
+            tmp = p.with_suffix(".part")
+            tmp.write_text(json.dumps({"sig": sig, "settings": {k: v for k, v in (settings or {}).items() if not str(k).startswith("_") and v is not None}}))
+            tmp.replace(p)
+        except OSError as e:
+            log.warning(f"could not save the settings read from the points: {e}")
+
+    def brief_for(self, proj: dict, task: str = "", max_chars: int = 6000, style: dict | None = None) -> str:
+        """What one prompt reads: the style in five lines (when known), your notes, the points, then the learned rules, cut at the end of a whole
+        paragraph or line (never in the middle of a rule), with the same budget rule for every task."""
+        from . import styles_profile as SPF
+        parts = []
+        if style:
+            parts.append("HOW THIS VIDEO IS EDITED:\n" + SPF.describe(style))
+        parts.append(self.brief(proj))
+        return SPF.fit_brief("\n\n".join(p for p in parts if p.strip()), max_chars)
 
     def brief(self, proj: dict) -> str:
         """What the editing AI reads: your notes for this video, then the style rules learned so far."""
@@ -705,10 +745,17 @@ class Projects:
             lines += ["## Cut list (source seconds)"] + [f"{i + 1}. {a:.1f} - {b:.1f}  ({b - a:.1f} s)" for i, (a, b) in enumerate(iv)] + [""]
             cw = json.loads(plan.read_text()).get("cutaways") or []
             if cw:
-                lines += ["## B-roll cutaways (timeline seconds)"] + [f"- {c['at']:.1f} s for {c['length']:.1f} s: {c['what']}" for c in cw] + [""]
+                lines += ["## B-roll cutaways (timeline seconds)"] + [f"- {c['at']:.1f} s for {c['length']:.1f} s: {c['what']}" + (f" ('{c['noun']}'" + (f", {float(c['score']):.2f}" if c.get('score') is not None else "") + ")" if c.get("noun") else "") for c in cw] + [""]
             ang = json.loads(plan.read_text()).get("angles") or []
             if ang:
                 lines += ["## Camera angles (shared-timeline seconds)"] + [f"- {a['start']:.1f} - {a['end']:.1f}: {a['angle']}" for a in ang] + [""]
+            try:                                                         # what the notes asked for, how it was understood, what is not met (constraints.py)
+                pj = json.loads((Path(proj.get("home") or proj["folder"]) / ".aivideo" / "plan.json").read_text())
+            except (OSError, ValueError, KeyError, TypeError):
+                pj = {}
+            if pj.get("constraints"):
+                from . import constraints as CN
+                lines += [CN.report(pj["constraints"], pj.get("problems"), pj.get("unmet"), pj.get("post_check"))]
         if clip.get("music"):
             m = clip["music"]
             lines += ["## Music", f"{m.get('title')} - {m.get('artist')} ({m.get('license')})", ""]

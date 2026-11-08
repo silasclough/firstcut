@@ -73,9 +73,14 @@ END_PAD = 0.10        # speech recognizers time the end of a word ~100 ms early:
 
 
 def repace(words: list[dict], start: float, end: float, gap_max: float, pad: float = 0.12,
-           end_pad: float = END_PAD) -> list[tuple[float, float]]:
+           end_pad: float = END_PAD, style: dict | None = None) -> list[tuple[float, float]]:
     """Keep-intervals (absolute source seconds) inside [start, end] with silences longer than gap_max cut.
-    `end_pad` is extra room after the last word of every stretch so the end of the word is never clipped."""
+    `end_pad` is extra room after the last word of every stretch so the end of the word is never clipped.
+    With a `style` (styles_profile.py) a long silence is cut down by a multiplier with a floor instead of to nothing, sentence and idea
+    boundaries keep a minimum pause, and gap_max only says which pace the person asked for (speechtrim.py)."""
+    if style and (style.get("pace") or {}).get("gap_shrink_over_s") is not None:
+        from .speechtrim import repace_style
+        return repace_style(words, start, end, style, gap_max, pad, end_pad)
     ws = [w for w in words if w["end"] > start and w["start"] < end]
     if not ws:
         return [(start, end)]
@@ -136,12 +141,6 @@ def remap_words(words: list[dict], intervals, speed: float) -> list[dict]:
 
 
 # ----------------------------------------------------------------------------- engine
-TWITCH_TITLE_SCHEMA = {"type": "object", "properties": {"title": {"type": "string"}, "caption": {"type": "string"}, "hashtags": {"type": "array", "items": {"type": "string"}}},
-                       "required": ["title", "caption", "hashtags"]}
-TWITCH_TITLE_SYSTEM = ("You write the on-screen title and post caption for a short vertical clip of a streamer's moment. Title: max 55 characters, says what happens or sets up the "
-                       "punchline so people stay to see it, plain words, TRUE to what is said (never invent), no emojis, no profanity or slurs even if said, no all-caps shouting, "
-                       "no 'you won't believe'. Caption: one line, max 20 words, in the spirit of the clip, no hashtags. hashtags: 3-5 without '#' (the streamer's name as one word, the "
-                       "game or topic if clear, a general tag). The fans' own title is often a joke, a name or one word: use it only as a hint.")
 
 
 class Engine:
@@ -302,7 +301,7 @@ class Engine:
                 live.later(live.shot, self.store, job_id, src, (m.start + m.end) / 2, of=f"clip {i + 1}", what=m.title)
                 style = opts.get("caption_style", "mix")
                 if style == "mix":
-                    style = MIX[i % len(MIX)]
+                    style = self._caption_look(job, m, words, i)
                 try:
                     self.render_clip(job_id, i + 1, m, words, src, layout=opts.get("layout", "auto"), style=style,
                                      pace=opts.get("pace", "tight"), hook_title=bool(opts.get("hook_title", True)),
@@ -530,7 +529,7 @@ class Engine:
         job = self.store.get(job_id)
         opts = job["options"]
         key = hashlib.sha1(json.dumps([opts.get("clips"), opts.get("min_len"), opts.get("max_len"), profile,
-                                       opts.get("prompt", "")]).encode()).hexdigest()[:10]
+                                       opts.get("prompt", ""), M.RUBRIC_V]).encode()).hexdigest()[:10]
         brief = (opts.get("prompt") or "").strip()
         cache = d / "moments.json"
         if cache.exists():
@@ -625,47 +624,45 @@ class Engine:
             picked = M.fix_starts_heuristic(picked, sents, lo)
         picked = M.retitle_weak(router, picked, sents)                   # one more ask for a title that states the claim, before the score is lowered
         picked = M.demote_weak_titles(picked)
+        picked = M.llm_rehooks(router, picked, sents)                   # long clips: one marked sentence where the stake is restated (a marker for punch-ins)
         live.emit(self.store, job_id, "pick", moments=[{"title": m.title, "start": round(m.start, 1), "end": round(m.end, 1),
                                                         "score": round(float(m.score), 1)} for m in picked])
         atomic_write_json(cache, {"key": key, "moments": [m.to_dict() for m in picked]})
         return picked
 
+    def _hook_card(self, text: str, png: Path, W: int, H: int) -> None:
+        """Draw the hook title of a clip into `png`. The one place the card is made (WP11 swaps it for the themed, face-aware card)."""
+        from . import placement as PL
+        sb = PL.safe_box(W, H)                                                   # the card fits inside what the platforms leave free (no buttons over it, no cut-off sides)
+        title_card(text, png, int((sb["x1"] - sb["x0"]) / 0.80), self.cfg.get("captions", {}).get("fonts", []))
+
+    @staticmethod
+    def _hook_xy(W: int, H: int) -> tuple[str, int]:
+        """-> (ffmpeg x expression, y pixels) of the hook title: centred on the safe box, its top just inside the safe box."""
+        from . import placement as PL
+        sb = PL.safe_box(W, H)
+        return f"{(sb['x0'] + sb['x1']) // 2}-w/2", max(int(H * 0.11), int(sb["y0"] + 0.008 * H))
+
+    def _caption_look(self, job: dict, m: M.Moment, words: list[dict], i: int) -> str:
+        """The caption look for clip i of a batch on 'mix': karaoke looks (one to three words) for teaching, phrase looks (three to five) for stories,
+        emotion, comedy and interviews; streamer and podcast sources are always phrase. Without a reason to choose, the old rotation."""
+        if not self.ccfg.get("caption_by_mood", True):
+            return MIX[i % len(MIX)]
+        from . import clipcraft as CC
+        said = " ".join(w["text"] for w in words if m.start <= float(w["start"]) < m.end)
+        src = job.get("source") or {}
+        ans = None
+        if str(src.get("kind") or "") not in CC.PHRASE_SOURCES and self.ccfg.get("caption_mood_ai", True):
+            try:
+                from . import editstyle
+                ans = editstyle.caption_mood(self.router_for_now()[0], src, m.title, said)
+            except Exception as e:  # noqa: BLE001 - the keywords below decide
+                log.debug(f"caption mood: {e}")
+        return CC.caption_style_for(CC.caption_kind(src, said, ans), i)
+
     def _whole_clip_moment(self, job: dict, words: list[dict], src: Path) -> list[M.Moment]:
-        s = job.get("source") or {}
-        dur = float(ffmpeg.duration(src) or s.get("duration") or 0)
-        start = max(0.0, (words[0]["start"] - 0.35) if words else 0.0)
-        end = min(dur, (words[-1]["end"] + 0.6) if words else dur) if dur else (words[-1]["end"] + 0.6 if words else 0.0)
-        if not words or end - start < 4:                                  # (no speech: the action itself is the clip)
-            start, end = 0.0, dur
-        title = re.sub(r"\s+", " ", str(s.get("title") or "")).strip()[:70] or "Streamer moment"
-        caption, tags = title, ["twitch", "streamer", "clips"]
-        said_text = " ".join(w["text"] for w in words)[:1500]
-        try:                                                              # fans title clips "LOL" / "Dnd": write the on-screen hook and the post caption from what is actually said
-            router, _where = self.router_for_now()
-            res = router.complete_json("clip_title", TWITCH_TITLE_SYSTEM, f"Streamer: {s.get('channel')}\nThe fans' title: {s.get('title')}\nWhat is said in the clip: {said_text or '(no speech)'}",
-                                       TWITCH_TITLE_SCHEMA)
-            t2 = re.sub(r"\s+", " ", str(res.data.get("title") or "")).strip()[:70]
-            from . import clipgate
-            if clipgate.weak_title(t2):                                   # a bare question / greeting: one more ask, with the reason
-                res2 = router.complete_json("clip_title", TWITCH_TITLE_SYSTEM, f"Streamer: {s.get('channel')}\nThe fans' title: {s.get('title')}\nWhat is said in the clip: {said_text or '(no speech)'}\n\n"
-                                            f"Your last title \"{t2}\" was refused as {clipgate.weak_title(t2)}. State the specific claim or moment with the name or number in it.", TWITCH_TITLE_SCHEMA)
-                t3 = re.sub(r"\s+", " ", str(res2.data.get("title") or "")).strip()[:70]
-                if len(t3) >= 8 and not clipgate.weak_title(t3):
-                    t2, res = t3, res2
-            if len(t2) >= 8:
-                title = t2
-            c2 = re.sub(r"\s+", " ", str(res.data.get("caption") or "")).strip()
-            caption = c2 or title
-            tags = [h.lstrip("#").strip() for h in res.data.get("hashtags", []) if str(h).strip()][:5] or tags
-        except Exception as e:  # noqa: BLE001 - the fans' own title is still a title
-            log.warning(f"twitch clip title failed: {e}")
-        views = float(s.get("views") or 0)
-        score = round(min(9.5, 6.5 + 0.6 * math.log10(max(views, 1) / 300.0 + 1) * 2), 1)
-        sents = M.sentences_from_words(words) if words else []
-        m = M.Moment(start, end, 0, max(0, len(sents) - 1), title=title, hook=f"{s.get('views', 0):,} views on Twitch", caption=caption, score=score,
-                     reason="a fan-made Twitch clip that already got views", source="twitch", mood="funny")
-        m.hashtags = tags
-        return [m]
+        """Not part of FirstCut."""
+        return []
 
     def _glasses_moments(self, job_id: str, src: Path, words: list[dict]) -> list[M.Moment]:
         """POV footage: a vision model looks at timestamped contact sheets (+ speech + signals)."""
@@ -836,6 +833,12 @@ class Engine:
         from . import negation
         intervals, kept_not = negation.keep_negations(intervals, words)   # no cut flips a sentence ("did not like" -> "did like")
         intervals = intervals or [(m.start, m.end)]
+        if profile != "glasses" and not segments and self.cfg.get("clipper.clip_edges", True):     # the clip starts at its first word and ends just after its last (WP8)
+            from . import clipcraft as CC
+            intervals = CC.trim_lead(intervals, words, CC.LEAD_S)
+            tail_words = [w for w in words if intervals[0][0] <= float(w["start"]) < intervals[-1][1]]
+            loop = sum(b - a for a, b in intervals) <= CC.LOOP_UNDER_S and CC.could_loop(" ".join(w["text"] for w in tail_words[:8]), " ".join(w["text"] for w in tail_words[max(8, len(tail_words) - 8):]))
+            intervals = CC.end_after_last_word(intervals, words, CC.TAIL_S, loop)
         for n_ in kept_not:
             log.info(f"meaning: {n_}")
         for s_ in negation.lost_negations(intervals, words):
@@ -869,6 +872,7 @@ class Engine:
                 log.info(f"{job_id} clip {index}: cropped {plan['top']:.0%} off the top and {plan['bottom']:.0%} off the bottom (the source's own text)")
 
         # ---- framing
+        faces_measured, face_first_s = False, None
         mode = "glasses" if profile == "glasses" and layout in ("auto", "track") else layout
         xexpr = None
         fit_spans: list[tuple[float, float]] = []
@@ -882,6 +886,9 @@ class Engine:
                 mode = "fit"                                          # (a reordered edit spanning minutes: just show the whole frame)
             samples, _n = R.detect_faces(src, span0, span1 - span0, self.models_dir, rate, mouths=not ordered) \
                 if mode in ("auto", "track", "wide") else ([], 0)
+            if _n and ordered:
+                from . import clipcraft as CC
+                faces_measured, face_first_s = True, CC.first_face_time(samples, rate)         # (for the opening check at the end)
             cov = R.face_coverage(samples)
             f = remapper(intervals, speed)
             wide = mode in ("auto", "wide") and wide_w > crop_w
@@ -1008,11 +1015,12 @@ class Engine:
             cur = "wc"
         if hook_title and m.title:
             png = work / "title.png"
-            title_card(m.title, png, W, self.cfg.get("captions", {}).get("fonts", []))
+            self._hook_card(m.title, png, W, H)
+            hx, hy = self._hook_xy(W, H)
             idx = 2 if cur == "wc" else 1
             inputs += ["-loop", "1", "-t", f"{min(out_len, float(self.ccfg.get('title_seconds', 3.2))):.2f}", "-i", str(png)]
             graph.append(f"[{idx}:v]format=rgba,fade=t=out:st={max(0.1, float(self.ccfg.get('title_seconds', 3.2)) - 0.35):.2f}"
-                         f":d=0.35:alpha=1[tt];[{cur}][tt]overlay=(W-w)/2:{int(H * 0.11)}:eof_action=pass:format=auto[wt]")
+                         f":d=0.35:alpha=1[tt];[{cur}][tt]overlay={hx}:{hy}:eof_action=pass:format=auto[wt]")
             cur = "wt"
         graph.append(f"[{cur}]format=yuv420p[vout]")
         lufs = self.cfg.get("video.loudness_lufs", -14)
@@ -1020,7 +1028,9 @@ class Engine:
         if has_audio and cm_lines:                          # a voiced aside: the clip's sound ducks while it speaks
             if cm_lines:
                 duck = "+".join(f"between(t,{c['at'] - 0.08:.2f},{c['at'] + c['dur'] + 0.2:.2f})" for c in cm_lines)
-                graph.append(f"[ac]volume=0.04:eval=frame:enable='{duck}'[acd]")
+                from . import soundmix as SMX
+                under = 10 ** (SMX.DEFAULTS["bed_under_speech_lu"] / 20.0)     # (the clip stays audible under the line: 20 LU down, as the music bed ducks)
+                graph.append(f"[ac]volume={under:.3f}:eval=frame:enable='{duck}'[acd]")
                 mix_in = "[acd]"
                 for k, c in enumerate(cm_lines):
                     inputs += ["-i", c["wav"]]
@@ -1087,7 +1097,8 @@ class Engine:
         if edit_style != "standard" and mode != "asis" and profile not in ("asis", "glasses"):
             from . import editstyle
             src_meta = (self.store.get(job_id) or {}).get("source") if record else None
-            styled = editstyle.apply(self, job_id, out, cap_words, out_len, edit_style, W, H, fps, hook_title, source=src_meta, title=m.title, cap_y=cap_y if style != "none" else None)
+            styled = editstyle.apply(self, job_id, out, cap_words, out_len, edit_style, W, H, fps, hook_title, source=src_meta, title=m.title, cap_y=cap_y if style != "none" else None,
+                                     hook_end=(min(out_len, float(self.ccfg.get("title_seconds", 3.2))) if hook_title and m.title else 0.0))
         qa_res = None
         if record:                                              # the same look at the finished file the AI editor gets: dead audio, loudness, picture that never changes
             try:
@@ -1100,6 +1111,10 @@ class Engine:
                 from . import opening                           # a picture that never moves, an empty opening, another channel's burned-in promo
                 found = opening.check(out, " ".join(w["text"] for w in cap_words))
                 qa_res = {**(qa_res or {"lufs": None}), "issues": ((qa_res or {}).get("issues") or []) + found}
+                if self.cfg.get("clipper.clip_edges", True) and profile != "glasses" and not segments:
+                    from . import clipcraft as CC                  # the first second: late speech, no face (warnings, never a rejection)
+                    hs = self.ccfg.get("hook") or {}
+                    qa_res["issues"] += CC.hook_warnings(cap_words, out_len, face_first_s, faces_measured, float(hs.get("speech_by_s", 0.5)), float(hs.get("face_by_s", 1.0)))
                 qa_res["issues"] = sorted(qa_res["issues"], key=lambda i: i["level"] != "bad")[:6]       # (the problems first: the gate reads these)
             except Exception as e:  # noqa: BLE001 - a check is never a reason to lose a clip
                 log.debug(f"quality check of {stem} failed: {e}")
@@ -1123,6 +1138,7 @@ class Engine:
         (d / f"{stem}.txt").write_text(post + "\n")
         clip = {"index": index, "file": out.name, "thumb": thumb.name, "preview": prev_name, "preview_v": prev_v, "framing_v": FRAMING_V, "srt": f"{stem}.srt" if srt_text else None,
                 "title": m.title, "hook": m.hook, "caption": post, "score": round(m.score, 1), "reason": m.reason,
+                **({"rubric": m.rubric} if getattr(m, "rubric", None) else {}), **({"rehook_at": m.rehook_at} if getattr(m, "rehook_at", None) else {}),
                 "picked_by": m.source, "source_start": round(m.start, 2), "source_end": round(m.end, 2),
                 "duration": round(out_len, 2), "cuts": len(intervals) - 1, "layout": mode, "fit_spans": len(fit_spans), "caption_style": style,
                 "pace": pace, "edit_style": edit_style, "styled": styled, "qa": qa_res, **({"source_fix": plan} if plan and (crop_pre or not plan["own_captions"]) else {}), **({"style_done": __import__("clipfarm.clipper.feed", fromlist=["STYLE_V"]).STYLE_V} if edit_style != "standard" else {}), "hook_title": hook_title, "profile": profile, "moment": m.to_dict(),

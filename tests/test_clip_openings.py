@@ -123,3 +123,20 @@ def test_no_text_reader_means_not_checked_rather_than_failed(tmp_path, monkeypat
 def test_the_swipe_feed_hides_what_the_posting_gate_would_refuse(tmp_path):
     from clipfarm.clipper import feed
     assert feed.clipgate is clipgate                                    # one rule, two places: the feed does not show a clip a like could never post
+
+
+def test_hook_checks_flag_late_speech_and_no_face_as_warnings():
+    from clipfarm.clipper import clipcraft as CC
+    on_time = [{"text": "a", "start": 0.2, "end": 0.5}]
+    late = [{"text": "a", "start": 1.4, "end": 1.7}]
+    assert CC.hook_warnings(on_time, 20, 0.4, True) == []
+    w = CC.hook_warnings(late, 20, 2.0, True)
+    assert {i["code"] for i in w} == {"hook_late", "no_face_early"} and all(i["level"] == "warn" for i in w)
+    assert [i["code"] for i in CC.hook_warnings(on_time, 20, None, True)] == ["no_face_early"]
+    assert CC.hook_warnings(on_time, 20, None, False) == []                       # faces were not measured (no face model, or a layout without them): nothing to say
+    assert CC.hook_warnings([], 20, 0.0, False)[0]["code"] == "hook_late"
+    assert CC.hook_warnings(late, 2.0, None, True) == []                          # too short to judge
+    assert CC.first_face_time([[], [], ["f"]], 4.0) == 0.5 and CC.first_face_time([[]], 4.0) is None
+    # a warning is never a rejection: the gate only refuses level "bad"
+    clip = {"duration": 20, "transcript": "A complete sentence.", "title": "A man robs a bank in Ohio", "qa": {"issues": w}}
+    assert not [p for p in clipgate.problems(clip, None) if "face" in p or "first word" in p]

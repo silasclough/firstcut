@@ -127,8 +127,11 @@ def choose_vibe(llm, transcript_text: str, available_genres: list[str], title: s
         return {"mood": "chill", "genre": "", "why": "default", "by": "fallback"}
 
 
-def levels(cfg, words: list[dict], out_len: float) -> float:
-    """Target loudness of the music bed: quieter under talking, fuller when there's little speech."""
+def levels(cfg, words: list[dict], out_len: float, style: dict | None = None) -> float:
+    """Target loudness of the music bed: quieter under talking, fuller when there's little speech. With the style's sound numbers (soundmix.style_music)
+    it is the level where the music is alone - `bed_in_gaps_lu` under the voice - and the ducking envelope takes it down under speech."""
+    if isinstance(style, dict) and "bed_in_gaps_lu" in style and "voice_lufs" in style:
+        return float(style["voice_lufs"]) + float(style["bed_in_gaps_lu"])
     mc = cfg.get("clipper.music", {}) or {}
     rate = len(words) / max(1.0, out_len)
     return float(mc.get("speech_lufs", -36)) if rate >= float(mc.get("speech_words_per_s", 0.6)) \

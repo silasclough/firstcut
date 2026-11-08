@@ -9,20 +9,30 @@ import re
 
 from ..core.log import get_logger
 from . import moments as M
+from . import styles_profile as SPF
 
 log = get_logger("clipper.flow")
 STEP = re.compile(r"^\s*(?:(?:step\s*)?(\d{1,2})\s*[.)\]:\-]|([\u2022\u00b7\u25e6\u25aa\u2023*\-\u2013\u2014]))\s*(.+?)\s*$", re.I)
 
 
+# A numbered line like "1.01 Welcome" or "2.3 The first seminar": section.item (the creator's own numbering of their clips or sections).
+# Not "1." / "1)" (a plain list) and not a decimal in a sentence ("2.5 minutes long": a list of this kind has to start at section 1).
+DOTTED = re.compile(r"^\s*(?:step\s*)?(\d{1,2})\.(\d{1,3})\s*[.)\]:\-\u2013\u2014]?\s+(.+?)\s*$", re.I)
+
+
 def steps(notes: str) -> list[str]:
     """The script in the notes: a numbered or bulleted list of 3 or more beats (numbers must count up from 1), else []. A beat's text may
-    continue on the next indented line. Non-breaking spaces (pasted from Word / Pages) count as spaces."""
+    continue on the next indented line. Non-breaking spaces (pasted from Word / Pages) count as spaces. A list numbered section.item
+    (1.01, 1.02, 2.01 ... 8.10) is a list too: each beat keeps its number, so "1.01 Welcome" reads as that and not as step 1 "01 Welcome"."""
     lines = [ln.replace("\xa0", " ").rstrip() for ln in str(notes or "").splitlines()]
+    dotted = _dotted_steps(lines)
+    if dotted:
+        return dotted
     out: list[str] = []
     kind = None
     for line in lines:
         m = STEP.match(line)
-        if m:
+        if m and not DOTTED.match(line):
             this = "num" if m.group(1) else "bullet"
             if kind is None:
                 if this == "num" and int(m.group(1)) != 1:
@@ -39,6 +49,28 @@ def steps(notes: str) -> list[str]:
             continue
         elif out:
             break                                                            # a plain line after the list: the list is over
+    return out if len(out) >= 3 else []
+
+
+def _dotted_steps(lines: list[str]) -> list[str]:
+    """The beats of a list numbered section.item, each as "1.01 text" (in the order written; the numbers only have to go up, they may skip)."""
+    out: list[str] = []
+    last: tuple[int, int] | None = None
+    for line in lines:
+        m = DOTTED.match(line)
+        if m:
+            key = (int(m.group(1)), int(m.group(2)))
+            if last is None:
+                if key[0] != 1:
+                    continue                                                 # (a decimal in a sentence, not the start of a list)
+            elif key <= last:
+                continue
+            last = key
+            out.append(f"{m.group(1)}.{m.group(2)} {m.group(3)}")
+        elif out and line.strip() and line.startswith((" ", "\t")):
+            out[-1] += " " + line.strip()
+        elif out and line.strip() and not DOTTED.match(line):
+            break
     return out if len(out) >= 3 else []
 
 
@@ -73,7 +105,7 @@ def name_it(ai, sents, notes: str = "") -> str:
     text = " ".join(s.text for s in sents)[:6000].strip()
     if len(text.split()) < 8:
         return ""
-    prompt = ((f"The creator's notes: {notes[:600]}\n\n" if notes.strip() else "") + f"What is said in the video:\n{text}\n\n"
+    prompt = ((f"The creator's notes: {SPF.fit_brief(notes, 600)}\n\n" if notes.strip() else "") + f"What is said in the video:\n{text}\n\n"
               "Write a short, specific title for this video (3 to 8 words, plain words, no quotes, no clickbait) and a one-sentence summary.")
     try:
         res = ai.complete_json("video_title", "You name finished videos for a college marketing team.", prompt, TITLE_SCHEMA)

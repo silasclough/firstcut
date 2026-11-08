@@ -76,15 +76,16 @@ def run_watched(cmd: list[str], stall_s: float = 60.0, timeout: float | None = N
     th = threading.Thread(target=lambda: [err.append(x) for x in iter(proc.stderr.readline, b"")], daemon=True)
     th.start()
     start = last_move = time.monotonic()
-    last_val = None
-    killed = ""
+    seen: dict[bytes, bytes] = {}                 # (the last value of EACH progress key: a stalled ffmpeg repeats the same block forever, and comparing a line with
+    killed = ""                                   #  just the previous line of a different key made every repeat look like movement)
     while proc.poll() is None:
         r, _, _ = select.select([proc.stdout], [], [], 2.0)
         if r:
             line = proc.stdout.readline()
-            if line.startswith((b"out_time_us=", b"out_time_ms=", b"frame=", b"total_size=")) and line != last_val:
-                if not line.startswith(b"out_time_us=N/A") and not line.endswith(b"=0\n"):
-                    last_val, last_move = line, time.monotonic()
+            key, _, val = line.partition(b"=")
+            if key in (b"out_time_us", b"out_time_ms", b"frame", b"total_size") and seen.get(key) != val:
+                if not val.startswith(b"N/A") and not line.endswith(b"=0\n"):
+                    seen[key], last_move = val, time.monotonic()
         now = time.monotonic()
         if now - last_move > stall_s:
             killed = f"{what} stalled (no progress for {stall_s:.0f}s)"
@@ -101,6 +102,46 @@ def run_watched(cmd: list[str], stall_s: float = 60.0, timeout: float | None = N
         tail = b"".join(err).decode(errors="replace").strip().splitlines()[-15:]
         raise FFmpegError(f"{what} exited {proc.returncode}:\n" + "\n".join(tail))
     return subprocess.CompletedProcess(cmd, 0, b"", b"".join(err))
+
+
+STALL_S = 120.0                    # a render that reports no progress for this long is dead (config clipper.render.stall_s)
+
+
+def encode_with_fallback(make_cmd, video_cfg: dict, stall_s: float | None = None, timeout: float | None = None, what: str = "the picture",
+                         on_note=None) -> str:
+    """Run a long picture encode under a progress watchdog. `make_cmd(video_cfg)` -> the full ffmpeg command for those settings. The hardware encoder
+    (VideoToolbox) can stall at 0% CPU or hand back an empty file when the machine is busy: the run is killed when it makes no progress for `stall_s`
+    seconds (`clipper.render.stall_s`, default 120) and done ONCE more with the software encoder. -> "" or the plain-words note of what happened (also
+    sent to `on_note(text)` when given, so it reaches the quality notes). The software encoder failing too raises, as it always did."""
+    stall = float(stall_s if stall_s is not None else STALL_S)
+    try:
+        run_watched(make_cmd(video_cfg), stall_s=stall, timeout=timeout, what=what)
+        return ""
+    except FFmpegError as e:
+        if " exited -" in str(e):                 # killed by a signal (Stop sends SIGTERM/SIGKILL, see localproj.hard_stop): a cancellation, never "the encoder failed"
+            raise
+        stalled = "stalled" in str(e)
+        if pick_encoder(video_cfg) == "libx264":
+            if not stalled:
+                raise
+            log.warning(f"{what} stalled in software too ({str(e)[-120:]}); trying once more")      # (ffmpeg's scheduler can deadlock on any encoder: one more try usually passes)
+            run_watched(make_cmd(video_cfg), stall_s=stall, timeout=timeout, what=f"{what} (second try)")
+            note = "the encoder stalled once; the picture was made on the second try"
+            if on_note:
+                try:
+                    on_note(note)
+                except Exception:  # noqa: BLE001
+                    pass
+            return note
+        log.warning(f"the hardware encoder {'stalled' if stalled else 'failed'} ({str(e)[-160:]}); rendering {what} in software")
+        run_watched(make_cmd(software_cfg(video_cfg)), stall_s=stall, timeout=(timeout * 2 if timeout else None), what=f"{what} (software)")
+        note = "the hardware encoder stalled; used the software encoder" if stalled else "the hardware encoder failed; used the software encoder"
+        if on_note:
+            try:
+                on_note(note)
+            except Exception:  # noqa: BLE001 - a note never breaks a render
+                pass
+        return note
 
 
 def probe(path: Path | str) -> dict:
@@ -160,6 +201,16 @@ def videotoolbox_works() -> bool:
         return False
 
 
+@functools.lru_cache(maxsize=None)
+def encoders() -> frozenset[str]:
+    """The names of the encoders this ffmpeg has (asked once)."""
+    try:
+        out = subprocess.run([bin_path("ffmpeg"), "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=30).stdout
+    except Exception:  # noqa: BLE001 - nothing known: only the plain choices are used
+        return frozenset()
+    return frozenset(line.split()[1] for line in out.splitlines() if line.startswith(" V") and len(line.split()) > 1)
+
+
 def pick_encoder(video_cfg: dict) -> str:
     want = video_cfg.get("encoder", "auto")
     if want == "auto":
@@ -167,11 +218,17 @@ def pick_encoder(video_cfg: dict) -> str:
     return want
 
 
+def delivery_bitrate_mbit(width: int | float, height: int | float, per_1080p: float = 10.0) -> float:
+    """The picture bitrate (Mbit/s) of a delivered video: `per_1080p` for a 1920x1080 frame, scaled by the area, never below 6 nor above 40. It does not
+    depend on the length (the old rule dropped to 4 Mbit/s and crf 24 over 90 s, which smeared thin caption strokes)."""
+    return max(6.0, min(40.0, float(per_1080p) * float(width) * float(height) / (1920.0 * 1080.0)))
+
+
 def video_encode_args(video_cfg: dict) -> list[str]:
     enc = pick_encoder(video_cfg)
     if enc == "h264_videotoolbox":
         rate = video_cfg.get("videotoolbox_bitrate", "8M")
-        args = ["-c:v", "h264_videotoolbox", "-b:v", rate, "-maxrate", rate, "-profile:v", "high"]
+        args = ["-c:v", "h264_videotoolbox", "-b:v", rate, "-maxrate", video_cfg.get("videotoolbox_maxrate", rate), "-profile:v", "high"]
     else:
         args = ["-c:v", "libx264", "-preset", video_cfg.get("x264_preset", "medium"),
                 "-crf", str(video_cfg.get("x264_crf", 20)), "-profile:v", "high"]

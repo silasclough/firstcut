@@ -100,124 +100,25 @@ class Worker(threading.Thread):
         self.side_jobs: list = []               # (callable) restyles, run between jobs
         self.lock = threading.Lock()
 
-    def _relay(self):
-        """Pull in clips the M2's nightly auto-clipper sent (every few minutes)."""
-        if time.time() - getattr(self, "_last_relay", 0) < 300:
-            return
-        self._last_relay = time.time()
-        try:
-            from ..context import Context
-            from . import relay
-            ctx = Context(self.engine.cfg)
-            for jid in relay.ingest(ctx):
-                log.info(f"ingested auto-clipper job {jid}")
-            relay.apply_verdicts(ctx)
-            relay.auto_approve(ctx)
-            from . import library
-            library.export_pending(self.engine.cfg, self.store)      # archive copies that had to wait
-        except Exception:  # noqa: BLE001
-            log.error(traceback.format_exc())
+    def _relay(self) -> bool:
+        """Not part of FirstCut."""
+        return False
 
     def _drip(self) -> bool:
-        """Daytime: one source video every ~2 hours (the night run covers the night), so downloads are spread over the
-        whole day. Returns True if it processed one."""
-        cfg = self.engine.cfg
-        if not (self.feed.local and cfg.get("clipper.auto.enabled") and cfg.get("clipper.auto.drip", True)):
-            return False
-        if time.time() - getattr(self, "_last_drip", 0) < 120:
-            return False
-        self._last_drip = time.time()
-        from ..core import sharing
-        sch = cfg.get("schedule", {}) or {}
-        if sharing.in_window(cfg.now(), sch.get("night_start", "17:00"), sch.get("night_end", "08:00")):
-            return False
-        from ..context import Context
-        from . import auto
-        if not auto.Pace(cfg).ok()[0]:
-            return False
-        res = auto.run_auto(Context(cfg), max_jobs=1, paced=True)
-        return bool(res)
+        """Not part of FirstCut."""
+        return False
 
     def _backlog_commentary(self) -> bool:
-        """Daytime: add voiced commentary to the approved clips still waiting to post, in posting order."""
-        cfg = self.engine.cfg
-        if not self.feed.local or not cfg.get("clipper.commentary.enabled", True) or not cfg.get("clipper.commentary.redo_approved", True):
-            return False
-        from ..core import sharing
-        sch = cfg.get("schedule", {}) or {}
-        if sharing.in_window(cfg.now(), sch.get("night_start", "17:00"), sch.get("night_end", "08:00")):
-            return False
-        return self.feed.commentate_backlog_one(self.engine)
+        """Not part of FirstCut."""
+        return False
 
     def _newsreel(self) -> bool:
-        """Daytime: a news reel for each hot search topic (trends.py) that has none yet - before the topic goes cold. True if it made one."""
-        cfg = self.engine.cfg
-        ncfg = cfg.get("clipper.newsreel", {}) or {}
-        if not (self.feed.local and ncfg.get("enabled", True)):
-            return False
-        from ..core import sharing
-        sch = cfg.get("schedule", {}) or {}
-        if sharing.in_window(cfg.now(), sch.get("night_start", "17:00"), sch.get("night_end", "08:00")):
-            return False
-        import json as _json
-        path = cfg.path("state") / "newsreels_today.json"
-        day = cfg.now().strftime("%Y-%m-%d")
-        try:
-            st = _json.loads(path.read_text())
-        except (OSError, ValueError):
-            st = {}
-        if st.get("day") != day:
-            st = {"day": day, "n": 0, "fails": 0}
-        if st["n"] >= int(ncfg.get("per_day", 2)) or st.get("fails", 0) >= 3 or time.time() < st.get("retry_after", 0):
-            return False
-        from . import newsreel
-        try:
-            newsreel.make(cfg, self.store, self.engine)
-            st["n"] += 1
-        except newsreel.Skip as e:                                   # nothing hot to cover / not enough facts or footage: look again later
-            log.info(f"news reel postponed: {e}")
-            st["retry_after"] = time.time() + 1800
-            path.write_text(_json.dumps(st))
-            return False
-        except Exception as e:  # noqa: BLE001
-            log.warning(f"news reel failed: {e}")
-            st["fails"] = st.get("fails", 0) + 1
-        path.write_text(_json.dumps(st))
-        return True
+        """Not part of FirstCut."""
+        return False
 
     def _originals(self) -> bool:
-        """Daytime: make a few original template videos a day (the 'majority' of what gets posted)."""
-        cfg = self.engine.cfg
-        ocfg = cfg.get("clipper.originals", {}) or {}
-        if not (self.feed.local and ocfg.get("enabled", True)):
-            return False
-        from ..core import sharing
-        sch = cfg.get("schedule", {}) or {}
-        if sharing.in_window(cfg.now(), sch.get("night_start", "17:00"), sch.get("night_end", "08:00")):
-            return False
-        import json as _json
-        path = cfg.path("state") / "originals_today.json"
-        day = cfg.now().strftime("%Y-%m-%d")
-        try:
-            st = _json.loads(path.read_text())
-        except (OSError, ValueError):
-            st = {}
-        if st.get("day") != day:
-            st = {"day": day, "n": 0, "fails": 0}
-        if st["n"] >= int(ocfg.get("per_day", 6)) or st.get("fails", 0) >= 3 or time.time() < st.get("retry_after", 0):
-            return False
-        from . import originals
-        try:                                                         # the AI picks the angle; every 4th is a "then vs now"
-            originals.make(cfg, self.store, self.engine, "then_vs_now" if st["n"] % 4 == 3 else None)
-            st["n"] += 1
-        except originals.Waiting as e:                               # e.g. a download slot isn't free yet: not a failure
-            log.info(f"original video postponed: {e}")
-            st["retry_after"] = time.time() + 1800
-        except Exception as e:  # noqa: BLE001
-            log.warning(f"original video failed: {e}")
-            st["fails"] = st.get("fails", 0) + 1
-        path.write_text(_json.dumps(st))
-        return True
+        """Not part of FirstCut."""
+        return False
 
     def _ai_archive(self) -> bool:
         """AI-video projects: copy a finished video to the big drive (one per call, low priority). True if it did one."""
@@ -232,28 +133,8 @@ class Worker(threading.Thread):
         return False
 
     def _refresh_stale(self) -> bool:
-        """Daytime only (the night belongs to the cartoon): re-cut unrated clips that were made before the fix that
-        keeps the ends of words, best-ranked first. Returns True if it did one."""
-        cfg = self.engine.cfg
-        if not self.feed.local or not cfg.get("clipper.feed.recut_old", True):
-            return False
-        from ..core import sharing
-        sch = cfg.get("schedule", {}) or {}
-        if sharing.in_window(cfg.now(), sch.get("night_start", "17:00"), sch.get("night_end", "08:00")):
-            return False
-        nxt = self.feed.next_stale()
-        if not nxt:
-            return False
-        jid, idx = nxt
-        job = self.store.get(jid)
-        c = next(c for c in job["clips"] if c["index"] == idx)
-        try:
-            log.info(f"re-cutting {jid}#{idx} (word ends)")
-            self.engine.restyle(jid, idx, c["layout"], c["caption_style"], c["pace"], bool(c.get("hook_title", True)))
-        except Exception as e:  # noqa: BLE001 - leave this one alone, carry on with the rest
-            log.warning(f"re-cut of {jid}#{idx} failed: {e}")
-            self.feed._prev_failed.add(self.feed._key(jid, idx))
-        return True
+        """Not part of FirstCut."""
+        return False
 
     def _plain_cycle(self) -> None:
         """One turn of the loop without any of the Clipper's own background work: side jobs, then queued jobs, else wait."""
@@ -279,57 +160,8 @@ class Worker(threading.Thread):
     def run(self):
         for jid in self.store.requeue_interrupted(resume_local=self.engine.cfg.get("clipper.app") == "studio"):
             log.info(f"resuming interrupted job {jid}")
-        bg = bool(self.engine.cfg.get("clipper.background", True))         # off in the work Video Builder: it only makes the videos you ask for
         while True:
-            if not bg:
-                self._plain_cycle()
-                continue
-            self._relay()
-            try:
-                self.feed.sweep()                                   # likes / dislikes whose undo window has passed
-                self.feed.forward()                                 # (M2) hand them to the posting server
-                if time.time() - getattr(self, "_last_auto", 0) > 300:
-                    self._last_auto = time.time()
-                    self.feed.autopost()                            # (M2) once it has earned your trust
-                    self.feed.refresh_perf()                        # (M2) learn from how posted clips performed
-            except Exception:  # noqa: BLE001
-                log.error(traceback.format_exc())
-            with self.lock:
-                side = self.side_jobs.pop(0) if self.side_jobs else None
-            if side:
-                try:
-                    side()
-                except Exception:  # noqa: BLE001
-                    log.error(traceback.format_exc())
-                continue
-            job = self.store.next_queued()
-            if not job:
-                try:
-                    self.feed.ensure_previews()                     # small fast-loading copies for the swipe feed
-                    self.feed.maintain()                            # transcripts for older clips + re-learn old ratings with them
-                    if self._drip() or self._newsreel() or self._originals() or self._refresh_stale() or self._backlog_commentary() or self._ai_archive():
-                        continue
-                except Exception:  # noqa: BLE001
-                    log.error(traceback.format_exc())
-                self.wake.wait(2.0)
-                self.wake.clear()
-                continue
-            self.busy_with = job["id"]
-            log.info(f"processing {job['id']} ({job['title']})")
-            done = self.engine.process(job["id"])
-            self.busy_with = None
-            if self.projects and done and done.get("status") == "done" and (done.get("options") or {}).get("project"):
-                try:
-                    pid = next((p for p in self.projects.ids() if self.projects.get(p)["job"] == job["id"]), None)
-                    if pid:
-                        self.projects.finished(pid)
-                except Exception:  # noqa: BLE001
-                    log.error(traceback.format_exc())
-            if done and done.get("status") == "done" and (done.get("options") or {}).get("mode") == "asis":
-                try:
-                    self.feed.queue_own(job["id"], 1)                  # your own finished video: straight to the front of the line
-                except Exception:  # noqa: BLE001
-                    log.error(traceback.format_exc())
+            self._plain_cycle()
 
 
 LIB_ID = re.compile(r"^[0-9a-f]{16}\Z")
@@ -492,7 +324,7 @@ def make_handler(engine: Engine, store: Store, worker: Worker, feed: Feed, max_u
                         return self._err(400, str(e))
                 if parts[:3] == ["api", "app", "gfx"] and studio_api and len(parts) == 5:   # a graphics-style preview picture
                     try:
-                        pic = studio_api.gfx_preview(parts[3], parts[4], (parse_qs(u.query).get("src") or [""])[0])
+                        pic = studio_api.gfx_preview(parts[3], parts[4], (parse_qs(u.query).get("src") or [""])[0], tall=(parse_qs(u.query).get("aspect") or [""])[0] == "tall")
                     except (KeyError, ValueError) as e:
                         return self._err(404, str(e))
                     return self._file(pic, cache=True)
@@ -1058,7 +890,8 @@ def make_handler(engine: Engine, store: Store, worker: Worker, feed: Feed, max_u
                         return self._err(400, "type what you want changed")
                     if store.get(proj["job"])["status"] != "done":
                         return self._err(409, "the video isn't finished yet")
-                    runner.start(pid, "revise", text=text, revert=bool(b.get("revert")))
+                    kw = {"pace": str(b["pace"])} if str(b.get("pace") or "") in ("slow", "natural", "tight", "fast") else {}      # (a pace change is a style change, not prose)
+                    runner.start(pid, "revise", text=text, revert=bool(b.get("revert")), **kw)
                     return self._json({"queued": True}, 202)
                 if what == "revise":
                     text = str(b.get("instruction") or "").strip()[:800]

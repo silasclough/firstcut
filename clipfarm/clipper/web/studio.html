@@ -80,6 +80,34 @@
   .rp-what { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; line-height: 1.35; margin-bottom: 2px; }
   .rp-row .rp-use { flex: 0 0 auto; height: 30px; pointer-events: none; }
   .rp-row:hover .rp-use, .rp-row:focus-visible .rp-use { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #fff); }
+/* the plan before the video is made, what was checked after, the small numbers under a short clip */
+.pr{display:flex;flex-direction:column;gap:20px;max-width:760px}
+.pr-lead{font-size:16px;font-weight:600;line-height:1.4;margin:0}
+.pr-sec{display:flex;flex-direction:column;gap:6px}
+.pr-sec>h3{margin:0;font-size:12px;font-weight:600;color:var(--muted)}
+.pr-list{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.pr-row{display:grid;grid-template-columns:52px minmax(0,1fr) auto;gap:2px 12px;align-items:start;padding:9px 2px;border-bottom:1px solid var(--line);font-size:13px;line-height:1.4}
+.pr-row .t{color:var(--muted);font-variant-numeric:tabular-nums}
+.pr-row .w{overflow-wrap:anywhere}
+.pr-row.left .w{text-decoration:line-through;color:var(--muted)}
+.pr-sub{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.pr-state{font-size:12px;font-weight:600;white-space:nowrap;color:var(--muted)}
+.pr-state.err{color:inherit}
+.pr-q{border:1px solid var(--accent);border-radius:6px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}
+.pr-choice{display:flex;gap:8px;align-items:flex-start;padding:5px 0;font-size:13px;line-height:1.4;cursor:pointer}
+.pr-choice input{margin-top:3px}
+.pr details{border-top:1px solid var(--line);padding-top:8px}
+.pr summary{cursor:pointer;font-size:13px;color:var(--muted)}
+.pr-opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;padding-top:10px}
+.pr-opts label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.pr-opts select{font:inherit;color:var(--text);background:var(--field);border:1px solid var(--line);border-radius:5px;padding:6px 8px}
+.pr-bar{position:sticky;bottom:0;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 0;background:var(--win);border-top:1px solid var(--line)}
+.pr-link{background:none;border:0;padding:0;font:inherit;font-size:12px;color:var(--link);cursor:pointer;text-align:left}
+.pr-link:hover{text-decoration:underline}
+.pr-ok{color:var(--muted)}
+.clipn{font-size:11.5px;line-height:1.35;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
+.clipn button{background:none;border:0;padding:0;font:inherit;color:var(--link);cursor:pointer}
+@media (max-width:560px){.pr-row{grid-template-columns:44px minmax(0,1fr)}.pr-row .act{grid-column:2}}
 .tx-list{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .tx-row{display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:center;padding:10px 4px;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
 .tx-row:hover{background:var(--hover,rgba(127,127,127,.08))}
@@ -101,6 +129,8 @@
   .style-row.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .style-shots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   .style-shots img { width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; background: var(--thumb); display: block; }
+  .style-shots.tall { grid-template-columns: repeat(3, minmax(0, 150px)); }
+  .style-shots.tall img { aspect-ratio: 9 / 16; }
   .menu { max-height: min(420px, 70vh); overflow-y: auto; min-width: 180px; }
   .menu button { display: grid; grid-template-columns: 16px 1fr; gap: 6px; align-items: center; }
   .menu button .ck { font-size: 12px; }
@@ -382,6 +412,17 @@
   .te-w.f2 { color: var(--muted); text-decoration: line-through; background: color-mix(in srgb, var(--bad) 15%, transparent); border-bottom-color: var(--bad); }
   .te-w.f3 { color: var(--text); background: color-mix(in srgb, var(--accent) 18%, transparent); border-bottom: 2px dashed var(--accent); }
   .te-box ::selection { background: color-mix(in srgb, var(--accent) 38%, transparent); }
+  .te-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .te-tools .grow { flex: 1; min-width: 12px; }
+  .te-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .te-seg button { font: inherit; font-size: 13px; padding: 4px 11px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+  .te-seg button + button { border-left: 1px solid var(--line); }
+  .te-seg button[aria-pressed="true"] { color: var(--accent); font-weight: 600; background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .te-seg button:focus-visible, .te-find:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .te-find { font: inherit; font-size: 13px; width: 170px; max-width: 100%; padding: 4px 9px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text); }
+  .te-box p.te-line { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 0 10px; margin: 0 0 8px; }
+  .te-at { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 2px; user-select: none; -webkit-user-select: none; }
+  .te-src { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.4; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: none; -webkit-user-select: none; }
   .te-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .te-bar .grow { flex: 1; min-width: 120px; }
   .te-staged { padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
@@ -1346,6 +1387,7 @@ const OPT = {
   long: [
     {k: "long_minutes", label: "Length", when: (v, scope) => !(scope === "new" && COMPOSE.longMode === "broll"), choices: [[0, "AI decides"], [1, "1 min"], [2, "2 min"], [3, "3 min"], [5, "5 min"], [10, "10 min"]]},
     {k: "pace", label: "Pace", choices: [["auto", "Automatic"], ["fast", "Fast-paced cuts"], ["slow", "Take it slow"]], when: (v, scope) => !(scope === "new" && COMPOSE.longMode === "broll")},
+    {k: "plan_first", label: "Plan", choices: [["", "Just make it"], ["1", "Show me the plan first"]], when: (v, scope) => !(scope === "new" && COMPOSE.longMode === "broll")},
     {k: "transitions", label: "Transitions", choices: [["auto", "Automatic"], ["none", "None"]], when: (v, scope) => !(scope === "new" && COMPOSE.longMode === "broll")},
     {k: "caption_style", label: "Captions", choices: [["none", "Off"], ["clean", "Clean"], ["bold", "Bold yellow"], ["pop", "Pop green"], ["sky", "Sky blue"]]},
     {k: "library", label: "B-roll", choices: [[true, "Folder + library"], [false, "Folder only"]], when: () => A.library},
@@ -1378,23 +1420,26 @@ function chipsHTML(mode, scope, base, changed) {
 }
 
 // ---- the graphics style picker: every look, as three sample cards over a still of the footage
-let GFX_STYLES = null;
+let GFX_STYLES = null, GFX_TALL = false;
 function loadStyles() { if (GFX_STYLES === null) { GFX_STYLES = []; api("/api/app/gfx-styles").then(r => { GFX_STYLES = r.styles || []; LAST = ""; }).catch(() => {}); } }
 function openStyles(scope, src) {
   const mode = "long", cur = scope === "new" ? (COMPOSE.opts.long.gfx_style ?? A.settings.defaults.long.gfx_style ?? "auto") : ((DRAFT[scope] || {}).gfx_style ?? "auto");
   let pick = cur;
-  const q = "";
+  const q = GFX_TALL ? "?aspect=tall" : "";
   const row = (id, name) => `<div class="style-row ${pick === id ? "on" : ""}" role="option" tabindex="0" aria-selected="${pick === id}" data-style="${id}">
       <div class="row" style="justify-content:space-between"><b>${esc(name)}</b>${id === "auto" ? `<span class="small muted">picks a look for each video from how bright the footage is</span>` : ""}</div>
-      ${id === "auto" ? "" : `<div class="style-shots">${["lower", "point", "stat"].map(k => `<img alt="" loading="lazy" src="/api/app/gfx/${id}/${k}.jpg${q}">`).join("")}</div>`}</div>`;
+      ${id === "auto" ? "" : `<div class="style-shots${GFX_TALL ? " tall" : ""}">${["lower", "point", "stat"].map(k => `<img alt="" loading="lazy" src="/api/app/gfx/${id}/${k}.jpg${q}">`).join("")}</div>`}</div>`;
   const m = $("#sheet");
   m.innerHTML = `<div class="dialog" role="dialog" aria-label="Graphics styles" style="flex-direction:column;height:min(760px,100%)">
       <div class="row" style="padding:16px 20px 10px;justify-content:space-between"><div><h2 style="font-size:17px">Graphics styles</h2>
-        <div class="small muted">Three sample graphics in each style. The words and numbers are only examples; yours come from the video.</div></div>
+        <div class="small muted">Three sample graphics in each style, with a sample caption and the safe area drawn in. The words and numbers are only examples; yours come from the video.</div>
+        <div class="small" style="margin-top:6px">Show them as <button class="pr-link" id="st-wide" ${GFX_TALL ? "" : `style="font-weight:600;color:var(--text)"`}>Wide (16:9)</button> · <button class="pr-link" id="st-tall" ${GFX_TALL ? `style="font-weight:600;color:var(--text)"` : ""}>Phone (9:16)</button></div></div>
         <button class="x" id="st-close" aria-label="Close" style="background:transparent;font-size:18px">×</button></div>
       <div class="styles" role="listbox" aria-label="Styles">${row("auto", "Matches the footage")}${(GFX_STYLES || []).map(x => row(x.id, x.name)).join("")}</div>
       <div class="row" style="padding:12px 20px;border-top:1px solid var(--line);justify-content:flex-end"><button class="btn" id="st-cancel">Cancel</button><button class="btn primary" id="st-use">Use this style</button></div></div>`;
   m.hidden = false;
+  $("#st-wide").onclick = () => { GFX_TALL = false; openStyles(scope, src); };
+  $("#st-tall").onclick = () => { GFX_TALL = true; openStyles(scope, src); };
   const close = () => { m.hidden = true; m.innerHTML = ""; document.removeEventListener("keydown", esc2); };
   const esc2 = e => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", esc2);
@@ -2030,13 +2075,18 @@ function liveNow() {                                          // the latest thre
 //    buttons; Delete works), reassure (nothing changes until "Render the changes", and it says what would: "Cut 12 s (3 sentences)").
 // 4. Words in the video: green marker AND underline (not colour alone); will be cut: struck through and red; will be added: dashed blue.
 //    The box scrolls; the page repaints around a selection are held off (teHolding) so a selection is never lost mid-way.
-const TE = {focus: null, pid: null, open: false, data: null, at: 0, loading: false, sel: null, scroll: 0, busy: false};
+// Two ways to read the words: "order" (the lines of the finished video, in the order they play: the default) and "all" (every word of all the
+// footage in the order it was said, words not in the video included). Both are drawn from the same data, so a cut shows in both.
+const TE_VIEW_KEY = "firstcut.te.view";
+const teViewPref = () => { try { return localStorage.getItem(TE_VIEW_KEY) === "all" ? "all" : "order"; } catch (e) { return "order"; } };
+const TE = {focus: null, pid: null, open: false, data: null, at: 0, loading: false, sel: null, scroll: 0, busy: false, view: teViewPref(), q: "", anchor: null};
 function teHolding() {                                                     // a selection in the words: the page doesn't repaint under it
   const s = getSelection(), box = $("#te-box");
+  if (TE.open && document.activeElement && document.activeElement.id === "te-find") return true;      // (typing in Find)
   return !!(TE.open && box && s && !s.isCollapsed && s.anchorNode && box.contains(s.anchorNode));
 }
 function teLoad(pid, force) {
-  if (TE.pid !== pid) Object.assign(TE, {pid, open: false, data: null, at: 0, loading: false, sel: null, scroll: 0});
+  if (TE.pid !== pid) Object.assign(TE, {pid, open: false, data: null, at: 0, loading: false, sel: null, scroll: 0, q: "", anchor: null});
   const age = Date.now() - TE.at;
   if (TE.loading || (!force && TE.data && age < (TE.busy ? (TE.open ? 6000 : 20000) : 60000))) return;
   if (!force && !TE.data && TE.at && age < 8000) return;                   // (a failed fetch is tried again later, not at once)
@@ -2046,11 +2096,22 @@ function teLoad(pid, force) {
     if (TE.pid === pid && $("#te-slot")) paintTranscriptEdit(pid);
   });
 }
-function teSelection() {                                                   // the words the selection touches: [first, last] or null
+function teSelection() {                                                   // the words the selection touches: {runs: [[first, last], ...], first, last, n, part} or null
   const box = $("#te-box"), s = getSelection();
   if (!box || !s || s.isCollapsed || !s.rangeCount) return null;
   const r = s.getRangeAt(0);
   if (!box.contains(r.commonAncestorContainer)) return null;
+  const flags = (TE.data && TE.data.flags) || "";
+  if (box.dataset.view === "order") {                                      // (lines can be far apart in the recording: the words touched, grouped into runs of neighbours)
+    const spans = [...box.querySelectorAll(".te-w")].filter(sp => r.intersectsNode(sp));
+    const own = (sp, node) => node.nodeType === 3 && node.parentElement === sp;
+    if (spans.length > 1 && own(spans[0], r.startContainer) && r.startOffset >= r.startContainer.length) spans.shift();
+    if (spans.length > 1 && own(spans[spans.length - 1], r.endContainer) && r.endOffset === 0) spans.pop();
+    if (!spans.length) return null;
+    const idx = [...new Set(spans.map(sp => +sp.dataset.i))].sort((a, b) => a - b), runs = [];
+    idx.forEach(k => { const l = runs[runs.length - 1]; if (l && k === l[1] + 1) l[1] = k; else runs.push([k, k]); });
+    return {runs, first: +spans[0].dataset.i, last: +spans[spans.length - 1].dataset.i, n: idx.length, part: idx.map(k => flags[k] || "0").join("")};
+  }
   const up = n => { n = n && (n.nodeType === 3 ? n.parentElement : n); return n && n.closest ? n.closest(".te-w") : null; };
   const a = up(r.startContainer), b = up(r.endContainer);
   let i = a ? +a.dataset.i : null, j = b ? +b.dataset.i : null;
@@ -2065,18 +2126,18 @@ function teSelection() {                                                   // th
   }
   const n = (TE.data && TE.data.words.length) || 0;
   i = Math.max(0, Math.min(i, j)); j = Math.min(n - 1, Math.max(i, j));
-  return j >= i ? [i, j] : null;
+  return j >= i ? {runs: [[i, j]], first: i, last: j, n: j - i + 1, part: flags.slice(i, j + 1)} : null;
 }
 function teSelUI() {                                                       // buttons follow the selection (no repaint)
   const d = TE.data, cut = $("#te-cut"), add = $("#te-add"), info = $("#te-selinfo"); if (!d || !cut) return;
-  const f = d.flags || "", s = TE.sel, can = d.state === "plan";
-  const part = s ? f.slice(s[0], s[1] + 1) : "";
+  const s = TE.sel, can = d.state === "plan";
+  const part = s ? s.part : "";
   cut.disabled = !(can && s && /[13]/.test(part)); add.disabled = !(can && s && /[02]/.test(part));
-  info.textContent = s ? `${s[1] - s[0] + 1} word${s[1] > s[0] ? "s" : ""} selected` : can ? "Select words to cut them, or words that aren't in the video to add them." : "";
+  info.textContent = s ? `${s.n} word${s.n > 1 ? "s" : ""} selected` : can ? (TE.view === "order" ? "Select words to cut them. To bring back words that aren't in the video, switch to All footage." : "Select words to cut them, or words that aren't in the video to add them.") : "";
 }
 function teRestoreSel() {                                                  // after a repaint that could not be held off
   const box = $("#te-box"); if (!box || !TE.sel) return;
-  const a = box.querySelector(`.te-w[data-i="${TE.sel[0]}"]`), b = box.querySelector(`.te-w[data-i="${TE.sel[1]}"]`); if (!a || !b) return;
+  const a = box.querySelector(`.te-w[data-i="${TE.sel.first}"]`), b = box.querySelector(`.te-w[data-i="${TE.sel.last}"]`); if (!a || !b) return;
   const r = document.createRange(); r.setStartBefore(a); r.setEndAfter(b);
   const s = getSelection(); s.removeAllRanges(); s.addRange(r);
 }
@@ -2086,23 +2147,47 @@ document.addEventListener("selectionchange", () => {
   clearTimeout(teTimer);
   teTimer = setTimeout(() => { if ($("#te-box")) { TE.sel = teSelection(); teSelUI(); } }, 90);       // (a click elsewhere clears it)
 });
+function teBoxHTML(d, view) {                                              // the words, as the box shows them (the Find box filters lines or paragraphs)
+  const f = d.flags || "", q = TE.q.trim().toLowerCase(), W = d.words;
+  const spans = (a, b) => { let h = ""; for (let k = a; k <= b; k++) h += `<span class="te-w f${f[k] || 0}" data-i="${k}">${esc(W[k][0])}</span> `; return h; };
+  const text = (a, b) => { let t = ""; for (let k = a; k <= b; k++) t += W[k][0] + " "; return t.toLowerCase(); };
+  if (view === "order") {                                                  // one line per sentence, in the order they play, with where it plays and which file it is from
+    const rows = (d.order || []).filter(l => !q || text(l.a, l.b).includes(q));
+    if (!rows.length) return `<p class="muted">${q ? "No line of the video has those words." : "Nothing is in the video."}</p>`;
+    return rows.map(l => `<p class="te-line"><span class="te-at" title="About where this line plays in the video">${mmss(l.at)}</span><span>${spans(l.a, l.b)}${l.src ? `<span class="te-src" title="${esc(l.src)}">${esc(l.src.replace(/\.[^.]+$/, ""))}</span>` : ""}</span></p>`).join("");
+  }
+  const brk = new Set(d.breaks || []), paras = [];
+  W.forEach((w, k) => { if (!paras.length || (k && brk.has(k))) paras.push([k, k]); else paras[paras.length - 1][1] = k; });
+  const rows = paras.filter(([a, b]) => !q || text(a, b).includes(q));
+  return rows.length ? rows.map(([a, b]) => `<p>${spans(a, b)}</p>`).join("") : `<p class="muted">No words match.</p>`;
+}
+function teFirstVisible() {                                                // the first word in view: kept in view when the list is switched
+  const box = $("#te-box"); if (!box) return null;
+  const top = box.getBoundingClientRect().top;
+  for (const sp of box.querySelectorAll(".te-w")) if (sp.getBoundingClientRect().bottom > top + 2) return +sp.dataset.i;
+  return null;
+}
 function paintTranscriptEdit(pid, busy) {
   const slot = $("#te-slot"); if (!slot) return;
+  const fa = document.activeElement, hadFind = !!(fa && fa.id === "te-find"), caret = hadFind ? [fa.selectionStart, fa.selectionEnd] : null;
   if (busy !== undefined) TE.busy = !!busy;
   teLoad(pid);
   const d = TE.data;
   if (!d || d.state === "none" || !d.words.length) { slot.innerHTML = ""; return; }   // (no words yet: nothing to show while it is still listening)
   const can = d.state === "plan", st = d.staged || {ops: []}, n = (st.ops || []).length, open = TE.open;
   const old = $("#te-box"); if (old) TE.scroll = old.scrollTop;
-  const brk = new Set(d.breaks || []), f = d.flags || "";
+  const f = d.flags || "", hasOrder = d.state === "plan" && (d.order || []).length > 0, view = hasOrder ? TE.view : "all";
   let body = "";
   if (open) {
-    const parts = ["<p>"];
-    d.words.forEach((w, k) => { if (k && brk.has(k)) parts.push("</p><p>"); parts.push(`<span class="te-w f${f[k] || 0}" data-i="${k}">${esc(w[0])}</span> `); });
-    parts.push("</p>");
     const nIn = f.split("").filter(c => c === "1" || c === "2").length, nOut = f.length - nIn;
-    body = `<div class="te-legend small muted"><button class="te-w f1" data-tf="in" aria-pressed="${TE.focus === "in"}" title="Show only the words that are in the video">In the video · ${nIn}</button><button class="te-w f0" data-tf="out" aria-pressed="${TE.focus === "out"}" title="Show only the words that are not in the video">Not in it · ${nOut}</button>${n ? `<span class="te-w f2">Will be cut</span><span class="te-w f3">Will be added</span>` : ""}</div>
-      <div class="te-box${TE.focus ? " focus-" + TE.focus : ""}" id="te-box" tabindex="0" role="textbox" aria-readonly="true" aria-label="The words of the video. Select some, then press Delete to cut them.">${parts.join("")}</div>
+    const tools = `<div class="te-tools">${hasOrder ? `<div class="te-seg" role="group" aria-label="How to list the words"><button data-tv="order" aria-pressed="${view === "order"}" title="Every line of the video, in the order it plays">In the video's order</button><button data-tv="all" aria-pressed="${view === "all"}" title="Every word of all the footage, in the order it was said">All footage</button></div>` : ""}
+      <input class="te-find" id="te-find" type="search" placeholder="Find a line" aria-label="Find in the words" value="${esc(TE.q)}" autocomplete="off" spellcheck="false">
+      <span class="grow"></span><button class="btn quiet" id="te-top" title="Go to the start of the list">Start</button><button class="btn quiet" id="te-end" title="Go to the end of the list">End</button></div>`;
+    const key = view === "order"
+      ? `<div class="te-legend small muted"><span>${(d.order || []).length} lines, in the order they play. Times are about where each one plays.</span>${n ? `<span class="te-w f2">Will be cut</span>` : ""}</div>`
+      : `<div class="te-legend small muted"><button class="te-w f1" data-tf="in" aria-pressed="${TE.focus === "in"}" title="Show only the words that are in the video">In the video · ${nIn}</button><button class="te-w f0" data-tf="out" aria-pressed="${TE.focus === "out"}" title="Show only the words that are not in the video">Not in it · ${nOut}</button>${n ? `<span class="te-w f2">Will be cut</span><span class="te-w f3">Will be added</span>` : ""}</div>`;
+    body = `${tools}${key}
+      <div class="te-box${view === "all" && TE.focus ? " focus-" + TE.focus : ""}" id="te-box" data-view="${view}" tabindex="0" role="textbox" aria-readonly="true" aria-label="The words of the video. Select some, then press Delete to cut them.">${teBoxHTML(d, view)}</div>
       ${d.locked ? `<div class="small muted">${esc(d.locked)}</div>` : `<div class="te-bar"><span class="small muted grow" id="te-selinfo"></span>
         <button class="btn" id="te-cut" disabled>Cut from the video</button><button class="btn" id="te-add" disabled>Add to the video</button></div>`}
       ${n ? `<div class="card te-staged"><b>${esc(st.summary || "")}</b><span class="small muted grow">Nothing changes until you render it.</span>
@@ -2128,10 +2213,36 @@ function paintTranscriptEdit(pid, busy) {
     TE.sel = null; try { getSelection().removeAllRanges(); } catch (e) { /* none */ }
     paintTranscriptEdit(pid);
   };
-  const cut = () => { if (TE.sel) act("cut", {first: TE.sel[0], last: TE.sel[1]}); };
+  const actSel = async kind => {                                           // lines of the video can be far apart in the recording: one edit for each run of neighbouring words
+    const s = TE.sel; if (!s) return;
+    const ok = kind === "cut" ? /[13]/ : /[02]/, fl = d.flags || "";
+    const runs = s.runs.filter(([a, b]) => ok.test(fl.slice(a, b + 1)));
+    if (!runs.length) return;
+    for (const [a, b] of runs.slice(0, -1)) { try { await post(`/api/app/long/${pid}/transcript/${kind}`, {first: a, last: b}); } catch (e) { /* that one changes nothing */ } }
+    const [a, b] = runs[runs.length - 1]; act(kind, {first: a, last: b});
+  };
+  const cut = () => actSel("cut");
   ["#te-cut", "#te-add"].forEach(id => { const el = $(id); if (el) el.onmousedown = e => e.preventDefault(); });      // (pressing a button keeps the selection)
   if ($("#te-cut")) $("#te-cut").onclick = cut;
-  if ($("#te-add")) $("#te-add").onclick = () => { if (TE.sel) act("add", {first: TE.sel[0], last: TE.sel[1]}); };
+  if ($("#te-add")) $("#te-add").onclick = () => actSel("add");
+  slot.querySelectorAll("[data-tv]").forEach(b => b.onclick = () => {      // the two lists: in the video's order / all footage (the same words and flags either way)
+    if (TE.view === b.dataset.tv) return;
+    TE.anchor = teFirstVisible(); TE.view = b.dataset.tv; TE.scroll = 0; TE.sel = null;
+    try { localStorage.setItem(TE_VIEW_KEY, TE.view); } catch (e) { /* not kept */ }
+    try { getSelection().removeAllRanges(); } catch (e) { /* none */ }
+    paintTranscriptEdit(pid);
+  });
+  const fi = $("#te-find");
+  if (fi) fi.oninput = () => { TE.q = fi.value; box.innerHTML = teBoxHTML(d, box.dataset.view); box.scrollTop = 0; TE.scroll = 0; TE.sel = null; teSelUI(); };
+  if ($("#te-top")) $("#te-top").onclick = () => { box.scrollTop = 0; };
+  if ($("#te-end")) $("#te-end").onclick = () => { box.scrollTop = box.scrollHeight; };
+  if (TE.anchor !== null) {                                                // after a switch: the same line stays in view (or the nearest one that is in this list)
+    const want = TE.anchor; TE.anchor = null;
+    let best = null, gap = Infinity;
+    box.querySelectorAll(".te-w").forEach(sp => { const g = Math.abs(+sp.dataset.i - want); if (g < gap) { gap = g; best = sp; } });
+    if (best) box.scrollTop += best.getBoundingClientRect().top - box.getBoundingClientRect().top - 4;
+  }
+  if (hadFind && fi) { fi.focus(); if (caret) try { fi.setSelectionRange(caret[0], caret[1]); } catch (e) { /* none */ } }
   slot.querySelectorAll("[data-tf]").forEach(b => b.onclick = () => { TE.focus = TE.focus === b.dataset.tf ? null : b.dataset.tf; paintTranscriptEdit(pid); });   // (the key: show one kind)
   box.onkeydown = e => {
     if ((e.key === "Delete" || e.key === "Backspace") && TE.sel && can && !d.locked) { e.preventDefault(); cut(); }
@@ -2139,6 +2250,87 @@ function paintTranscriptEdit(pid, busy) {
   };
   [["#te-undo", "undo-staged"], ["#te-clear", "clear"], ["#te-go", "apply"], ["#te-prev", "undo"]].forEach(([id, path]) => { const el = $(id); if (el) el.onclick = () => { el.disabled = true; act(path, {}); }; });
   teSelUI(); teRestoreSel();
+}
+const REVIEW = {}, CLIPN_OPEN = new Set();
+function clipNotesHTML(jid, c) {                                             // Hook 4 · Flow 3 · Value 5 and the reason, in words (no colours for grades)
+  const n = c.notes || {};
+  if (!n.hook && !n.flow && !n.value && !(n.warnings || []).length) return "";
+  const k = `${jid}:${c.index}`, open = CLIPN_OPEN.has(k), why = n.why || {};
+  const nums = n.hook || n.flow || n.value ? `Hook ${n.hook || "–"} · Flow ${n.flow || "–"} · Value ${n.value || "–"}` : "";
+  return `<div class="clipn">${nums}${why.hook ? ` · ${esc(why.hook)}` : ""} ${nums ? `<button data-cn="${esc(k)}" aria-expanded="${open}">${open ? "Less" : "More"}</button>` : ""}
+    ${open ? `<div>Flow: ${esc(why.flow || "no reason given")}</div><div>Value: ${esc(why.value || "no reason given")}</div>` : ""}
+    ${(n.warnings || []).map(w => `<div>Look at: ${esc(w)}</div>`).join("")}</div>`;
+}
+function reviewHTML(r) {                                                     // the plan before the video is made: what I understood, the cut, what I will do
+  const und = r.understood || [], qs = r.questions || [], cut = r.cut || [], probs = r.problems || [];
+  const state = u => `<span class="pr-state ${u.state === "could not" ? "err" : ""}">${esc(u.state)}</span>`;
+  const q = qs.map(x => `<div class="pr-q" data-q="${esc(x.id)}"><div><b>${esc(x.kind)}:</b> “${esc(x.quote)}”</div><div class="pr-sub">${esc(x.note)}</div>
+      ${(x.choices || []).map(c => `<label class="pr-choice"><input type="radio" name="q-${esc(x.id)}" value="${esc(c.id)}"><span>${esc(c.label)}${c.at ? ` <span class="muted">at ${esc(c.at)}</span>` : ""}</span></label>`).join("")}
+      <div class="row"><button class="btn" data-ans="${esc(x.id)}" disabled>Use this one</button></div></div>`).join("");
+  const u = und.length ? `<div class="pr-sec"><h3>What I understood from your notes</h3><div class="pr-list">${und.map(x => `<div class="pr-row" style="grid-template-columns:minmax(0,1fr) auto">
+      <div><span class="w">${esc(x.kind)}: “${esc(x.quote)}”${x.must ? "" : ` <span class="muted">(if possible)</span>`}</span>${x.note && x.state !== "which one?" ? `<div class="pr-sub">${esc(x.note)}</div>` : ""}</div>${state(x)}</div>`).join("")}</div></div>` : "";
+  const rows = cut.map(x => x.left_out ? `<div class="pr-row left"><span class="t"></span><div><span class="w">${esc(x.words)}</span></div><span class="act"><button class="pr-link" data-back="${esc(x.id)}">Put back</button></span></div>`
+    : `<div class="pr-row"><span class="t">${esc(x.at)}</span><div><span class="w">${x.kind === "talk" ? esc(x.words || "…") : "A picture"}</span>
+        <div class="pr-sub">${x.file ? esc(x.file) : ""}${x.why ? `${x.file ? " · " : ""}${esc(x.why)}` : ""}</div>
+        ${(x.other_takes || []).map(t => `<div><button class="pr-link" data-take="${esc(x.id)}" data-a="${t.a}" data-b="${t.b}">Use this take instead</button> <span class="pr-sub">“${esc(t.text)}”</span></div>`).join("")}</div>
+      <span class="act">${x.required ? `<span class="pr-sub">asked for</span>` : `<button class="pr-link" data-out="${esc(x.id)}">Leave out</button>`}</span></div>`).join("");
+  const o = r.options || {}, sel = (key, list, cur) => `<label>${key[1]}<select data-opt="${key[0]}">${(list || []).map(i => `<option value="${esc(i.id)}" ${i.id === cur ? "selected" : ""}>${esc(i.label)}</option>`).join("")}</select></label>`;
+  const bad = probs.filter(x => x.must), soft = probs.filter(x => !x.must);
+  return `<div class="pr"><p class="pr-lead">${esc(r.summary || "")}</p>
+    ${q ? `<div class="pr-sec"><h3>I need your answer first</h3>${q}</div>` : ""}
+    ${u}
+    <div class="pr-sec"><h3>The cut, in the order it plays</h3><div class="pr-list">${rows || `<div class="pr-row"><span></span><span class="pr-sub">Nothing was picked yet.</span></div>`}</div></div>
+    ${bad.length ? `<div class="pr-sec"><h3>Could not do</h3>${bad.map(x => `<div class="small err">${esc(x.line)}</div>`).join("")}</div>` : ""}
+    ${soft.length ? `<div class="pr-sec"><h3>Worth a look</h3>${soft.map(x => `<div class="small muted">${esc(x.line)}</div>`).join("")}</div>` : ""}
+    <details><summary>B-roll and footage</summary><div class="pr-sub" style="padding-top:8px">${esc((r.broll || {}).line || "")}</div><div class="pr-sub">${esc((r.footage || {}).line || "")}</div></details>
+    <details><summary>Options</summary><div class="pr-sub" style="padding-top:8px">${(r.style || []).map(esc).join("<br>")}</div><div class="pr-opts">
+      ${sel(["profile", "Kind of video"], o.profiles, o.profile)}${sel(["pace", "Pace"], o.paces, o.pace)}${sel(["captions", "Captions"], o.captions_all, o.captions)}${sel(["graphics", "Graphics"], o.graphics_all, o.graphics)}${sel(["music", "Music"], o.music_all, o.music)}</div></details>
+    <div class="pr-bar"><button class="btn primary" id="l-approve" ${qs.length ? "disabled" : ""}>${qs.length ? "Answer the question first" : bad.length ? "Make it anyway" : "Make the video"}</button>
+      <span class="pr-sub">${qs.length ? "" : "Nothing is made until you press this."}</span></div></div>`;
+}
+function checkedHTML(c) {                                                     // what was checked after the render, in words, each line with the time to jump to
+  const at = x => x.start != null ? `<button class="pr-link" data-seek="${+x.start || 0}">${esc(x.at || "")}</button> ` : (x.at ? `${esc(x.at)} ` : "");
+  const sec = (h, list, fn) => list && list.length ? `<div class="pr-sec"><h3>${h}</h3>${list.map(fn).join("")}</div>` : "";
+  return `<div class="card qa-card pr"><div class="pr-lead" style="font-size:14px">${esc(c.summary || "")}</div>
+    ${sec("Your instructions", c.instructions, x => `<div class="small">${esc(x.kind)}: “${esc(x.quote)}” <span class="pr-state ${x.state === "could not" ? "err" : ""}">${esc(x.state)}</span>${x.note ? `<div class="pr-sub">${esc(x.note)}</div>` : ""}</div>`)}
+    ${sec("What I looked for in the finished video", c.checks, x => `<div class="small ${x.ok ? "pr-ok" : "err"}">${x.ok ? "Passed" : "Did not pass"}: ${esc(x.what)}</div>`)}
+    ${sec("B-roll I skipped", c.skipped, x => `<div class="small">${at(x)}${esc(x.line)}</div>`)}
+    ${sec("Shots I shortened or dropped", c.dropped, x => `<div class="small">${at(x)}${esc(x.line)}</div>`)}
+    ${sec("Graphics and captions to look at", c.placement, x => `<div class="small">${at(x)}${esc(x.line)}</div>`)}</div>`;
+}
+function reviewMount(pid, on) {                                               // fetch the plan once, then keep it; every change sends back the new plan
+  const slot = $("#plan-slot"); if (!slot) return;
+  const paint = () => {
+    const sl = $("#plan-slot"); if (!sl || !REVIEW[pid]) return;
+    sl.innerHTML = reviewHTML(REVIEW[pid]); bind();
+  };
+  let busy = false;                                                           // one change at a time: a second click (or a double-click) waits, it does not send a second request
+  const act = async (path, body) => {
+    if (busy) return;
+    busy = true;
+    const sl = $("#plan-slot"); if (sl) sl.querySelectorAll("button, select, input").forEach(b => b.disabled = true);
+    try { REVIEW[pid] = await post(`/api/app/long/${pid}/review/${path}`, body); paint(); }
+    catch (e) {
+      if (path === "leave-out" && /not in the plan/i.test(String(e.message || ""))) {          // already done (the plan changed under this click): show the plan as it is now
+        try { REVIEW[pid] = await api(`/api/app/long/${pid}/review`); } catch (_) { /* keep what is shown */ }
+      } else toast(e.message);
+      paint();
+    } finally { busy = false; }
+  };
+  const bind = () => {
+    const sl = $("#plan-slot"); if (!sl) return;
+    sl.querySelectorAll("[data-q]").forEach(qb => { const go = qb.querySelector("[data-ans]");
+      qb.querySelectorAll("input[type=radio]").forEach(i => i.onchange = () => { go.disabled = false; });
+      go.onclick = () => { const v = qb.querySelector("input:checked"); if (v) act("answer", {question: qb.dataset.q, choice: v.value}); }; });
+    sl.querySelectorAll("[data-out]").forEach(b => b.onclick = () => act("leave-out", {id: b.dataset.out, out: true}));
+    sl.querySelectorAll("[data-back]").forEach(b => b.onclick = () => act("leave-out", {id: b.dataset.back, out: false}));
+    sl.querySelectorAll("[data-take]").forEach(b => b.onclick = () => act("take", {id: b.dataset.take, a: +b.dataset.a, b: +b.dataset.b}));
+    sl.querySelectorAll("[data-opt]").forEach(s => s.onchange = () => act("option", {key: s.dataset.opt, value: s.value}));
+    on("#l-approve", () => post(`/api/ai/projects/${pid}/approve-plan`));
+  };
+  if (REVIEW[pid]) { bind(); return; }
+  api(`/api/app/long/${pid}/review`).then(r => { REVIEW[pid] = r; paint(); })
+    .catch(() => { slot.innerHTML = `<div class="card" style="padding:18px"><b>The plan is ready for you to check</b><div class="small muted" style="margin-top:4px">It follows your outline step by step; approve it to render.</div><div class="row" style="margin-top:12px"><button class="btn primary" id="l-approve">Approve and render</button></div></div>`; on("#l-approve", () => post(`/api/ai/projects/${pid}/approve-plan`)); });
 }
 function paintLong(pid) {
   const p = PROJECTS.find(x => x.id === pid);
@@ -2152,7 +2344,7 @@ function paintLong(pid) {
   else if (st === "failed" || st === "cancelled") h += `<div class="card" style="padding:18px"><b>${st === "failed" ? "It didn't finish" : "Stopped"}</b><div class="err small" style="margin-top:6px">${esc(js.error || "")}</div>
       <div class="row" style="margin-top:12px">${p.pending_render ? `<button class="btn primary" id="l-rerender">Render the same edit again</button>` : ""}<button class="btn ${p.pending_render ? "" : "primary"}" id="l-again">Try again</button><button class="btn danger" id="l-delete">Remove from the list</button></div></div>`;
   else if (st === "approval" && p.awaiting_approval && p.montage_card) h += montageCardHTML(p);
-  else if (st === "approval" && p.awaiting_approval) h += `<div class="card" style="padding:18px"><b>The plan is ready for you to check</b><div class="small muted" style="margin-top:4px">It follows your outline step by step; approve it to render.</div><div class="row" style="margin-top:12px"><button class="btn primary" id="l-approve">Approve and render</button></div></div>`;
+  else if (st === "approval" && p.awaiting_approval) h += `<div id="plan-slot">${REVIEW[pid] ? reviewHTML(REVIEW[pid]) : `<div class="card" style="padding:18px"><b>Reading the plan…</b><div class="small muted" style="margin-top:4px">It is ready for you to check in a moment.</div></div>`}</div>`;
   else if (st === "done" && c) {
     const base = `/media/${p.job}/`;
     const waiting = (p.pending_changes || []).length;
@@ -2166,6 +2358,7 @@ function paintLong(pid) {
         return writing + (n.chapters || qa ? `<div class="row small notes-row">${n.chapters ? `<span class="muted">Chapters</span><span class="ell muted grow" title="${esc(n.chapters)}">${esc(n.chapters.trim().split("\n").slice(0, 3).join(" · "))}${n.chapters.trim().split("\n").length > 3 ? " …" : ""}</span><button class="btn quiet" id="l-chap">Copy</button>` : `<span class="grow"></span>`}
           ${qa ? `<span class="${q && q.fix ? "err" : "muted"}" style="white-space:nowrap">Quality check: ${esc(qa)}</span>${qaMore ? `<button class="btn quiet" id="l-qa" aria-expanded="false">See what it found</button>` : ""}` : ""}</div>
           <div id="l-qa-box" hidden></div>` : ""); })()}
+      <div class="row small notes-row"><button class="btn quiet" id="l-chk" aria-expanded="false">What I checked</button></div><div id="l-chk-box" hidden></div>
       <div id="l-shots" class="shots-wrap"></div>
       <div id="te-slot"></div>
       ${c.edit_note ? `<div class="small ${c.edit_note.ok ? "muted" : "err"}">${esc(c.edit_note.result || c.edit_note.instruction)}</div>` : ""}
@@ -2186,6 +2379,14 @@ function paintLong(pid) {
   on("#l-stale-go", () => { delete BROLL[pid]; return post(`/api/ai/projects/${pid}/rerender`); });                // (one render with every waiting change; it queues if another video is being made)
   on("#l-stale-discard", async () => { await post(`/api/app/long/${pid}/pending/discard`); delete BROLL[pid]; toast("Back to the B-roll of the last render."); });
   if ($("#l-chap")) $("#l-chap").onclick = async () => { try { await navigator.clipboard.writeText((p.notes_info || {}).chapters || ""); toast("Chapters copied: paste them into the YouTube description."); } catch (e) { alert(e.message); } };
+  if ($("#l-chk")) $("#l-chk").onclick = async () => {                      // what was checked after the render: the instructions, the checks, the shots left out, in words
+    const box = $("#l-chk-box"), open = box.hidden;
+    box.hidden = !open; $("#l-chk").setAttribute("aria-expanded", String(open));
+    if (!open) return;
+    box.innerHTML = `<div class="card qa-card muted small">Reading what was checked…</div>`;
+    try { box.innerHTML = checkedHTML(await api(`/api/app/long/${pid}/checked`)); } catch (e) { box.innerHTML = `<div class="card qa-card muted small">Nothing was kept about this video's checks.</div>`; return; }
+    box.querySelectorAll("[data-seek]").forEach(b => b.onclick = () => { const v = document.querySelector(".lf-video"); if (v) { v.currentTime = +b.dataset.seek || 0; v.scrollIntoView({block: "nearest"}); v.play().catch(() => {}); } });
+  };
   if ($("#l-qa")) $("#l-qa").onclick = async () => {                        // the report, in the app: what it found, and one button to send it back through the editor
     const box = $("#l-qa-box"), open = box.hidden;
     box.hidden = !open; $("#l-qa").setAttribute("aria-expanded", String(open)); $("#l-qa").textContent = open ? "Hide" : "See what it found";
@@ -2209,6 +2410,7 @@ function paintLong(pid) {
   on("#l-again", () => post(`/api/ai/projects/${pid}/make`, {notes: p.notes, ...(p.options || {}), fcp: true}));
   on("#l-approve", () => post(`/api/ai/projects/${pid}/approve-plan`));
   if (p.montage_card && st === "approval") montageBind(p, pid, on);
+  if (st === "approval" && p.awaiting_approval && !p.montage_card) reviewMount(pid, on);
   on("#l-delete", async () => { if (confirm("Remove this video from the list? Its folder and your footage are kept.")) { await api(`/api/ai/projects/${pid}`, {method: "DELETE"}); location.hash = "#home"; } });
   bindOpenIn(pid);
   if (st === "done" && c) paintBroll(p);
@@ -2439,7 +2641,7 @@ function paintShort(jid) {
     h += `<div class="clips${j.archived ? " archived" : ""}">` + clips.map(c => `<div class="clip ${c.keep === false ? "off" : ""} ${SEL_CLIP[jid] === c.index ? "sel" : ""}" data-i="${c.index}">
       <div class="v" data-play="${c.index}"><img alt="" loading="lazy" src="/media/${j.id}/${c.thumb}?v=${c.rendered_at || 0}">
         <span class="badge">${mmss(c.duration)}</span><input type="checkbox" class="keep" data-keep="${c.index}" ${c.keep === false ? "" : "checked"} aria-label="Keep this clip"></div>
-      <div style="font-weight:600;font-size:12.5px;line-height:1.35">${esc(c.title || "Clip " + (c.index + 1))}</div></div>`).join("") + `</div>`;
+      <div style="font-weight:600;font-size:12.5px;line-height:1.35">${esc(c.title || "Clip " + (c.index + 1))}</div>${clipNotesHTML(jid, c)}</div>`).join("") + `</div>`;
     h += `<div class="small muted">${kept} kept · saved in ${esc(j.home || "")}/Clips · unticked clips move to Clips/Not kept</div>`;
     h += `<div class="card ask"><input id="s-change" placeholder="${SEL_CLIP[jid] != null ? "Change the selected clip in plain words, e.g. “start it 2 seconds later”" : "Click a clip, then say what to change, e.g. “start it 2 seconds later”"}" aria-label="Change a clip" ${SEL_CLIP[jid] == null ? "disabled" : ""}>
       <button class="mic mic-in" id="s-mic" aria-label="Dictate: say what you want" title="Say it instead of typing (the words are worked out on this Mac)"${SEL_CLIP[jid] == null ? " disabled" : ""}><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg><span class="mic-t" hidden></span></button>
@@ -2448,6 +2650,7 @@ function paintShort(jid) {
   $("#view").innerHTML = h + `</div>`;
   if (busy) liveMount(j.id, "short", {prog: j, status: j.status, stage: j.stage, detail: j.detail, progress: j.progress, stopId: "s-stop", note: "Close the window if you like: it keeps going."});
   bindChips();
+  document.querySelectorAll("[data-cn]").forEach(b => b.onclick = e => { e.stopPropagation(); const k = b.dataset.cn; if (CLIPN_OPEN.has(k)) CLIPN_OPEN.delete(k); else CLIPN_OPEN.add(k); paintShort(jid); });
   const on = (id, f) => { const el = $(id); if (el) el.onclick = async () => { el.disabled = true; try { await f(); } catch (e) { alert(e.message); } el.disabled = false; refresh(); }; };
   on("#s-stop", () => post(`/api/jobs/${jid}/cancel`));
   on("#s-reveal", () => showFolder(j.home + "/Clips"));
@@ -4221,6 +4424,7 @@ function paintSettings(fromRefresh) {
       <h2 style="font-size:17px;margin-bottom:-4px">How it edits</h2>
       <div class="small muted" style="margin-bottom:-2px">Reels and long videos each have their own notes and defaults: pick which one you are setting up.</div>
       <div class="seg" role="group" aria-label="Which kind of video" style="display:flex;width:100%">${[["short", "Short clips and reels"], ["long", "Long videos"]].map(([v, l]) => `<button data-kind="${v}" class="${STYLE_KIND === v ? "on" : ""}" style="flex:1;padding:9px 12px;font-size:14px">${l}</button>`).join("")}</div>
+      ${learnPane(S, kindWord)}
       <div class="card" style="padding:10px 10px 10px 14px;display:flex;flex-direction:column;gap:8px">
         <textarea id="style-in" rows="2" style="border:0;outline:0;resize:none;background:transparent;font-size:14px;line-height:1.5" aria-label="Tell the editor how you like your ${kindWord}" placeholder="${STYLE_KIND === "short" ? "Tell it how you like your short clips. For example: I like fast cuts, bold captions, and clips that start right on the punchline." : "Tell it how you like your long videos. For example: open with the strongest line, lots of B-roll, and never show the interviewer."}">${esc(DRAFT.style || "")}</textarea>
         <div class="row" style="justify-content:space-between"><span class="small muted">It keeps only the key points. A new point that disagrees with an old one replaces it.</span>
@@ -4373,6 +4577,7 @@ function paintSettings(fromRefresh) {
     if (b.dataset.backup === "local" && !(A.ai.local && A.ai.local.ready)) { await post("/api/app/setup/start").catch(() => {}); toast("Downloading this Mac's model: the sidebar shows how far it has got."); }
   });
   document.querySelectorAll("[data-kind]").forEach(b => b.onclick = () => { STYLE_KIND = b.dataset.kind; paintSettings(false); });
+  bindLearn();
   if ($("#gloss-in")) $("#gloss-in").onchange = e => saveSettings({glossary: e.target.value.split("\n")}).catch(er => toast(er.message));   // (saved when the box loses focus)
   if ($("#style-in")) $("#style-in").oninput = e => { DRAFT.style = e.target.value; };
   if ($("#style-add")) $("#style-add").onclick = async () => {
@@ -4422,6 +4627,117 @@ $("#skill-file").addEventListener("change", async () => {
   } catch (e) { alert(e.message); }
   paintSettings(false);
 });
+
+// ---- learn an editing style from a link (styles_api.py): presets are global, one list for short clips and long videos
+var PRESET_ID = "", LEARN = {job: "", text: "", err: "", url: "", name: ""};     // name: "" | "new" | "rename" (the small name row is open); job: a learning job being polled
+function learnPane(S, kindWord) {
+  const SP = A.style_presets || {presets: [], running: []}, list = SP.presets || [];
+  if (PRESET_ID && !list.some(p => p.id === PRESET_ID)) PRESET_ID = "";
+  const cur = list.find(p => p.id === PRESET_ID) || null;
+  const busy = !!LEARN.job || (SP.running || []).length > 0;
+  const msg = LEARN.err ? `<span class="err">${esc(LEARN.err)}</span>` : busy ? esc(LEARN.text || (SP.running[0] || {}).text || "Learning…")
+    : "It measures how the video is cut, not what it says: only numbers and a few small pictures are kept. A YouTube video, short, channel or playlist works best.";
+  const nameRow = LEARN.name ? `<div class="row" style="gap:8px"><input class="field" id="preset-name" style="max-width:280px" maxlength="60" aria-label="Name of the style" placeholder="Name of the style"
+      value="${esc(LEARN.name === "rename" && cur ? cur.name : "")}"><button class="btn primary" id="preset-name-ok">Save</button><button class="btn" id="preset-name-no">Cancel</button></div>` : "";
+  return `<div class="card" id="learn-card" style="padding:12px 14px;display:flex;flex-direction:column;gap:10px">
+    <div class="row" style="justify-content:space-between"><b>Learn a style from a video</b><span class="small muted">Saved as a style you can reuse. The box below it is where you write your own lines.</span></div>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <input class="field" id="learn-url" style="flex:1;min-width:220px" autocomplete="off" spellcheck="false" aria-label="A video link" value="${esc(LEARN.url)}"
+        placeholder="Paste a YouTube or Instagram link">
+      <button class="btn" id="learn-file" title="A video on this Mac: it is read where it is and never changed">Choose a video file…</button>
+      <button class="btn primary" id="learn-go" ${busy ? "disabled" : ""}>${busy ? "Learning…" : cur ? "Add to this style" : "Learn"}</button>
+    </div>
+    <div class="small muted" id="learn-msg" role="status">${msg}</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap"><label class="small muted" for="preset-pick">Style</label>
+      <select class="field" id="preset-pick" style="max-width:260px;width:auto"><option value="">A new style, named after the video</option>${list.map(p => `<option value="${esc(p.id)}" ${p.id === PRESET_ID ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
+      <button class="btn" id="preset-new">New empty style</button><button class="btn" id="preset-rename" ${cur ? "" : "disabled"}>Rename</button><button class="btn" id="preset-del" ${cur ? "" : "disabled"}>Delete</button></div>
+    ${nameRow}
+    ${cur ? presetCard(cur, kindWord) : `<div class="small muted">${list.length ? "Pick a style to read, edit or use it." : "No styles yet. Paste a link above and press Learn, or make an empty style and write your own lines."}</div>`}
+    <details><summary class="small muted" style="cursor:pointer">A reel will not download?</summary>
+      <div class="small muted" style="margin:6px 0">Instagram often wants a sign-in, and FirstCut never signs in for you. Choose the video file instead (save the reel to your Mac first). Or, if you run your own downloader service, put its address here.</div>
+      <input class="field" id="learn-endpoint" style="max-width:420px" autocomplete="off" spellcheck="false" aria-label="Your own downloader address" placeholder="https://… (optional)" value="${esc((S.styles || {}).fetch_url || "")}"></details>
+  </div>`;
+}
+function presetCard(p, kindWord) {
+  const n = (p.sources || []).length;
+  return `<div style="border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:8px">
+    <div class="row" style="justify-content:space-between"><b>${esc(p.name)}</b><span class="small muted">${n ? `learned from ${n} video${n === 1 ? "" : "s"}` : "written by you"}${p.edited && (p.learned_points || []).length ? ` · your edits are kept · <a href="#" id="preset-reset">Back to what it learned</a>` : ""}</span></div>
+    <label class="small muted" for="preset-points">What it follows <span>· one line each, change anything</span></label>
+    <textarea id="preset-points" rows="${Math.max(3, Math.min(8, (p.points || []).length + 1))}" style="border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical;font-size:14px;line-height:1.5;background:transparent;color:var(--text)" placeholder="One line each, for example: Cut every two seconds.">${esc((p.points || []).join("\n"))}</textarea>
+    <div class="small muted">Rules of your own <span>· kept when you add more videos</span></div>
+    ${(p.rules || []).length ? `<ul class="points">${p.rules.map((r, i) => `<li><span class="grow">${esc(r)}</span><button class="x" data-rrm="${i}" aria-label="Remove this rule" style="background:none;border:0;color:var(--muted);cursor:pointer;font-size:16px;line-height:1">×</button></li>`).join("")}</ul>` : ""}
+    <div class="row" style="gap:8px"><input class="field" id="preset-rule" style="flex:1;min-width:0" autocomplete="off" aria-label="A rule of your own" placeholder="Add a rule, for example: always show the speaker's name once"><button class="btn" id="preset-rule-add">Add rule</button></div>
+    ${(p.evidence || []).length || n ? `<details><summary class="small muted" style="cursor:pointer">What was measured</summary>
+      ${(p.evidence || []).length ? `<ul class="points">${p.evidence.map(x => `<li><span class="grow">${esc(x)}</span></li>`).join("")}</ul>` : ""}
+      ${n ? `<div class="small muted" style="padding:2px 8px">From: ${p.sources.map(x => esc(x.title || x.url || "a video")).join(" · ")}</div>` : ""}</details>` : ""}
+    <div class="row" style="justify-content:space-between"><span class="small muted">Nothing changes until you press Use this. You can still edit the points below it.</span>
+      <button class="btn primary" id="preset-use">Use this for ${kindWord}</button></div>
+    <div class="small" id="preset-msg" role="status"></div></div>`;
+}
+async function learnReload(keepId) {
+  A.style_presets = await api("/api/app/styles/presets");
+  if (keepId) PRESET_ID = keepId;
+}
+function learnWatch(job) {                                                     // poll one learning job; the text under the button follows it
+  LEARN.job = job; if ($("#learn-go")) { $("#learn-go").disabled = true; $("#learn-go").textContent = "Learning…"; }
+  const tick = async () => {
+    let v; try { v = await api("/api/app/styles/learn/" + job); } catch (e) { LEARN = {job: "", text: "", err: "Lost the connection to FirstCut. Try again.", url: LEARN.url, name: ""}; paintSettings(false); return; }
+    if (v.state === "running") { LEARN.text = v.text || "Learning…"; const m = $("#learn-msg"); if (m) m.textContent = LEARN.text; setTimeout(tick, 1500); return; }
+    if (v.state === "done" && v.preset) { LEARN = {job: "", text: "", err: "", url: "", name: ""}; await learnReload(v.preset.id); paintSettings(false);
+      const pm = $("#preset-msg"); if (pm) pm.textContent = v.preset.kept_edits ? "Added. Your own edits to the lines were kept; “Back to what it learned” shows the new ones." : "Learned. Read the lines, change anything, then press Use this."; return; }
+    LEARN = {job: "", text: "", err: v.error || "That did not work.", url: LEARN.url, name: ""}; paintSettings(false);
+  };
+  tick();
+}
+function bindLearn() {
+  if (!$("#learn-card")) return;                                              // (only on How it edits)
+  const kindWord = STYLE_KIND === "short" ? "short clips" : "long videos";
+  const SP = A.style_presets || {running: []};
+  if (!LEARN.job && (SP.running || []).length) learnWatch(SP.running[0].id);
+  const start = async body => {
+    LEARN.err = "";
+    try { const r = await post("/api/app/styles/learn", {...body, preset_id: PRESET_ID || undefined}); LEARN.text = "Starting"; learnWatch(r.job); }
+    catch (e) { LEARN.err = e.message; paintSettings(false); }
+  };
+  $("#learn-url").oninput = e => { LEARN.url = e.target.value; };
+  $("#learn-url").onkeydown = e => { if (e.key === "Enter") $("#learn-go").click(); };
+  $("#learn-go").onclick = () => { const u = $("#learn-url").value.trim(); if (!u) { LEARN.err = "Paste a link or choose a video file first."; paintSettings(false); return; } start({url: u}); };
+  $("#learn-file").onclick = async () => { const p = await pick("file", "Choose a video to learn the style from"); if (p) start({file: p}); };
+  $("#learn-endpoint").onchange = e => saveSettings({styles: {fetch_url: e.target.value.trim()}}).catch(er => toast(er.message));
+  $("#preset-pick").onchange = e => { PRESET_ID = e.target.value; LEARN.name = ""; paintSettings(false); };
+  $("#preset-new").onclick = () => { LEARN.name = "new"; paintSettings(false); const i = $("#preset-name"); if (i) i.focus(); };
+  $("#preset-rename").onclick = () => { LEARN.name = "rename"; paintSettings(false); const i = $("#preset-name"); if (i) i.focus(); };
+  if ($("#preset-name-no")) $("#preset-name-no").onclick = () => { LEARN.name = ""; paintSettings(false); };
+  if ($("#preset-name-ok")) $("#preset-name-ok").onclick = async () => {
+    const name = $("#preset-name").value.trim(); if (!name) return;
+    try {
+      if (LEARN.name === "rename") { A.style_presets = await post(`/api/app/styles/presets/${PRESET_ID}/rename`, {name}); }
+      else { const r = await post("/api/app/styles/presets", {name}); A.style_presets = r; PRESET_ID = r.preset.id; }
+      LEARN.name = ""; paintSettings(false);
+    } catch (e) { LEARN.err = e.message; paintSettings(false); }
+  };
+  const del = $("#preset-del");
+  if (del) del.onclick = async () => {
+    if (del.dataset.sure !== "1") { del.dataset.sure = "1"; del.textContent = "Delete it for good?"; setTimeout(() => { if (del.isConnected) { del.dataset.sure = ""; del.textContent = "Delete"; } }, 4000); return; }
+    try { A.style_presets = await post(`/api/app/styles/presets/${PRESET_ID}/delete`); PRESET_ID = ""; paintSettings(false); } catch (e) { LEARN.err = e.message; paintSettings(false); }
+  };
+  if (!PRESET_ID) return;
+  const base = `/api/app/styles/presets/${PRESET_ID}`, say = t => { const m = $("#preset-msg"); if (m) m.textContent = t; };
+  if ($("#preset-points")) $("#preset-points").onchange = async e => { try { A.style_presets = await post(base + "/points", {points: e.target.value}); say("Saved."); } catch (er) { say(er.message); } };
+  if ($("#preset-reset")) $("#preset-reset").onclick = async e => { e.preventDefault(); try { A.style_presets = await post(base + "/reset-points"); paintSettings(false); } catch (er) { say(er.message); } };
+  const addRule = async () => { const t = $("#preset-rule").value.trim(); if (!t) return;
+    try { A.style_presets = await post(base + "/rule", {text: t}); paintSettings(false); } catch (er) { say(er.message); } };
+  $("#preset-rule-add").onclick = addRule; $("#preset-rule").onkeydown = e => { if (e.key === "Enter") addRule(); };
+  document.querySelectorAll("[data-rrm]").forEach(b => b.onclick = async () => { try { A.style_presets = await post(base + "/remove-rule", {index: +b.dataset.rrm}); paintSettings(false); } catch (er) { say(er.message); } });
+  $("#preset-use").onclick = async () => {
+    const b = $("#preset-use"); b.disabled = true;
+    try {
+      const r = await post(base + "/apply", {mode: STYLE_KIND});
+      A.styles = {...A.styles, ...r.styles}; A.style_presets = {presets: r.presets, running: r.running, fetch_url: r.fetch_url};
+      paintSettings(false); const m = $("#preset-msg"); if (m) m.textContent = `Done: these lines are now how ${kindWord} are edited. They are listed below, and you can still change them.`;
+    } catch (er) { b.disabled = false; say(er.message); }
+  };
+}
 
 // ---- first-run setup
 let SETUP_FORCED = false;

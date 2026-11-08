@@ -40,7 +40,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fractions import Fraction
 from pathlib import Path
 from urllib.parse import quote
@@ -50,10 +50,14 @@ from ..core.log import get_logger
 from . import audiosync as AS
 from . import beats as BT
 from . import logcolor as LC
+from . import editlist as EL
 from . import flow as FL
 from . import live
 from . import notes as NT
 from . import broll as BR
+from . import brollplace as BP
+from . import brollsound as BS
+from . import footage as FT
 from . import highlights as HL
 from . import multicam as MC
 from . import speakers as SP
@@ -67,12 +71,23 @@ from . import transitions as TR
 from . import transcript_edit as TE
 from . import storage as ST
 from . import avoid as AV
+from . import styles_profile as SPF
+from . import speechtrim as SPT
+from . import takes as TK
+from . import constraints as CN
+from . import poolrules as PR
+from . import covers as COV
+from . import switching as SW
 from .engine import PACES, Cancelled, Engine, remap_words, repace
+from . import gfxcontent as GC
+from . import fcpxml as FX
+from . import fcpextras as XT
 from .library import safe
 from .localai import LocalAI, estimate_cost
 
 log = get_logger("clipper.localproj")
-VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+from .catalog import VIDEO_EXT as _CATALOG_VIDEO_EXT
+VIDEO_EXT = set(_CATALOG_VIDEO_EXT) | {".webm"}                 # (one list for the project scan and the catalogue: .mts, .mxf and .avi are footage too)
 NOTES_MIN_S = 30.0                                       # a video shorter than this gets no chapters (notes.chapters)
 # What a project folder holds that is NOT footage: Final Cut's own media and library, old exports, caches, our own results, songs and sound effects
 SKIP_DIRS = {"output", "final cut", "notes", ".aivideo", "rejected", "music", "exports", "export", "renders", "render files", "transcoded media",
@@ -120,7 +135,8 @@ def earlier_edits(folder: Path) -> list[str]:
     return [str(p.relative_to(folder)) for p in _videos(folder)[1]]
 CHUNK_S = 1200                                      # audio chunk for transcription (about 7 MB at 48 kbps)
 MAX_EDGE = 1920                                     # the finished video is at most 1080p-class; the originals stay as they are
-SENTENCE_LIMIT = 700                                # plain-words edits read the sentences of the CURRENT cut, so it must stay readable
+CONTEXT_SENTENCES = 20                              # sentences either side of the kept ones that a plain-words edit may also see
+SENTENCE_LIMIT = 1500                               # plain-words edits read the sentences of the CURRENT cut, so it must stay readable
 LIB_BASE = 2_000_000.0                              # footage from the catalog sits here on the timeline: past the project's own (and its photos)
 LIB_PHOTO_BASE = PH.VIRTUAL_BASE + 500_000.0        # ...and catalog photos here (the project's own photos count up from VIRTUAL_BASE)
 LIB_SHOTS = 48                                      # candidate shots from the catalog offered to the cutaway planner
@@ -173,8 +189,8 @@ def scan(folder: Path) -> list[dict]:
     shot = [_created(info) for _p, info, _vs, _d in probed]
     if probed and all(shot):
         order = sorted(range(len(probed)), key=lambda k: (shot[k].timestamp(), probed[k][0].name))
-    else:
-        order = sorted(range(len(probed)), key=lambda k: (_born(probed[k][0]), probed[k][0].name))
+    else:                                                                   # a file with no recorded time takes its own date; the others keep theirs
+        order = sorted(range(len(probed)), key=lambda k: ((shot[k].timestamp() if shot[k] else _born(probed[k][0])), probed[k][0].name))
     counts: dict[str, int] = {}
     for p, *_ in probed:
         counts[p.name] = counts.get(p.name, 0) + 1
@@ -194,6 +210,8 @@ def scan(folder: Path) -> list[dict]:
                       "size": p.stat().st_size, "mtime": int(p.stat().st_mtime),
                       "dur": round(dur, 3), "start": round(t, 3), "end": round(t + dur, 3), "w": int(w), "h": int(h),
                       "fps": float(rate), "audio": ffmpeg.audio_stream(info) is not None,
+                      **_fcp_meta(info, vs),
+                      "created": (shot[k].isoformat() if shot[k] else None),
                       "broll": BR.is_named(name) or any(BR.is_named(part) for part in rel.parts[:-1])})
         t += dur
     return files
@@ -289,7 +307,7 @@ def scan_graphics(folder: Path) -> list[dict]:
     return out[:12]
 
 
-def scan_audio(folder: Path, extra: list[str] | None = None) -> list[dict]:
+def scan_audio(folder: Path, extra: list[str] | None = None, music_out: list | None = None) -> list[dict]:
     """Separate audio recordings (a recorder, a lav mic): in the folder (outside Music/ and the result folders), in the folder just above
     it, and anywhere you point at (files or folders). A recording that has nothing to do with the footage simply won't match by sound."""
     found: list[Path] = []
@@ -316,6 +334,14 @@ def scan_audio(folder: Path, extra: list[str] | None = None) -> list[dict]:
             continue
         seen.add(str(p))
         try:
+            parts = tuple(p.relative_to(folder).parts)
+        except ValueError:
+            parts = (p.parent.name, p.name)
+        if PR.music_like(parts):                                  # a song in the folder is not a recorder track: it is offered as a song (own_songs)
+            if music_out is not None:
+                music_out.append(p)
+            continue
+        try:
             info = ffmpeg.probe(p)
             dur = float(info.get("format", {}).get("duration") or 0)
         except Exception:  # noqa: BLE001
@@ -330,6 +356,24 @@ def scan_audio(folder: Path, extra: list[str] | None = None) -> list[dict]:
             out.append({"name": p.name, "path": str(p), "size": p.stat().st_size, "mtime": int(p.stat().st_mtime), "dur": round(dur, 1),
                         "tc": round(tc, 6), "ch": int(au.get("channels") or 2)})
     return out
+
+
+def own_songs(folder: Path, extra: list[str] | None = None) -> list:
+    """The songs the person gave: everything in the project's Music/ folder, and loose songs elsewhere in the folder (a file or folder named music)."""
+    own = list(MU.own_tracks(Path(folder) / "Music"))
+    loose: list[Path] = []
+    try:
+        scan_audio(Path(folder), extra, music_out=loose)
+    except Exception:  # noqa: BLE001 - songs are a bonus
+        return own
+    have = {t.path.resolve() for t in own}
+    for p in loose:
+        try:
+            if p.resolve() not in have and p.is_file():
+                own.append(MU._own(p))
+        except OSError:
+            continue
+    return own
 
 
 def summarize(folder: Path, cfg=None, files: list[dict] | None = None, target_min: float = 0.0, transcriber: str = "parakeet") -> dict:
@@ -348,6 +392,35 @@ def summarize(folder: Path, cfg=None, files: list[dict] | None = None, target_mi
 
 VERSIONED = re.compile(r"^(?!\.).+ v(\d+)\.(mp4|srt|fcpxml)$")
 
+
+
+def clear_for_copy(here: Path) -> Path:
+    """Make `here` free for a fresh copy of a project folder. An earlier copy (even a read-only one) is made writable and removed; if it still can't be
+    removed the copy goes to 'name (2)', 'name (3)'... instead of failing. -> the folder to copy into."""
+    import os
+    import stat
+
+    def writable(top: Path) -> None:
+        for p in [top, *(top.rglob("*") if top.is_dir() and not top.is_symlink() else [])]:
+            try:
+                if not p.is_symlink():
+                    os.chmod(p, (p.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR) | (stat.S_IXUSR if p.is_dir() else 0))
+            except OSError:
+                pass
+    if os.path.lexists(here):
+        writable(here)
+        shutil.rmtree(here, ignore_errors=True)
+    if not os.path.lexists(here):
+        return here
+    for k in range(2, 100):
+        alt = here.with_name(f"{here.name} ({k})")
+        if os.path.lexists(alt):
+            writable(alt)
+            shutil.rmtree(alt, ignore_errors=True)
+        if not os.path.lexists(alt):
+            log.warning(f"the earlier copy {here} could not be removed: the project went to {alt.name}")
+            return alt
+    return here
 
 def older_versions_to_trash(folder: Path, version: int) -> list[Path]:
     """A new version is saved: the older videos and captions (Output/) and .fcpxml files (the folder itself) go to the Trash, so the
@@ -805,7 +878,8 @@ class LocalRunner:
             if s["kind"] == "photo":
                 a = LIB_PHOTO_BASE + 10.0 * len(photos)
                 photos.append({"start": a, "end": a + PH.SCENE_S, "what": f"(still photo) {s['what']}", "quality": max(6.0, q),
-                               "file": f"Library - {s['rel']}", "photo": s["path"], "library": True})
+                               "file": f"Library - {s['rel']}", "photo": s["path"], "library": True, "fstart": 0.0, "fend": PH.SCENE_S,
+                               "found_for": str(s.get("query") or "")[:160], **({"described": False} if s.get("described") is False else {})})
                 continue
             f = by_id.get(s["id"])
             if f is None:
@@ -818,7 +892,9 @@ class LocalRunner:
                 lib.append(f)
                 t += dur + 10.0
             lib_scenes.setdefault(f["name"], []).append({"start": round(f["start"] + s["start"], 2), "end": round(f["start"] + s["end"], 2),
-                                                         "what": s["what"], "quality": q})
+                                                         "what": s["what"], "quality": q, "file": f["name"],
+                                                         "found_for": str(s.get("query") or "")[:160], **({"described": False} if s.get("described") is False else {}),
+                                                         "fstart": round(float(s["start"]), 3), "fend": round(float(s["end"]), 3)})
         st.put("library.json", {"files": lib, "scenes": lib_scenes, "photos": photos,
                                 "found": [{k: s.get(k) for k in ("rel", "start", "end", "what", "query", "score")} for s in shots]})
         if shots:
@@ -873,7 +949,7 @@ class LocalRunner:
         landscape = talk is None or talk["w"] >= talk["h"]
         lines = [f"P{n + 1} [{p[0].start:.0f}-{p[-1].end:.0f} s] " + " ".join(s.text for s in p) for n, p in enumerate(passages)]
         owned = "\n".join(f"- {str(s.get('what') or '')[:100]}" for s in have[:80]) or "(none: the video has no B-roll of its own)"
-        prompt = ((f"The creator's notes: {brief[:1500]}\n\n" if brief else "") + f"B-roll the video already has:\n{owned}\n\n"
+        prompt = ((f"The creator's notes: {SPF.fit_brief(brief, 1500)}\n\n" if brief else "") + f"B-roll the video already has:\n{owned}\n\n"
                   + "What is said, in passages:\n" + "\n".join(lines)[:20000]
                   + "\n\nFor each passage (by its number): is it covered, and if not, the search.")
         progress(0.0, "Finding what your footage doesn't show")
@@ -917,7 +993,8 @@ class LocalRunner:
             if pick["kind"] == "photo":
                 a = STOCK_PHOTO_BASE + 10.0 * len(photos)
                 photos.append({"start": a, "end": a + PH.SCENE_S, "what": f"(still photo, stock) {what}", "quality": 6.0,
-                               "file": f"Stock - {pick['provider'].title()} photo {pick['id']}", "photo": path, "library": True, "stock": meta})
+                               "file": f"Stock - {pick['provider'].title()} photo {pick['id']}", "photo": path, "library": True, "stock": meta,
+                               "fstart": 0.0, "fend": PH.SCENE_S})
             else:
                 dur = max(3.0, float(pick.get("duration") or 10.0))
                 name = f"Stock - {pick['provider'].title()} {pick['id']}"
@@ -926,7 +1003,8 @@ class LocalRunner:
                             "h": int(pick.get("h") or (1080 if landscape else 1920)), "fps": 30.0, "audio": False, "tc": 0.0, "tc_df": False,
                             "broll": True, "library": True, "stock": meta})
                 lib_scenes[name] = [{"start": round(t + 0.2, 2), "end": round(t + max(1.5, min(dur - 1.0, 12.0)), 2),
-                                     "what": f"(stock footage) {what}", "quality": 6.0}]
+                                     "what": f"(stock footage) {what}", "quality": 6.0, "file": name, "fstart": 0.2,
+                                     "fend": round(max(1.5, min(dur - 1.0, 12.0)), 2)}]
                 t += dur + 10.0
             found.append({"query": q, "passage": n + 1, "provider": pick["provider"], "id": pick["id"], "kind": pick["kind"], "page": pick.get("page")})
             self._live("stock", query=q, found=len(hits), provider=pick["provider"], media=pick["kind"], page=pick.get("page"))
@@ -961,6 +1039,7 @@ class LocalRunner:
                 need.setdefault(got[0], (got[1], got[2]))
         bad: set[str] = set()
         credits: list[str] = []
+        restamped = False
         for path, (meta, f) in need.items():
             dest = Path(path)
             try:
@@ -977,6 +1056,10 @@ class LocalRunner:
                         raise RuntimeError("no picture in it")
                     f["dur"] = round(min(float(info.get("format", {}).get("duration") or 0), float(f["dur"]) + 9.0), 3)
                     f["end"] = round(f["start"] + f["dur"], 3)
+                    for sc in (sj.get("scenes") or {}).get(f["name"]) or []:      # (the site's length was rounded up: the offered scene ends where the real file does)
+                        sc["fend"] = round(min(float(sc.get("fend", f["dur"])), f["dur"] - 0.05), 3)
+                        sc["end"] = round(min(float(sc["end"]), f["end"] - 0.05), 3)
+                        restamped = True
                     f["w"], f["h"], f["fps"] = int(vs.get("width") or f["w"]), int(vs.get("height") or f["h"]), float(_fps(vs))
                     f["size"], f["mtime"] = dest.stat().st_size, int(dest.stat().st_mtime)
             except Exception as e:  # noqa: BLE001 - that cutaway is left out, the video is not
@@ -984,6 +1067,8 @@ class LocalRunner:
                 bad.add(path)
                 continue
             credits.append(f"{meta.get('credit')} - {meta.get('page')}" if meta.get("page") else str(meta.get("credit")))
+        if restamped:
+            st.put("stock.json", sj)
         if bad:
             for c in cutaways:
                 got = stock_of(c)
@@ -1030,11 +1115,19 @@ class LocalRunner:
         if not files:
             raise RuntimeError("no videos in that folder")
         notes_ = self.projects.get(pid).get("notes") or ""
+        entries = EL.parse(opts["edit_list"]) if opts.get("edit_list") else EL.from_steps(FL.steps(notes_), files)    # (a list the AI gave, or an outline whose numbers are file names: no one chose this mode)
+        if entries:
+            return self.make_edit_list(pid, proj, folder, st, ai, engine, opts, P, files, entries,
+                                       from_outline=not opts.get("edit_list") and not opts.get("auto_approve"))    # (an outline that turned into an exact list asks once)
         counts = MO.quick_counts(folder, skipped)
         det = MO.detect(notes_, n_photos=counts["photos"], n_videos=len(files), audio_clips=sum(1 for f in files if f.get("audio")),
                         setting=opts.get("montage") or "auto")
         if det:                                                              # known without listening: a slideshow, a montage asked for, clips with no sound
             return self.make_montage(pid, proj, folder, st, ai, engine, opts, P, det, files)
+        from . import loadgov
+        P("transcribing", "Looking at the footage", 0.025)
+        FT.attach(files, st.dir / "facts", getattr(engine, "models_dir", None), workers=loadgov.render_workers(2, 4),     # (what each file is: roles, faces, shots, blur; cached)
+                  progress=lambda fr, m: P("transcribing", m, 0.025 + 0.005 * fr))
         audios = scan_audio(folder, proj.get("extra_audio") or [])
         group = self.find_group(files, audios, st, lambda fr, m: P("transcribing", m, 0.03 + 0.02 * fr))
         if group:
@@ -1054,8 +1147,12 @@ class LocalRunner:
                     f["clean"] = {"audio": r["audio"], "offset": r["offset"], "score": r["score"], "name": r["audio_name"],
                                   "tc": rec.get("tc", 0.0), "dur": rec.get("dur"), "ch": rec.get("ch", 2)}
         st.put("files.json", files)
+        early = self._describe_early(files, ai, st)                         # (B-roll that is plainly B-roll is looked at while the talking is written down)
         all_words = self.transcribe(files, ai, st, opts.get("transcriber", "parakeet"), lambda f, m: P("transcribing", m, 0.05 + 0.3 * f), group,
                                     refresh=True)
+        FT.refine_with_words(files, all_words)                                 # (words per second and the spoken share, from the transcript itself)
+        if early is not None:
+            early.join()
         det = MO.detect(self.projects.get(pid).get("notes") or "", n_words=len(all_words), footage_s=sum(float(f.get("dur") or 0) for f in files),
                         n_photos=0, n_videos=len(files), setting=opts.get("montage") or "auto")
         if det and not group:                                                # nobody is talking: cut to music instead (a multicam shoot is never one)
@@ -1067,7 +1164,8 @@ class LocalRunner:
                 st.put("name_corrections.json", fixes)
                 P("transcribing", f"Corrected {len(fixes)} name spelling(s) from your notes", 0.34)
         P("finding", "Telling the interviewer from the guest", 0.35)
-        words = self.guest_words(all_words, ai, st)
+        spk_mode, seminar = self.speaker_policy(opts)
+        words = self.guest_words(all_words, ai, st, spk_mode, seminar)
         P("finding", "Looking at the B-roll", 0.36)
         scenes = self.describe(files, words, ai, st, lambda f, m: P("finding", m, 0.36 + 0.06 * f))
         brief = self.projects.brief(self.projects.get(pid))
@@ -1092,8 +1190,84 @@ class LocalRunner:
         if plan.get("script_map"):
             self.store.update(job, status="approval", stage="Script map ready — review the exact lines, then approve rendering", progress=0.54, error=None)
             return
+        if plan.get("awaiting_approval") or opts.get("dry_run") or opts.get("plan_first"):   # an instruction needs an answer (constraints.py), the plan was asked for without a render (MCP plan_long_video), or the person wants to see it first
+            if not plan.get("awaiting_approval"):
+                plan["awaiting_approval"], plan["dry_run"] = True, bool(opts.get("dry_run"))
+                st.put("plan.json", plan)
+            asked = bool((plan.get("approval") or {}).get("questions"))
+            self.store.update(job, status="approval", progress=0.54, error=None,
+                              stage="Some of your instructions need a look: check the plan, then make the video" if asked else "The plan is ready: check it, then make the video")
+            return
         self.render(pid, plan, files, words, scenes, ai, engine, st, folder, note="first cut" if not plan.get("version") else "made again",
                     all_words=all_words)
+
+    def make_edit_list(self, pid: str, proj: dict, folder: Path, st: State, ai: LocalAI, engine: LocalEngine, opts: dict, P, files: list[dict],
+                       entries: list[dict], from_outline: bool = False) -> None:
+        """An exact edit list (editlist.py): the clips play in the order given, trimmed as given, each with its own sound or silent; nothing is
+        chosen, cut out or reordered. B-roll (from the folder's other clips, when allowed) is laid over it, never shorter than the minimum and
+        never one the person ruled out. Final Cut gets every clip as its own piece of the timeline."""
+        job = proj["job"]
+        P("transcribing", "Reading your edit list", 0.02)
+        self._music_choice(opts, st)
+        min_s = float(opts.get("min_shot_s") or 0)
+        items, problems, how = EL.items_for(entries, files, min_s)
+        if not items:
+            raise RuntimeError("the edit list came out empty: " + "; ".join(problems))
+        for q in problems:
+            NT.note("warn", q, do="Nothing, or change the list and make the video again.")
+        used = set(how)
+        mode = str(opts.get("broll_mode") or "auto")
+        named = [str(x) for x in (opts.get("broll_files") or [])]
+        for f in files:
+            f["audio_orig"] = f.get("audio_orig", f["audio"])
+            if f["name"] in used:
+                f["broll"] = False
+                f["audio"] = bool(f["audio_orig"]) and how[f["name"]] == "own"          # a silent clip plays picture only
+            else:                                                                        # everything not in the list is B-roll, unless the person named which files are
+                f["broll"] = mode != "none" and (not named or any(EL.find_file(x, [f])[0] is not None for x in named))
+        st.put("files.json", files)
+        listed = [f for f in files if f["name"] in used and f["audio"]]
+        want_words = bool(listed) and (opts.get("caption_style") not in (None, "", "none") or (mode != "none" and any(f["broll"] for f in files)))
+        all_words: list[dict] = []
+        if want_words:
+            all_words = self.transcribe(listed, ai, st, opts.get("transcriber", "parakeet"),
+                                        lambda fr, m: P("transcribing", m, 0.05 + 0.3 * fr), None, refresh=True)
+        brief = self.projects.brief(self.projects.get(pid))
+        scenes: dict = {}
+        pool_files = [f for f in files if f["broll"]]
+        if pool_files:
+            P("finding", "Looking at your B-roll", 0.36)
+            scenes = self.describe(pool_files, all_words, ai, st, lambda fr, m: P("finding", m.replace("Looking at", "Looking at B-roll:"), 0.36 + 0.06 * fr))
+        pool = [{**sc, "file": f["name"]} for f in pool_files for sc in scenes.get(f["name"], [])]
+        rules = PR.rules_from(opts)
+        pool = stamp_pool(EL.clean_pool(pool, rules["avoid"], min_s, rules["exclude_files"]), files)
+        old = st.get("plan.json", {}) or {}
+        notes = self.projects.get(pid).get("notes") or ""
+        title = " ".join(str(proj.get("title") or "").split()) or Path(str(proj.get("folder") or folder)).name
+        sents = seg(all_words)
+        plan = {"style": "story", "exact": True, "rules": rules, "items": items, "pool": pool, "title": title, "gap": 0.0, "hook_text": old.get("hook_text", ""),
+                "summary": f"{len(items)} clips, in the order you gave", "beat_sync": False, "target_s": None, "min_shot_s": min_s,
+                "music": (self._song_music(opts["song"]) if opts.get("song") else {"mode": "none"} if opts.get("music") in (None, "")
+                          else {"mode": "auto"} if opts.get("music") == "auto" else {"mode": "auto", "wanted": str(opts.get("music"))}),
+                "edit_list": [{"label": e.get("label") or e["file"], "file": it.get("file"), "audio": e["audio"]} for e, it in zip(entries, items)],
+                "version": int(old.get("version", 0)), "history": old.get("history", []), "broll_notes": old.get("broll_notes", []),
+                "broll_per_s": 10.0}
+        if opts.get("graphics") and not plan["hook_text"] and sents:
+            plan["hook_text"] = self.hook(ai, {**plan, "items": [{"kind": "talk", "a": s_.idx, "b": s_.idx} for s_ in sents[:2]]}, sents, brief)
+        plan["pending_render"], plan["pending_note"] = True, "edit list" if not plan.get("version") else "edit list again"
+        st.put("plan_words.json", {"words": all_words, "spans": []})
+        st.put("plan.json", plan)
+        if getattr(self, "live_job", None):
+            live.stage(self.store, self.live_job, f"{len(items)} clips in your order" + (f", {len(pool)} B-roll shot(s) to choose from" if pool else ", no B-roll"))
+        if from_outline:                                                    # nobody chose this mode: the numbers in the outline happen to be file names, so ask once
+            plan["exact_from_outline"], plan["awaiting_approval"] = True, True
+            plan["approval"] = {"reason": "Your numbered list names the files, so I will play exactly those parts. OK?",
+                                "questions": ["Your numbered list names the files, so I will play exactly those parts. OK?"], "report": ""}
+            st.put("plan.json", plan)
+            self.store.update(proj["job"], status="approval", progress=0.54, error=None,
+                              stage="Your numbered list names the files, so I will play exactly those parts. OK?")
+            return
+        self.render(pid, plan, files, all_words, scenes, ai, engine, st, folder, note=plan["pending_note"], all_words=all_words)
 
     def make_keep_cut(self, pid: str, proj: dict, folder: Path, st: State, ai: LocalAI, engine: LocalEngine, opts: dict, P) -> None:
         """"Add B-roll to a video": one finished (or single-take) video is the whole programme, played once from start to end exactly as
@@ -1142,6 +1316,9 @@ class LocalRunner:
         style = video_kind(ai, notes, opts.get("kind")) if notes.strip() or opts.get("kind") in KINDS else "story"
         if style == "ad":
             style = "promo"                                                 # (an ad's end card and cut-down rules would change the video)
+        rules = PR.rules_from(opts)
+        sel = PR.select(files, scenes, words, self.sparse, keep_cut=True)         # (every other video is B-roll here, talking or not: only placeholders and unusable stretches change)
+        scenes = sel["scenes"]
         pool = [{**s, "file": f["name"]} for f in files if f["broll"] and not f.get("library") for s in scenes.get(f["name"], [])]
         try:                                                                 # photos in the folder: offered as B-roll like in a normal edit
             cache = st.get("photos.json", {}) or {}
@@ -1156,6 +1333,7 @@ class LocalRunner:
             pool = pool + ((st.get("library.json") or {}).get("photos") or [])
         if opts.get("stock"):
             pool = pool + ((st.get("stock.json") or {}).get("photos") or [])
+        pool = stamp_pool(EL.clean_pool(pool, rules["avoid"], rules["min_shot_s"], rules["exclude_files"]), files)
         old = st.get("plan.json", {}) or {}
         title = " ".join(str(proj.get("title") or "").split()) or Path(a_file["name"]).stem
         if title.lower() in {Path(a_file["name"]).stem.lower(), Path(str(proj.get("folder") or "")).name.lower()}:     # (still the file's or folder's name: name it from what is said)
@@ -1163,7 +1341,7 @@ class LocalRunner:
             title = earlier if earlier and earlier.lower() != title.lower() else (FL.name_it(ai, sents, notes) or title)
             if title.lower() != Path(a_file["name"]).stem.lower():
                 self.projects.update(pid, title=title)                      # (the sidebar shows the project's name)
-        plan = {"style": style, "keep_cut": {"file": a_file["name"], "start": a_file["start"], "end": a_file["end"]},
+        plan = {"style": style, "rules": rules, "pool_excluded": sel["excluded"][:60], "keep_cut": {"file": a_file["name"], "start": a_file["start"], "end": a_file["end"]},
                 "items": [{"kind": "visual", "start": a_file["start"], "end": a_file["end"]}], "pool": pool, "title": title,
                 "summary": " ".join(s.text for s in sents[:6])[:400], "gap": 0.0, "hook_text": old.get("hook_text", ""),
                 "music": (self._song_music(opts["song"]) if opts.get("song") else {"mode": "none"} if opts.get("music") in (None, "")
@@ -1193,7 +1371,7 @@ class LocalRunner:
             if t:
                 return t
         used = set(m.get("used", []))
-        own = MU.own_tracks(folder / "Music")
+        own = own_songs(folder)
         if own and not m.get("wanted"):
             return own[int(hashlib.sha1(title.encode()).hexdigest()[:6], 16) % len(own)]
         pace = MO.pace_key(mt.get("pace"))
@@ -1478,8 +1656,8 @@ class LocalRunner:
         placed = (rc.get("final") or {}).get("cutaways")
         if placed is None or plan.get("pool") is None:
             raise ValueError("render the video once more first: it was made before shots could be swapped")
-        pool = [s for s in plan["pool"] if s["quality"] >= (6 if plan.get("style") == "ad" else 4)]   # (the same pool render() numbers its shots in)
         files = list(st.get("files.json") or [])
+        pool, _ = usable_pool(plan["pool"], files, plan.get("style") == "ad", plan.get("rules"))      # (the same pool render() numbers its shots in)
         return {"proj": proj, "job": proj["job"], "st": st, "plan": plan, "rc": rc, "placed": placed, "pool": pool, "files": files}
 
     def _shot_source(self, s: dict, sc: dict, src: float | None = None, length: float = 2.0):
@@ -1940,6 +2118,33 @@ class LocalRunner:
     def avoided(self, pid: str) -> list[dict]:
         return AV.load(State(home_of(self.projects.get(pid))))
 
+    def style_of(self, pid: str) -> dict:
+        """The style object of a video (a video made before styles existed: the one its kind implies) and what is wrong with it."""
+        st = State(home_of(self.projects.get(pid)))
+        sty = plan_style(st.get("plan.json") or {})
+        return {"style": sty, "problems": SPF.validate(sty), "describe": SPF.describe(sty)}
+
+    def set_style(self, pid: str, partial: dict, scope: str = "") -> dict:
+        """Change some settings of a video's style ({"pace": {"name": "fast"}, ...}); scope "always" also keeps the settings it states for every
+        later video (as if they were in the "How it edits" points). Problems are reported and nothing changes."""
+        if not isinstance(partial, dict):
+            raise ValueError("the style must be an object of settings")
+        st = State(home_of(self.projects.get(pid)))
+        plan = st.get("plan.json")
+        if not plan:
+            raise ValueError("make the video first: it has no plan yet")
+        new, problems = SPF.apply_partial(plan_style(plan), partial)
+        if problems:
+            raise ValueError("; ".join(problems))
+        plan["style_obj"] = new
+        if isinstance(partial.get("pace"), dict) and partial["pace"].get("name") in PACES:
+            plan["gap"] = float(PACES[partial["pace"]["name"]]["gap"])
+        st.put("plan.json", plan)
+        flat = SPF.flat_from_nested(partial)
+        if scope == "always" and flat:
+            self.projects.set_points_style({**self.projects.points_style(), **flat}, self.projects.points_sig())
+        return {"style": new, "describe": SPF.describe(new), "flat": flat}
+
     def avoid_shot(self, pid: str, shot: dict, undo: bool = False) -> dict:
         """Rule a shot out for this video -> {"result": "excluded" | "swapped" | "removed" | "next" | "noted" | "undone", "message"}.
         The shot is remembered, so the footage search, the B-roll picker and the Replace sheet never offer it again. What happens to it now
@@ -2060,6 +2265,8 @@ class LocalRunner:
         files = st.get("files.json") or scan(folder)
         group = (st.get("multicam.json") or {}).get("group")
         pw = st.get("plan_words.json")
+        if pw is not None and not pw.get("words") and (st.get("plan.json") or {}).get("exact"):
+            return files, group, [], []                                    # an edit list made without listening: there is nothing to read back
         if pw and pw.get("words"):
             from .parakeet import split_glued_numbers
             all_words = split_glued_numbers(pw["words"])      # (saved before the fix: "was22" -> "was" "22")
@@ -2074,17 +2281,25 @@ class LocalRunner:
         st.put("plan_words.json", {"words": all_words, "spans": spans})   # from now on this edit's words are kept with it
         return files, group, all_words, SP.drop_spans(all_words, spans)
 
-    def guest_words(self, words: list[dict], ai: LocalAI, st: State) -> list[dict]:
-        """The transcript without the interviewer's questions (cached): only the person being interviewed can be picked."""
+    def guest_words(self, words: list[dict], ai: LocalAI, st: State, mode: str = "auto", seminar: bool = False) -> list[dict]:
+        """The transcript without the interviewer's questions (cached): only the person being interviewed can be picked.
+        mode (style.speakers.remove_interviewer): "never" keeps everyone, "always" removes the labelled host, "auto" removes the host only when
+        there is an interviewer at all, and a seminar keeps the audience's questions, tagged who="audience" (for the wide shot and a lower third)."""
         sig = hashlib.sha1(f"v3:{len(words)}:{words[0]['start'] if words else 0}:{words[-1]['end'] if words else 0}".encode()).hexdigest()
         c = st.get("roles.json")
         if c and c.get("sig") == sig:
-            spans = [tuple(x) for x in c["spans"]]
+            every = [tuple(x) for x in c.get("host_all", c["spans"])]
+            has = bool(c.get("has_interviewer", bool(every)))
         else:
-            spans = SP.host_spans(ai, words)
-            st.put("roles.json", {"sig": sig, "spans": spans})
-        kept = SP.drop_spans(words, spans)
-        log.info(f"interviewer removed: {len(spans)} stretches, {len(words) - len(kept)} of {len(words)} words")
+            every, has = SP.analyse(ai, words)
+        mode = mode if mode in ("auto", "always", "never") else "auto"
+        apply = every if (mode == "always" or (mode == "auto" and has and not seminar)) else []
+        audience = every if (mode == "auto" and has and seminar) else []
+        st.put("roles.json", {"sig": sig, "spans": apply, "host_all": every, "has_interviewer": has, "audience": audience, "mode": mode})
+        kept = SP.drop_spans(words, apply)
+        if audience:
+            kept = [{**w, "who": "audience"} if any(a - 0.02 <= (w["start"] + w["end"]) / 2 <= b + 0.02 for a, b in audience) else w for w in kept]
+        log.info(f"interviewer removed: {len(apply)} stretches, {len(words) - len(kept)} of {len(words)} words" + (f"; {len(audience)} audience stretch(es) kept" if audience else ""))
         return kept
 
     def find_group(self, files: list[dict], audios: list[dict], st: State, progress) -> dict | None:
@@ -2194,13 +2409,13 @@ class LocalRunner:
         from .openai_audio import has_punctuation
         cache = st.get("words.json", {})
         todo = [f for f in files if not f["broll"] and f["audio"] and not f.get("multicam")
-                and not (cache.get(f["name"]) and cache[f["name"]].get("size") == f["size"] and cache[f["name"]].get("mtime") == f["mtime"]
-                         and not (refresh and not has_punctuation(cache[f["name"]].get("words") or [])))]
+                and not ((hit := PR.cache_lookup(cache, f)) and hit.get("mtime") == f["mtime"]       # (this very file: its path, size and date, not just its name)
+                         and not (refresh and not has_punctuation(hit.get("words") or [])))]
         for done, f in enumerate(todo):
             progress(done / max(1, len(todo)), f"Transcribing {f['name']} ({done + 1} of {len(todo)})" + (" (Parakeet)" if backend == "parakeet" else ""))
             if getattr(self, "live_job", None) and f.get("path"):
                 live.filmstrip(self.store, self.live_job, f["path"], f["dur"], of=f["name"], n=4)
-            cache[f["name"]] = {"size": f["size"], "mtime": f["mtime"], "words": self._words_of(f, ai, backend)}
+            cache[f["name"]] = {"size": f["size"], "mtime": f["mtime"], "key": PR.cache_key(f), "words": self._words_of(f, ai, backend)}
             st.put("words.json", cache)
             if getattr(self, "live_job", None):
                 live.words(self.store, self.live_job, cache[f["name"]]["words"], of=f["name"])
@@ -2246,23 +2461,71 @@ class LocalRunner:
         spoken = sum(max(0.0, w["end"] - w["start"]) for w in ws)
         return spoken / max(1.0, f["dur"]) < 0.12
 
+    def _describe_early(self, files: list[dict], ai: LocalAI, st: State):
+        """Start describing the files that are B-roll whatever is said in them (named B-roll, or no sound at all) on a thread of their own, so
+        it overlaps the transcription: they need each other's results for nothing. The later describe() finds them in the cache and looks only
+        at what is left (the files whose talking decides whether they are B-roll). Returns the thread (join it), or None if there is nothing to do."""
+        sure = [f for f in files if (f["broll"] or not f["audio"]) and not f.get("library")]
+        if not sure:
+            return None
+
+        def go():
+            try:
+                self.describe(sure, [], ai, st, lambda fr, m: None)
+                if FT.full_allowed():                                            # night window only: the heavy camera-motion level for the B-roll
+                    FT.attach([dict(f) for f in sure], st.dir / "facts", level="full", workers=1)        # (copies: the cache is what is upgraded, not the scan in use)
+            except Exception as e:  # noqa: BLE001 - the real describe() does it again, in order
+                log.info(f"describing B-roll early failed ({e}): done after the transcription instead")
+        t = threading.Thread(target=go, name="describe-early", daemon=True)
+        t.start()
+        return t
+
+    def _from_catalog(self, todo: list[dict], cache: dict, st: State) -> list[dict]:
+        """The files of this project the footage catalogue has already described (same file, same size) take those scenes: they are not looked
+        at a second time. Returns the files that still need looking at."""
+        cat = self.library()
+        if cat is None or not todo:
+            return todo
+        from .catalog import rid
+        from . import broll as BR
+        left = []
+        for f in todo:
+            try:
+                rec = cat.load(rid(f["path"]))
+                sc = [{"start": max(0.0, float(x["start"])), "end": min(float(f["dur"]), float(x["end"])), "what": str(x.get("what") or ""), "quality": float(x.get("quality") or 5)}
+                      for x in ((rec or {}).get("scenes") or []) if x.get("what")] if rec and rec.get("kind") == "video" and rec.get("size") == f.get("size") else []
+            except Exception:  # noqa: BLE001 - looked at as usual
+                sc = []
+            sc = [x for x in sc if x["end"] - x["start"] >= 0.5]
+            if sc:
+                cache[f["name"]] = {"size": f["size"], "key": PR.cache_key(f), "scenes": sc, "sheets": BR.sheets_for(f["dur"])}
+            else:
+                left.append(f)
+        if len(left) != len(todo):
+            st.put("broll.json", cache)
+            log.info(f"{len(todo) - len(left)} file(s) already described by the catalogue: not looked at again")
+        return left
+
     def describe(self, files: list[dict], words: list[dict], ai: LocalAI, st: State, progress) -> dict[str, list[dict]]:
         """{file name: scenes in VIRTUAL seconds} for everything that is mostly pictures (B-roll, and any file with hardly any
         talking). A vision model looks at a few frames of each and says what it shows; looked at once, then cached."""
         from .glasses import contact_sheets
         cache = st.get("broll.json", {})
-        look = [f for f in files if (f["broll"] or self.sparse(f, words)) and not f.get("library")]      # (library footage: described by the catalog)
-        look = sorted(look, key=lambda f: -f["dur"])[:150] if len(look) > 150 else look                      # a sane cap on the AI bill
-        todo = [f for f in look if not (cache.get(f["name"]) and cache[f["name"]].get("size") == f["size"]
-                                        and cache[f["name"]].get("sheets", BR.MAX_SHEETS) >= BR.sheets_for(f["dur"]))]       # a long file is looked at more closely
-        for n, f in enumerate(todo):
-            progress(n / max(1, len(todo)), f"Looking at {f['name']} ({n + 1} of {len(todo)})")
+        look = [f for f in files if PR.describe_wanted(f, words, self.sparse)]      # (B-roll by its folder, its name or its role; library footage: described by the catalog)
+        cap = FT.describe_cap()                                                                               # (150 by day, 400 at night: a sane cap on the AI bill)
+        look = sorted(look, key=lambda f: -f["dur"])[:cap] if len(look) > cap else look
+        todo = [f for f in look if not ((hit := PR.cache_lookup(cache, f))
+                                        and hit.get("sheets", BR.MAX_SHEETS) >= BR.sheets_for(f["dur"]))]       # a long file is looked at more closely
+        todo = self._from_catalog(todo, cache, st)                              # (footage the catalogue has already described is not looked at again)
+
+        def look_at(f):
+            """One file: the scenes the vision model sees in it ([] when it can't say). Runs on its own thread: it reads and asks, nothing else."""
             try:
                 n_sheets = BR.sheets_for(f["dur"])
                 step = max(1.0, f["dur"] / (12 * n_sheets))
                 sheets = contact_sheets(Path(f["path"]), 0.0, f["dur"], step)[:n_sheets]
                 if not sheets:
-                    continue
+                    return f, [], n_sheets
                 for b, ts in sheets[:2]:
                     self._live("sheet", f=live.frame(self.store, self.live_job, b, width=480) if getattr(self, "live_job", None) else "",
                                of=f["name"], frames=len(ts))
@@ -2270,37 +2533,82 @@ class LocalRunner:
                 prompt = (f"File: {f['name']} ({f['dur']:.1f} s long). {len(sheets)} contact sheet(s); frame times in seconds: {times}. "
                           "Describe the scenes. Use these times.")
                 res = ai.complete_json("broll_describe", BR.SYSTEM, prompt, BR.SCHEMA, images=[b for b, _ in sheets])
-                sc = BR._valid_scenes(res.data.get("scenes"), 0.0, f["dur"])
+                scenes = BR._valid_scenes(res.data.get("scenes"), 0.0, f["dur"])
+                scenes = BR.refine_long(ai, f["name"], scenes, lambda a0, b0: contact_sheets(Path(f["path"]), a0, b0, max(1.0, (b0 - a0) / 12))[:2])   # (a long shot: its parts described one by one)
+                return f, scenes, n_sheets
             except Exception as e:  # noqa: BLE001
                 log.warning(f"describing {f['name']} failed: {e}")
-                continue
-            if sc:
-                cache[f["name"]] = {"size": f["size"], "scenes": sc, "sheets": n_sheets}
-                st.put("broll.json", cache)
-                for x in sc[:12]:
-                    self._live("scene", of=f["name"], start=round(float(x.get("start") or 0), 1), end=round(float(x.get("end") or 0), 1),
-                               what=str(x.get("what") or "")[:200], quality=x.get("quality"))
+                return f, [], 0
+        # An account AI (or ChatGPT) answers several files at once; this Mac's own picture model answers one at a time (one GPU).
+        workers = 1 if getattr(ai, "vision_local", False) else min(4, max(1, len(todo)))
+        done_n = 0
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="describe") as ex:
+            futs = [ex.submit(look_at, f) for f in todo]
+            for fu in as_completed(futs):
+                f, sc, n_sheets = fu.result()
+                done_n += 1
+                progress(done_n / max(1, len(todo)), f"Looking at {f['name']} ({done_n} of {len(todo)})")
+                if sc:
+                    cache[f["name"]] = {"size": f["size"], "key": PR.cache_key(f), "scenes": sc, "sheets": n_sheets}
+                    st.put("broll.json", cache)
+                    for x in sc[:12]:
+                        self._live("scene", of=f["name"], start=round(float(x.get("start") or 0), 1), end=round(float(x.get("end") or 0), 1),
+                                   what=str(x.get("what") or "")[:200], quality=x.get("quality"))
         out = {}
         looked = {f["name"] for f in look}
         for f in files:
             c = cache.get(f["name"])
             if f["name"] in looked and c:
-                out[f["name"]] = BR.split_long([{**s, "start": round(s["start"] + f["start"], 2), "end": round(s["end"] + f["start"], 2)} for s in c["scenes"]])
+                full = FT.facts_of(f, st.dir / "facts")
+                out[f["name"]] = [{**s, "file": f["name"], "w": f.get("w"), "h": f.get("h"), "fstart": round(float(s["start"]) - f["start"], 3), "fend": round(float(s["end"]) - f["start"], 3)}
+                                  for s in BR.split_long([{**FT.merge_scene(s, full), "start": round(s["start"] + f["start"], 2), "end": round(s["end"] + f["start"], 2)} for s in c["scenes"]])]   # (file seconds too: the pool is placed by them)
         lib = {**((st.get("library.json") or {}).get("scenes") or {}), **((st.get("stock.json") or {}).get("scenes") or {})}
         names = {f["name"] for f in files if f.get("library")}
         out.update({k: v for k, v in lib.items() if k in names})
         return out
 
+    def speaker_policy(self, opts: dict) -> tuple[str, bool]:
+        """(style.speakers.remove_interviewer, is it a seminar) as far as the options and the person's points say before the plan exists."""
+        given = opts.get("style") if isinstance(opts.get("style"), dict) else {}
+        try:
+            pts = self.projects.points_style()
+        except Exception:  # noqa: BLE001 - points are a bonus
+            pts = {}
+        mode = str(((given.get("speakers") or {}).get("remove_interviewer")) or ((pts.get("speakers") or {}).get("remove_interviewer")) or "auto")
+        kind = str(given.get("profile") or opts.get("kind") or "")
+        return mode, kind in ("seminar",)
+
+    def style_for(self, kind: str, nset: dict, opts: dict) -> dict:
+        """The style object of a video: defaults < the person's "How it edits" points < the notes (`nset`, from styles_profile.from_notes) < the options.
+        An explicit option beats the notes; the notes beat the profile's default."""
+        try:
+            pts = self.projects.points_style()
+        except Exception:  # noqa: BLE001 - points are a bonus
+            pts = {}
+        o = {"pace": opts["pace"]} if opts.get("pace") not in (None, "", "natural") else {}
+        given = opts.get("style") if isinstance(opts.get("style"), dict) else {}          # (a style object an AI gave through the MCP: the strongest layer)
+        if given.get("profile") in SPF.PROFILES:
+            return SPF.resolve(given["profile"], SPF.layer(SPF.to_overrides(pts), SPF.to_overrides(nset), SPF.to_overrides(o), given))
+        return SPF.build(kind, nset, pts, o, kind_chosen=opts.get("kind") in KINDS, extra=given)
+
     def plan(self, files, words, sents, scenes, ai, st, opts, brief, pid, progress) -> dict:
         """Decide what to keep: a list of items (talk = a run of sentences, visual = a stretch of mostly-silent footage)."""
         notes = (self.projects.get(pid).get("notes") or "")                  # WHAT THE CREATOR WROTE (the brief also carries the editor's learned rules)
-        style = video_kind(ai, notes, opts.get("kind"))                      # an ad is cut very differently from a story
+        want_notes = bool(notes.strip())
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="plan-ask") as ask_ex:
+            set_future = ask_ex.submit(SPF.from_notes, ai, notes, opts.get("kind")) if want_notes else None   # ONE cheap call: the editing settings and the length the notes state
+            style = video_kind(ai, notes, opts.get("kind"))                  # an ad is cut very differently from a story
+        nset = (set_future.result() if set_future is not None else None) or {}
+        sty = self.style_for(style, nset, opts)                              # defaults < the person's points < the notes < the options (styles_profile.py)
         want_pace = opts.get("pace") or "natural"
+        if want_pace == "natural" and SPF.stated(sty, "pace.name"):         # a pace the notes or the points state ("fast-paced") beats the kind's default
+            want_pace = sty["pace"]["name"]
         if want_pace == "natural" and (style in ("promo", "ad") or PROFILES.get(style, {}).get("pace") == "tight"):   # Automatic: an energetic kind cuts pauses tighter
             want_pace = "tight"
         gap = float(PACES.get(want_pace, PACES["natural"])["gap"])
-        named = {k for k, f in enumerate(files) if f["broll"] and scenes.get(f["name"])}                  # B-roll: cutaway footage only
-        silent = {k for k, f in enumerate(files) if not f["broll"] and scenes.get(f["name"]) and self.sparse(f, words)}   # mostly pictures
+        rules = PR.rules_from(opts)                                          # (words, files and windows the person ruled out: from the notes or an AI)
+        sel = PR.select(files, scenes, words, self.sparse)                   # (by what each file IS: footage.py's role; the words test only for files with no record)
+        scenes, named, silent = sel["scenes"], sel["named"], sel["silent"]    # (B-roll: cutaway footage only; the speaker is never B-roll)
         pool = named | silent
         if len(pool) >= len(files):
             pool, named, silent = set(), set(), set()
@@ -2308,13 +2616,20 @@ class LocalRunner:
         talk_s = sum(f["dur"] for k, f in enumerate(files) if k not in pool and f["audio"] and not f["broll"])
         target = float(opts.get("long_minutes") or 0) * 60                   # the length box wins; else what the notes ask for
         if not target:
-            target = length_from_notes(ai, notes)
+            target = float(nset.get("target_seconds") or 0)                   # (the same call that read the settings read the length)
+            if not target and want_notes and (nset.get("_fallback") or SPF.LENGTH_PHRASE_RE.search(notes)):
+                target = length_from_notes(ai, notes)                          # (that call failed, or missed a length the notes plainly give: the older reader)
         total = max(f["end"] for f in files if not f.get("library"))
         if not target and talk_s > 900:
             target = max(60.0, min(600.0, talk_s * 0.1))                  # a lot of footage and no length given: ~10%, at most 10 min
         eng = type("E", (), {"creative_router": lambda self_: ai})()
         old = st.get("plan.json", {}) or {}
         outline = FL.steps(notes)                                          # the creator's script: a REQUIREMENT, followed step by step
+        pre_pool = stamp_pool([{**sc, "file": nm} for nm, lst in (scenes or {}).items() for sc in lst if isinstance(sc, dict)], files)    # (the scenes the model may be asked about: "don't use the barn shots")
+        cprep = CN.prepare(ai, notes, sty, words, sents, files, pre_pool)    # (the other instructions in the notes: typed, pointed at the footage, the "don'ts" turned into filters; constraints.py)
+        rules["exclude_files"] = [*rules["exclude_files"], *cprep["filters"]["exclude_files"]]
+        if cprep["checklist"]:
+            brief = brief + "\n\n" + cprep["checklist"]                     # (a checklist at the END of what every planner reads)
         flow_report = None
         if outline:
             progress(0.0, f"Following your outline ({len(outline)} steps)")
@@ -2369,24 +2684,30 @@ class LocalRunner:
             pool_scenes = pool_scenes + ((st.get("library.json") or {}).get("photos") or [])
         if opts.get("stock"):                                                  # stock photos (only where a search found no video)
             pool_scenes = pool_scenes + ((st.get("stock.json") or {}).get("photos") or [])
-        plan = {"style": style, "items": items, "pool": pool_scenes, "title": title or old.get("title") or "My video", "summary": summary, "gap": gap,
+        pool_scenes = stamp_pool(EL.clean_pool(pool_scenes, rules["avoid"], rules["min_shot_s"], rules["exclude_files"]), files)   # (every scene names its file and its seconds in it, and gets its id)
+        remap_scene_ids(cprep.get("constraints") or [], pre_pool, pool_scenes)                              # (the ids the model chose from the first list, as the final pool numbers them)
+        plan = {"style": style, "style_obj": sty, "pool_excluded": sel["excluded"][:60], "rules": rules, "items": items, "pool": pool_scenes, "title": title or old.get("title") or "My video", "summary": summary, "gap": gap,
                 "hook_text": old.get("hook_text", ""), "music": old.get("music") or {"mode": "auto"}, "beat_sync": bool(old.get("beat_sync")),
                 "target_s": target or None, "version": int(old.get("version", 0)), "history": old.get("history", [])}
         if flow_report:
             plan["flow"] = flow_report
         chosen = {i for it in plan["items"] if it["kind"] == "talk" for i in range(it["a"], it["b"] + 1)}
-        bad = SP.check_selected(ai, sents, chosen)                          # a last look: no interviewer questions inside what was kept
+        coach = bool((st.get("roles.json") or {}).get("has_interviewer", True)) and (sty.get("speakers") or {}).get("remove_interviewer") != "never"
+        bad = SP.check_selected(ai, sents, chosen, coach)                   # a last look: no interviewer questions inside what was kept (no coach words in a monologue)
         if bad:
             log.info(f"{len(bad)} interviewer sentence(s) taken out of the edit")
             plan["items"] = drop_sentences(plan["items"], bad)
-        plan["items"] = no_repeats(plan["items"], sents)                    # a line is said once
+        alt_takes: list[dict] = []
+        take_groups: list[dict] = []
+        plan["items"] = no_repeats(plan["items"], sents, words, str((sty.get("takes") or {}).get("policy") or "best"), alt_takes, take_groups)   # a line is said once: its best take
+        plan["alt_takes"], plan["take_groups"] = alt_takes, take_groups
         if flow_report:                                                      # the script supervisor: check the cut against every point of the script, repair it
             progress(0.74, "Checking the cut against your script")
             banned = set(bad)
 
             def clean(its):                                                  # the interviewer, kept out of everything the supervisor adds or extends
                 ch = {i for it in its if it["kind"] == "talk" for i in range(it["a"], it["b"] + 1)}
-                more = SP.check_selected(ai, sents, ch)
+                more = SP.check_selected(ai, sents, ch, coach)
                 if more:
                     log.info(f"{len(more)} more interviewer sentence(s) taken out after the script check")
                     banned.update(more)
@@ -2400,7 +2721,10 @@ class LocalRunner:
                 HEDGE_RE.search(by_idx[i].text) for i in range(it["a"], it["b"] + 1) if i in by_idx)]
             if any(it["kind"] == "talk" for it in sure):
                 plan["items"] = sure                                         # an ad only says confident things
-        plan["items"] = finish_sentence(plan["items"], sents)                # never end on half a sentence
+        thoughts = style not in ("promo", "ad")                              # (an ad is cut tight: only its last line must finish)
+        if thoughts:
+            plan["items"] = skip_continuations(plan["items"], sents)         # no item opens on "And..." / "So..." carrying on from a line that is not there
+        plan["items"] = finish_sentence(plan["items"], sents, every=thoughts)   # never end on half a sentence: the middle items finish their thought too
         if style == "ad" and target:                                         # the ad is as long as asked: the end card comes on top of the talking
             room = max(15.0, target - OUTRO_S) * 1.06
             while True:
@@ -2417,6 +2741,28 @@ class LocalRunner:
                 plan["beat_sync"] = True                                    # fast cuts that land on the music
         if not plan["hook_text"]:
             plan["hook_text"] = self.hook(ai, plan, sents, brief)
+        try:                                                                  # (what the render adds to the sum of the passages: the logo end card; the validator counts it)
+            from . import foldergfx as _FG
+            _logo = _FG.logo_of(self.graphics_of(folder, st, files)) if opts.get("graphics", "title") and style not in ("ad",) else None
+            plan["render_extra"] = {"end_card_s": OUTRO_S} if _logo else {}
+        except Exception as e:  # noqa: BLE001 - a missing folder look is no reason to lose a plan
+            log.debug(f"end card length not counted: {e}")
+        plan = CN.finish(ai, plan, cprep, words, sents, files, pool_scenes, sty, bool(opts.get("auto_approve")), drop_sentences)   # (check every instruction in code, repair at most 3 times, say what is unmet)
+        if (plan.get("render_extra") or {}).get("end_card_s") and any("the cut is" in str(u.get("why")) for u in plan.get("unmet") or [] if isinstance(u, dict)):
+            plan = {**plan, "render_extra": {}, "skip_end_card": True}         # (a length the person asked for beats decoration: without the logo end card it fits)
+            plan = CN.finish(ai, plan, cprep, words, sents, files, pool_scenes, sty, bool(opts.get("auto_approve")), drop_sentences)
+            if any("the cut is" in str(u.get("why")) for u in plan.get("unmet") or [] if isinstance(u, dict)):
+                plan = {**plan, "skip_end_card": False, "render_extra": {"end_card_s": OUTRO_S}}      # (it did not help: keep the end card; the unmet length is reported)
+        plan["items"] = finish_sentence(plan["items"], sents)
+        try:                                                                  # (finishing the sentences changed the plan after it was checked: look again, and say what is new)
+            again = CN.check_plan(plan, plan.get("constraints"), files, words, pool_scenes, sty, sents=sents)
+            known = {(p["code"], p.get("constraint_id"), p.get("segment_id"), p["message"]) for p in plan.get("problems") or []}
+            fresh = [p for p in again["problems"] if (p["code"], p.get("constraint_id"), p.get("segment_id"), p["message"]) not in known]
+            if fresh:
+                plan["problems"] = list(plan.get("problems") or []) + fresh
+                plan["totals"] = again["totals"]
+        except Exception as e:  # noqa: BLE001 - a check is never a reason to lose a plan
+            log.warning(f"the last look at the finished plan failed: {e}")
         plan["pending_render"], plan["pending_note"] = True, "first cut" if not plan.get("version") else "made again"
         if outline:
             # Stop here. The creator can see every selected sentence before any media is rendered.
@@ -2468,7 +2814,7 @@ class LocalRunner:
         opening = " ".join(by[it["a"]].text for it in plan["items"][:2] if it["kind"] == "talk" and it["a"] in by)[:600]
         schema = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
         prompt = (f"Video: {plan['title']}\nWhat it says: {plan['summary']}\nHow it opens: {opening}\n"
-                  + (f"Creator's notes: {brief[:800]}\n" if brief else "") + (f"Change requested: {note}\n" if note else "")
+                  + (f"Creator's notes: {SPF.fit_brief(brief, 800)}\n" if brief else "") + (f"Change requested: {note}\n" if note else "")
                   + "Write the on-screen hook: 3 to 9 words, a promise or question that makes a viewer stay, no hashtags, no quotes, no emoji.")
         try:
             res = ai.complete_json("hook_text", "You write short, punchy on-screen hooks for videos.", prompt, schema)
@@ -2508,7 +2854,8 @@ class LocalRunner:
         used = set(m.get("used", []))
         exclude = used if force_new else set()
         want = want or str(m.get("wanted") or "")                            # what YOU asked for (the form or a change request)
-        own = [t for t in MU.own_tracks(folder / "Music") if t.path.name not in exclude] or MU.own_tracks(folder / "Music")
+        songs = own_songs(folder)
+        own = [t for t in songs if t.path.name not in exclude] or songs
         if own and not want:
             seed = int(hashlib.sha1((title + str(len(used))).encode()).hexdigest()[:6], 16)
             return own[seed % len(own)]
@@ -2554,7 +2901,7 @@ class LocalRunner:
                 bounds.append((-1e9, 1e9))
             elif it["a"] in by and it["b"] in by:
                 s0, s1 = float(it.get("t0", by[it["a"]].start)), float(it.get("t1", by[it["b"]].end))    # (t0/t1: words added by hand, transcript_edit.py)
-                for a, b in repace(words, s0, s1, float(plan.get("gap", 0.75))):
+                for a, b in repace(words, s0, s1, float(plan.get("gap", 0.75)), style=plan.get("style_obj")):
                     lo, hi = word_limits(ref, starts, words, max(a, s0), min(b, s1))    # its own words: inside its sentences only
                     a2, b2 = max(a, lo), min(b, hi)
                     for a3, b3 in (TE.subtract(a2, b2, hand_cuts) if hand_cuts else [(a2, b2)]):    # (words taken out in the transcript panel)
@@ -2578,20 +2925,31 @@ class LocalRunner:
         refresh_timecodes(files, mcj.get("group"))
         if mcj.get("group"):
             st.put("multicam.json", mcj)                                     # the corrected timecodes are what the build below reads back
-        keep = plan.get("keep_cut")
+        keep = plan.get("keep_cut") or plan.get("exact")                     # (a kept video and an edit list are never zoomed, re-levelled or re-timed)
         mont = plan.get("montage")
         if mont:                                                               # a montage / slideshow: the photos become clips, the shots play in the plan's order
             files = [f for f in files if not f.get("mphoto")] + self.bake_montage(plan, st)
+            intervals = [(float(i["start"]), float(i["end"])) for i in plan["items"] if i.get("kind") == "visual"]
+        elif plan.get("exact"):                                                # an edit list: exactly these stretches, in this order
             intervals = [(float(i["start"]), float(i["end"])) for i in plan["items"] if i.get("kind") == "visual"]
         elif keep:                                                             # "Add B-roll to a video": the whole video, once, as delivered
             intervals = [(float(keep["start"]), float(keep["end"]))]
         else:
             raw, bounds = self.intervals_of(plan, sents, words, all_words, with_bounds=True)
             intervals = self.tighten(raw, files, st, bounds)
+            pace_ = ((plan.get("style_obj") or {}).get("pace") or {})
             if self.cfg.get("clipper.ai_videos.cut_fillers", True):
-                intervals = cut_fillers(intervals, words)                      # "um", "uh" and stuttered repeats ("I I") are taken out of the speech
+                covered = [(t["start"], t["end"]) for g in (plan.get("take_groups") or []) for t in g.get("takes", [])]
+                intervals = cut_fillers(intervals, words, policy=str(pace_.get("fillers") or "cut"), covered=covered)   # "um", "uh" and stuttered repeats ("I I"): the style says how many go
             intervals = dedupe_intervals(intervals)                            # no moment is played twice
             intervals = merge_tiny(intervals, all_words)                       # a sliver of talk (under 1.2 s) joins its neighbour: no flash
+            if plan.get("style_obj"):                                          # every cut outside the words by the style's margin (never inside a word)
+                intervals = dedupe_intervals(SPT.snap_cuts(intervals, all_words, float(pace_.get("cut_margin_s", 0.08)),
+                                                           [(float(f["start"]), float(f["end"])) for f in files]))
+            intervals, bs_notes = BS.drop_broll_speech(intervals, files, keep_sound_ok=BS.allowed_files(proj.get("notes"), plan))   # (talk is never taken from a B-roll file's own microphone)
+            for q_ in bs_notes:
+                log.info(f"sound: {q_}")
+                NT.note("info", q_, do="Nothing: the voice comes from the talking footage. Say \"keep the natural sound\" in the notes if you want that clip's sound.")
             from . import negation
             intervals, kept_not = negation.keep_negations(intervals, words)    # no cut flips a sentence ("did not like" -> "did like")
             for n_ in kept_not:
@@ -2655,7 +3013,12 @@ class LocalRunner:
         if pool is None:                                                    # an older plan: the B-roll files only
             pool = [{**s, "file": f["name"]} for f in files if f["broll"] for s in scenes.get(f["name"], [])]
         ad = plan.get("style") == "ad"
-        pool = [s for s in pool if s["quality"] >= (6 if ad else 4)]
+        pool, pool_notes = usable_pool(pool, files, ad, plan.get("rules"))                    # (good enough, then placed by FILE seconds: a scene past the end of its file is left out)
+        for q in pool_notes:
+            log.warning(f"B-roll: {q}")
+            NT.note("warn", q, do="Nothing: that shot was not offered. Put other B-roll there in Final Cut if you want some.")
+        for q in check_pool_inside_files(pool, files):                      # (what resolve_pool prevents: a scene of an older plan without file seconds)
+            log.warning(f"B-roll pool: {q}")
         cutaways: list[dict] = []
         # what was said while no camera was rolling (only a recorder heard it): covered by B-roll from start to end, or not used at all
         group = (st.get("multicam.json") or {}).get("group")
@@ -2669,8 +3032,14 @@ class LocalRunner:
             if not intervals:
                 raise RuntimeError("everything kept was said while no camera was filming, and there is no B-roll to show over it")
             out_len = sum(b - a for a, b in intervals)
+        sty = plan_style(plan)                                              # every number that shapes this cut (styles_profile.py)
         pace = str(opts.get("pace") or "natural")
-        per_s = float(plan.get("broll_per_s") or PROFILES.get(plan.get("style"), PROFILES["story"])["cut_per_s"]) * PACE_BROLL.get(pace, 1.0)
+        if pace == "natural" and SPF.stated(sty, "pace.name"):              # (a pace the notes or the points state; an explicit option beats it)
+            pace = sty["pace"]["name"]
+        per_s = float(plan.get("broll_per_s") or SPF.per_s(sty)) * PACE_BROLL.get(pace, 1.0)
+        shot_lo, shot_hi = (float(x) for x in SPF.get(sty, "broll.shot_s", [1.5, 4.5]))
+        hold_s = float(SPF.get(sty, "pace.max_hold_s", 12.0))
+        brief_s = self.projects.brief_for(proj, "render", 6000, style=sty)       # (the style in five lines, the notes, then the rules: the same for every prompt of this render)
         # The same edit rendered again gets the SAME B-roll (the AI that places it is not repeatable, and a re-render used to lose or move shots you
         # had already looked at). The placement is remembered for this exact cut + B-roll pool; a changed cut / pool / a new plan places it afresh.
         iv_fp = [[round(a, 2), round(b, 2)] for a, b in intervals]
@@ -2686,29 +3055,38 @@ class LocalRunner:
         reuse = (not ad or bool(rc.get("pinned"))) and (rc.get("sig") == rsig or grown) and rc.get("planned") is not None
         carried = False
         if reuse:
-            cutaways = [dict(c) for c in rc["planned"]]
+            cutaways = rebind_by_sid([dict(c) for c in rc["planned"]], pool)
         elif pool and not ad and rc.get("te_carry"):                        # a transcript edit: the shots whose stretch is still there stay (transcript_edit.py)
             cutaways, carried = TE.carry_cutaways(rc["te_carry"], intervals), True
         if pool and not reuse and not carried:
             P("rendering", "Placing B-roll cutaways", 0.58)
             cutaways = BR.plan_cutaways(ai, seg(remap_words(words, intervals, 1.0)), pool,
-                                        bbrief, out_len, ad=ad, per_s=per_s)                  # (fast-paced: more often; take it slow: less)
-            allowed = BR.ad_suitable(ai, pool, self.projects.brief(proj)) if ad else None
+                                        bbrief, out_len, ad=ad, per_s=per_s, cmin=shot_lo, cmax=shot_hi, hold=hold_s)   # (fast-paced: more often; take it slow: less)
+            allowed = BR.ad_suitable(ai, pool, brief_s) if ad else None
             if ad:
                 cutaways = BR.fill_ad(cutaways, seg(remap_words(words, intervals, 1.0)), pool, out_len, allowed=allowed)
-            ph = [i for i, s in enumerate(pool) if s.get("photo") and i not in {c["scene"] for c in cutaways}]
-            if ph:                                                          # the photos, each where it fits what is being said
+            spoken_tok = PR.spoken_tokens(" ".join(w["text"] for w in words))
+            ph = [i for i, s in enumerate(pool) if s.get("photo") and i not in {c["scene"] for c in cutaways} and PR.photo_fits(s, spoken_tok)]
+            if ph:                                                          # the good photos (and those about something said), each where it fits what is being said
                 extra = BR.plan_cutaways(ai, seg(remap_words(words, intervals, 1.0)), [pool[i] for i in ph], bbrief, out_len, ad=ad,
                                          per_s=12.0 * PACE_BROLL.get(pace, 1.0))
                 for c in extra:
                     if all(abs(c["at"] - o["at"]) > o["length"] + 2.0 for o in cutaways):
                         cutaways.append({**c, "scene": ph[c["scene"]]})
                 cutaways.sort(key=lambda c: c["at"])
+            words_out = remap_words(words, intervals, 1.0)
+            if not ad and pool and cutaways is not None and self.cfg.get("clipper.ai_videos.broll_by_words", True) and float(SPF.get(sty, "broll.share", 0.3)) > 0:
+                vn_cache = dict(st.get("visual_nouns.json") or {})        # (BP.run: a cutaway on each concrete noun, a lead before it; the AI's own placements fill in)
+                cutaways, unmatched_nouns, vn_info = BP.run(ai, vn_cache, seg(words_out), words_out, cutaways, pool, sty, out_len,
+                                                            exclude_windows=PR.window_pairs(plan.get("exclude_windows"), lambda t: out_time(intervals, t)))
+                if vn_cache and vn_cache.get("sig"):
+                    st.put("visual_nouns.json", vn_cache)
+                plan["broll_unmatched"] = unmatched_nouns[:60]            # (numbers for graphics, things for stock: WP10 / the stock fetch read this)
             if plan.get("beat_sync") and track and beat_note and "BPM" in beat_note:
                 grid = self.beat_grid(track, st)
                 bt = BT.grid(grid["period"], 0.0, out_len + 2)
                 for c in cutaways:
-                    c["at"] = round(min(bt, key=lambda t: abs(t - c["at"])), 2)
+                    c["at"] = BP.snap_beat(c["at"], bt, words_out, c.get("noun_at"))      # (a beat never lands inside a word, nor after the noun it shows)
             if not ad:
                 cutaways = thin_cutaways(cutaways, pace)                    # room to breathe between shots (unless fast-paced)
             if nopic:
@@ -2723,7 +3101,7 @@ class LocalRunner:
         if ad and pool:
             spare = [(i, s) for i, s in enumerate(pool) if i not in {c["scene"] for c in cutaways} and s["end"] - s["start"] >= OUTRO_S and not s.get("photo")]
             if spare:
-                i, sc = max(spare, key=lambda x: x[1]["quality"])
+                i, sc = max(spare, key=lambda x: PR.effective_quality(x[1]))
                 bf = next((f for f in files if not f.get("multicam") and f["start"] - 1e-3 <= sc["start"] < f["end"]), None)
                 if bf:
                     outro = {"scene": i, "path": bf["path"], "ss": sc["start"] - bf["start"], "d": OUTRO_S, "w": bf["w"], "h": bf["h"], "fps": bf["fps"],
@@ -2732,7 +3110,9 @@ class LocalRunner:
         cuts: list[dict] = []
         if group:
             P("rendering", "Directing the camera angles", 0.59)
-            cuts = self.direct(group, intervals, ai, words, self.projects.brief(proj), st)
+            cuts = self.direct(group, intervals, ai, words, brief_s, st,
+                               hold=(float(SPF.get(sty, "multicam.min_hold_s", MC.MIN_HOLD)), *(float(x) for x in SPF.get(sty, "multicam.baseline_hold_s", [9.0, 12.0]))),
+                               wide_share=SPF.get(sty, "multicam.wide_share", None), profile=(sty.get("profile") if isinstance(sty, dict) else None))
         # the twelve-second rule: something changes on screen at least every 12 seconds (another camera, B-roll or a photo)
         sents_out = seg(remap_words(words, intervals, 1.0))
         # Where the script moves to the next creator-defined step, make the otherwise inevitable interview jump feel intentional.
@@ -2748,19 +3128,34 @@ class LocalRunner:
         def choose(t: float, free: list[int]):
             spoken = " ".join(s.text for s in sents_out if s.end >= t - 2.0 and s.start <= t + 6.0)
             return BR.pick_for(ai, spoken, pool, free, bbrief)
-        planned = [dict(c) for c in cutaways]
+        planned = [dict(c, sid=pool[c["scene"]].get("sid")) if isinstance(c.get("scene"), int) and 0 <= c["scene"] < len(pool) and pool[c["scene"]].get("sid")
+                   else dict(c) for c in cutaways]                          # (each placed shot carries its scene's id: a re-ordered pool is matched by it)
         csig = hashlib.sha1(json.dumps([[round(c["start"], 2), round(c["end"], 2), c["angle"]] for c in cuts]).encode()).hexdigest()
         # a jump cut inside one shot (an interview with a pause or a slip cut out) gets B-roll over it, as an editor hides it
         style_p = PROFILES.get(plan.get("style"), PROFILES["story"])
-        jumps = [j for j, _ in jump_cuts(intervals, files, cuts)] if (not keep and not mont and not style_p["punch_ins"] and not ad
+        jumps = [j for j, _ in jump_cuts(intervals, files, cuts)] if (not keep and not mont and not ad
                                                                        and self.cfg.get("clipper.ai_videos.cover_jumps", True)) else []
+        devices = {"punch": bool(self.cfg.get("clipper.ai_videos.punch_ins", True)) and not keep and not mont,       # (WP7: a punch-in, another angle or matching B-roll, taking turns)
+                   "prefer": ("punch", "angle", "broll") if style_p["punch_ins"] else ("angle", "broll", "punch"), "last": None}
+        try:
+            protected = PR.window_pairs(plan.get("exclude_windows"), lambda t: out_time(intervals, t))
+        except (TypeError, ValueError):
+            protected = []
+        cover_report: list[str] = []
+        punch_at: list[float] = []
         fresh = False
         if reuse and rc.get("csig") == csig and rc.get("final") is not None:
             cutaways, cuts = [dict(c) for c in rc["final"]["cutaways"]], [dict(c) for c in rc["final"]["cuts"]]
+            punch_at = [float(x) for x in rc["final"].get("punch_at") or []]
         else:
             cutaways, cuts = keep_moving(cutaways, cuts, intervals, pool if pool else [], allowed if pool and ad else None, group, out_len,
                                          exclude={outro["scene"]} if outro else set(), choose=choose, boundaries=step_boundaries,
-                                         jumps=jumps, share=JUMP_SHARE.get(pace, 0.6))
+                                         jumps=jumps, share=JUMP_SHARE.get(pace, 0.6), limit=hold_s, show=SPF.show_s(sty),
+                                         devices=devices, report=cover_report, protected=protected,
+                                         moves=self.movement_master(group, st) if group else None)
+            punch_at = [float(x) for x in devices.get("punch_at") or []]
+            for line in cover_report[:6]:
+                NT.note("info", line)
             fresh = True
         if nopic:                                                           # (an older saved placement: cover what no camera filmed now)
             cutaways, _ = cover_spans(cutaways, [(out_time(intervals, a), out_time(intervals, b)) for a, b in nopic], pool,
@@ -2779,19 +3174,40 @@ class LocalRunner:
             if varied:
                 log.info(f"B-roll variety: {varied} repeated shot(s) swapped for different ones")
         cutaways = no_flash_gaps(cutaways, pool or [], out_len)             # never a half-second flash of the speaker between two shots
-        if fresh:                                                          # (an ad's too, so a shot can be swapped; it is only reused once pinned)
-            st.put("render_cache.json", {"sig": rsig, "planned": planned, "csig": csig, "final": {"cutaways": cutaways, "cuts": cuts}})
+        if plan.get("min_shot_s"):                                          # (an edit list, or notes: no B-roll shot shorter than this)
+            cutaways = [c for c in cutaways if float(c["length"]) >= float(plan["min_shot_s"])]
+        wins = (plan.get("rules") or {}).get("exclude_windows")             # (stretches of the finished video the person wants without B-roll: a prayer, a vow)
+        if wins:
+            cutaways, kept_clear = PR.outside_windows(cutaways, wins)
+            if kept_clear:
+                NT.note("info", f"{kept_clear} B-roll shot(s) were left out of the stretches you asked to keep clear of B-roll", do="Nothing: the speaker stays on screen there.")
+        cutaways = CN.enforce(cutaways, plan, pool or [], intervals, out_time)   # (the files and stretches the notes ruled out, as constraints.py grounded them)
         plan.pop("stock_credits", None)
         if any(f.get("stock") for f in files) or (st.get("stock.json") or {}).get("photos"):
             P("rendering", "Downloading the stock B-roll the edit uses", 0.595)
-            plan["stock_credits"] = self.fetch_stock(cutaways, files, st)    # only the placed shots are downloaded
+            plan["stock_credits"] = self.fetch_stock(cutaways, files, st)    # only the placed shots are downloaded (their real lengths are known from here on)
+        cutaways, fitted = fit_to_footage(cutaways, files)                  # (a B-roll shot that would run past the end of its clip is shortened, or left out: never a failed render)
+        for q in fitted:
+            log.warning(f"B-roll: {q}")
+            NT.note("warn", q, do="Nothing: the video was made without that part of the shot. Put another shot there in Final Cut if you want one.")
+        nat_ok = BS.allowed_files(proj.get("notes"), plan)                  # a B-roll shot's own sound plays ONLY when the person asked for it (brollsound.py)
+        if nat_ok:
+            for c_ in cutaways:
+                bf_ = next((f for f in files if not f.get("multicam") and f["start"] - 1e-3 <= c_["src"] < f["end"]), None)
+                m_ = BS.jl_mix(c_, {}, bf_, sty, nat_ok) if bf_ else None
+                if m_:
+                    c_["a_mix"] = m_
+        if fresh:                                                          # (an ad's too, so a shot can be swapped; it is only reused once pinned)
+            st.put("render_cache.json", {"sig": rsig, "planned": planned, "csig": csig, "final": {"cutaways": cutaways, "cuts": cuts, "punch_at": punch_at}})
         self._live_broll(cutaways, pool or [], files)
         files = files + self.bake_photos(cutaways, files, st)               # photos become short animated clips (Final Cut gets the same clips)
         # the graphics in the folder (a logo, lower thirds, a title, see-through videos); "None" for graphics leaves them out too
         from . import foldergfx as FG
         fgx = self.graphics_of(folder, st, files) if opts.get("graphics", "title") else []
         logo = FG.logo_of(fgx) if fgx else None
-        if logo and outro is None and not keep:                             # every video ends on your logo (an ad: unless it has its own end card)
+        if logo and plan.get("skip_end_card") and not keep:
+            NT.note("info", "The logo end card was left off so the video fits the length you asked for", do="Nothing: say so in Change something if you want the end card back.")
+        if logo and outro is None and not keep and not plan.get("skip_end_card"):   # every video ends on your logo (an ad: unless it has its own end card; or the length asked for leaves no room)
             try:
                 ref = next((f for f in files if not f["broll"]), files[0])
                 CW, CH = (1920, 1080) if ref["w"] >= ref["h"] else (1080, 1920)
@@ -2809,36 +3225,70 @@ class LocalRunner:
         rough, rough_len, parts = self.assemble(files, intervals, cutaways, group, cuts, st,
                                                 lambda f: P("rendering", f"Cutting the kept stretches ({f:.0%})", 0.6 + 0.12 * f), outro=outro,
                                                 punch=not keep and not mont and bool(PROFILES.get(plan.get("style"), PROFILES["story"])["punch_ins"]),   # (a kept video is never zoomed)
+                                                punch_at=None if (keep or mont) else punch_at, punch_zoom=SPF.get(sty, "pace.punch_in", None),
                                                 even=not keep and not mont,       # (...nor re-levelled: it stays exactly as it is)
                                                 style=None if (keep or mont) else plan.get("style") or "story",   # (layouts: never in a kept video)
                                                 tmode="none" if keep else ("full" if mont and mont.get("dissolves") else "none" if mont and TR.mode_of(opts.get("transitions")) == "none"
                                                                             else "auto") if mont else TR.mode_of(opts.get("transitions")),     # (a montage: hard cuts and an end fade; soft dissolves only when switched on)
                                                 hook_at_start=bool(plan.get("hook_text")))
+        try:                                                                 # (what this render really added around each passage: the next plan counts it, so the length lands inside its band)
+            _n = sum(1 for it in plan.get("items") or [] if isinstance(it, dict) and it.get("kind") == "talk")
+            _base = float((plan.get("totals") or {}).get("plan_s") or (plan.get("totals") or {}).get("talk_s") or 0)
+            if _base > 0 and _n and not keep and not mont and not ad:
+                _per = CN.measured_per_item_s(_base, rough_len, _n, OUTRO_S if outro else 0.0)
+                if _per is not None:
+                    plan["length_model"] = {"per_item_s": _per, "plan_s": round(_base, 2), "rendered_s": round(rough_len, 2)}
+        except Exception as e:  # noqa: BLE001 - a measurement is never a reason to fail a render
+            log.debug(f"length model not updated: {e}")
+        try:                                                                # the sound the cut actually uses: a bad one is said out loud, with its time
+            for fl_ in BS.poor_sound_flags(parts[:600], files, self.grades(st))[:6]:
+                NT.note("warn", f"this shot's own sound is poor ({fl_['file']}): {fl_['why']}", start=fl_["start"], end=fl_["end"],
+                        do="Listen there in Final Cut: use another camera's or a recorder's sound for that stretch, or cover it with music.")
+            self.save_grades(st)
+        except Exception as e:  # noqa: BLE001 - a check never stops a render
+            log.debug(f"poor-sound check skipped: {e}")
         if getattr(self, "live_job", None):                                  # the live view: frames of the cut as it now stands
             live.filmstrip(self.store, self.live_job, rough, rough_len, of="the cut", n=8, what="the cut")
         endcard = None
         if outro and not outro.get("card"):                                  # an ad's closing B-roll shot gets its name, call to action and logo
-            end = self.end_info(ai, folder, plan, self.projects.brief(proj), st)
+            end = self.end_info(ai, folder, plan, brief_s, st)
             endcard = {"at": round(rough_len - OUTRO_S, 2), "len": OUTRO_S, "text": " - ".join(x for x in (end["business"], end["tagline"]) if x),
                        "business": end["business"], "tagline": end["tagline"], "logo": end.get("logo")}
         # Final Cut gets a real timeline built from the ORIGINAL files for every project - a multicam clip when there is a shoot, plain
         # clips otherwise - so each cut can be extended, each B-roll shot moved; the sound is the same recording the video uses
         mc = {"group": group, "items": fcp_items(parts), "cutaways": cutaways_of_parts(parts, files),
               "transitions": list(getattr(self, "last_transitions", None) or [])}          # (what assemble decided: Final Cut gets the same ones)
+        try:                                                                 # what the planner knew: markers, notes, alternate takes, the source-clips event
+            from . import fcpexport as FXE
+            from .engine import remapper as _rm
+            _bi = {s_.idx: s_ for s_ in sents}
+            mc["extras"] = FXE.extras(plan, files, scenes, lambda a_: _bi[a_].start, _rm(intervals), NT.peek(), mc["cutaways"],
+                                      style_line=" ".join(str(SPF.describe(sty)).split())[:300])
+        except Exception as e:  # noqa: BLE001 - the extras are a bonus: the project is still written without them
+            log.warning(f"the Final Cut markers and notes were skipped: {e}")
         words_rough = remap_words(words, intervals, 1.0)
         jobd = self.store.dir(job)
         for f in jobd.glob("clip_*"):
             f.unlink(missing_ok=True)
         shutil.rmtree(jobd / "fcp", ignore_errors=True)
         points = []
-        gmode = opts.get("graphics", "title")                                      # "" none | "title" the animated title card (+ key points) | "all" every kind of graphic
+        gmode = opts.get("graphics", {"none": "", "title": "title"}.get(sty["graphics"]["policy"], "all") if SPF.stated(sty, "graphics.policy") else "title")   # (an option beats the notes; the notes beat the default)
+        # "" none | "title" the animated title card (+ key points) | "all" every kind of graphic
         scene_gfx: list[dict] = []
         if gmode == "all":                                                          # slides, charts, stats, quotes, lower thirds: chosen from what is SAID
             from . import gfxplan
             P("rendering", "Choosing the on-screen graphics from the transcript", 0.69)
             out_words = remap_words(words, intervals, 1.0)
-            scene_gfx = gfxplan.plan(ai, seg(out_words), self.projects.brief(proj), PROFILES.get(plan.get("style"), PROFILES["story"]),
-                                     rough_len - (OUTRO_S + 0.3 if outro else 0.0), hook_end=3.2 if plan.get("hook_text") else 0.0, words=out_words, cfg=self.cfg)
+            try:                                                                    # outline steps -> chapter marks on the finished video's clock (the plan's chapter cards sit on them)
+                from .engine import remapper as _remapper
+                _by_idx = {s_.idx: s_ for s_ in sents}
+                marks = GC.chapter_marks(plan.get("flow"), plan.get("items") or [], lambda a_: _by_idx[a_].start, _remapper(intervals)) if plan.get("flow") else []
+            except Exception as e:  # noqa: BLE001 - no chapter marks is a fine result
+                log.debug(f"chapter marks skipped: {e}")
+                marks = []
+            scene_gfx = gfxplan.plan(ai, seg(out_words), brief_s, PROFILES.get(plan.get("style"), PROFILES["story"]),
+                                     rough_len - (OUTRO_S + 0.3 if outro else 0.0), hook_end=3.2 if plan.get("hook_text") else 0.0, words=out_words, cfg=self.cfg,
+                                     style=sty, chapters=marks, captions_on=str(SPF.get(sty, "captions.style", "none")) != "none")
             plan["gfx_credits"] = sorted({i["credit"] for g in scene_gfx for i in (g.get("items") or []) if i.get("credit")})      # photos need their credit
             log.info(f"graphics: {len(scene_gfx)} planned ({', '.join(g['kind'] for g in scene_gfx)})")
             try:
@@ -2847,7 +3297,7 @@ class LocalRunner:
                 log.warning(f"could not write the graphics check list: {e}")
         if gmode == "title" and (plan.get("style") in ("promo", "ad") or GRAPHIC_RE.search(proj.get("notes") or "")):
             P("rendering", "Choosing the key points for on-screen graphics", 0.7)
-            points = key_points(ai, seg(remap_words(words, intervals, 1.0)), self.projects.brief(proj),
+            points = key_points(ai, seg(remap_words(words, intervals, 1.0)), brief_s,
                                 rough_len - (OUTRO_S + 0.3 if outro else 0.0))
         folder_gfx: list[dict] = []
         bug = None
@@ -2878,7 +3328,7 @@ class LocalRunner:
                  "music_vibe": {"mood": (plan.get("music") or {}).get("mood", ""), "genre": (plan.get("music") or {}).get("genre", ""),
                                 "why": (plan.get("music") or {}).get("why", "chosen"), "by": "ai"},
                  "gfx_cards": scene_gfx, "graphics": gmode if (plan.get("hook_text") or scene_gfx) else "", "loudness_lufs": loud,
-                 "folder_gfx": folder_gfx, "folder_title": bool(placed["title"]), "logo_bug": bug}
+                 "folder_gfx": folder_gfx, "folder_title": bool(placed["title"]), "logo_bug": bug, "style_obj": plan.get("style_obj")}
         if placed["title"]:                                                        # your own title graphic opens the video: no fade in from black under it
             mc["transitions"] = [e for e in mc["transitions"] if e["kind"] != "fade_in"]
         jopts["fades"] = TR.fade_list(mc["transitions"])                           # (the fades at the ends, made in the final picture by polish.run)
@@ -2887,14 +3337,15 @@ class LocalRunner:
         P("rendering", "Captions, music and the title card", 0.74)
         try:
             try:
-                clip = polish.run(engine, job, rough, words_rough, override=[(0.0, rough_len)], mc=mc)
+                clip = polish.run(engine, job, rough, words_rough, override=[(0.0, rough_len)], mc=mc, picture_list=getattr(self, "last_picture_list", None))
             except ffmpeg.FFmpegError as e:                                 # a stalled / failed final render: once more, without the graphics
                 log.warning(f"the final render failed ({str(e)[:200]}); trying again without the on-screen graphics")
                 self.store.update(job, options={**jopts, "no_overlays": True})
-                clip = polish.run(engine, job, rough, words_rough, override=[(0.0, rough_len)], mc=mc)
+                clip = polish.run(engine, job, rough, words_rough, override=[(0.0, rough_len)], mc=mc, picture_list=getattr(self, "last_picture_list", None))
         finally:
+            self.drop_pieces()                                              # (the pieces were kept only for the final render)
             self.store.update(job, options=opts)                            # polish's working settings must never replace what you chose
-        loudness_pass(jobd / clip["file"], loud)
+        loudness_pass(jobd / clip["file"], loud, stem=(jobd / clip["sound_stem"]) if clip.get("sound_stem") else None)
         self.verify(jobd / clip["file"], rough_len, reference=rough)
         outline = FL.steps(proj.get("notes") or "") if not keep and not mont else []         # (a kept video says what it says: no script to check)
         if outline:
@@ -2915,6 +3366,18 @@ class LocalRunner:
                                  "quotes": final_by_step.get(row["n"], {}).get("quotes", []), "final_rendered": True,
                                  "covered": not final_by_step.get(row["n"], {}).get("missing", row.get("missing", []))}
                                 for row in plan["flow"]]
+        if plan.get("constraints") and not outline and not keep and not mont:           # every other instruction in the notes: the FINISHED video is checked too (constraints.py)
+            P("rendering", "Checking the finished video against your instructions", 0.93)
+            try:
+                rendered_words = self._words_of({"path": str(jobd / clip["file"]), "dur": rough_len}, ai, opts.get("transcriber", "parakeet"))
+                checked = CN.post_render_check(plan["constraints"], rendered_words, rough_len, None, seg(rendered_words))
+            except Exception as e:  # noqa: BLE001 - never pretend a failed check passed
+                log.warning(f"checking the finished video against the notes failed: {e}")
+                checked = [{"constraint": None, "ok": False, "what": f"The finished video could not be checked against your instructions ({type(e).__name__})"}]
+            plan["post_check"] = checked
+            for x in checked:
+                if not x.get("ok"):
+                    NT.note("warn", x["what"], do="Say what to change in Change something, or fix it in Final Cut.")
         version = int(plan.get("version", 0)) + 1
         plan["version"] = version
         plan["history"] = [*plan.get("history", []), {"n": version, "note": note, "at": int(time.time()), "beat": beat_note}]
@@ -2942,6 +3405,22 @@ class LocalRunner:
         self.projects.finished(pid)
 
     # -- how good the sound of what is kept is (soundcheck.py) ------------------------------------------------------------
+    def face_lookup(self, st: State):
+        """faces(path, t0, t1) -> the median face {cx, cy, h} of that stretch of a file (from the footage facts' per-sample series), or None.
+        Older caches have no face centres: None, and the punch-in frames the middle."""
+        cache: dict[str, dict | None] = {}
+
+        def lookup(path, t0: float, t1: float):
+            key = str(path)
+            if key not in cache:
+                try:
+                    rec = FT.load_cached(st.dir / "facts", Path(path))
+                except Exception:  # noqa: BLE001
+                    rec = None
+                cache[key] = (rec or {}).get("series") if rec else None
+            return COV.face_in(cache[key], t0, t1)
+        return lookup
+
     def grades(self, st: State):
         """The project's sound grades (10-second windows of each recording), loaded once per run; save_grades() writes them back."""
         from . import soundcheck
@@ -3040,28 +3519,42 @@ class LocalRunner:
             log.info("sound by measurement: " + ", ".join(f"{Path(p).name} {v['score']} ({v['grade']})" for p, v in group["sound_r"].items()))
 
     def bake_photos(self, cutaways: list[dict], files: list[dict], st: State) -> list[dict]:
-        """Each photo cutaway becomes a short silent clip with its effect; returns the extra 'files' that stand for them."""
-        out, k = [], 0
+        """Each photo cutaway becomes a short silent clip with its effect; returns the extra 'files' that stand for them.
+        Baked together (loadgov.render_workers), at the timeline's own frame rate (so the cut doesn't re-time them), with motion blur only when on."""
         ref = next((f for f in files if not f["broll"]), files[0])
         W, H = (1920, 1080) if ref["w"] >= ref["h"] else (1080, 1920)
+        rate = float(timeline_rate(ref["fps"]))
+        blur = bool(self.cfg.get("clipper.ai_videos.motion_blur", True))
         pdir = st.dir / "photos"
         pdir.mkdir(exist_ok=True)
+        jobs, k = [], 0
         for c in cutaways:
             if not c.get("photo"):
                 continue
             effect = PH.EFFECTS[k % len(PH.EFFECTS)]
             k += 1
             secs = float(c["length"]) + 0.5
-            mov = pdir / f"{PH.key(c['photo'], effect, secs, W, H)}.mp4"
+            jobs.append((c, effect, secs, pdir / f"{PH.key(c['photo'], effect, secs, W, H, rate, blur)}.mp4"))
+
+        def bake(job) -> Exception | None:
+            c, effect, secs, mov = job
             try:
                 if not mov.exists():
-                    PH.bake(c["photo"], effect, secs, W, H, 30.0, mov)
+                    PH.bake(c["photo"], effect, secs, W, H, rate, mov, motion_blur=blur)
             except Exception as e:  # noqa: BLE001 - this cutaway just stays on the speaker
-                log.warning(f"animating {Path(c['photo']).name} failed: {e}")
+                return e
+            return None
+        from . import loadgov
+        with ThreadPoolExecutor(max_workers=loadgov.render_workers(2, 4)) as ex:
+            errs = list(ex.map(bake, jobs))
+        out = []
+        for (c, effect, secs, mov), err in zip(jobs, errs):
+            if err is not None:
+                log.warning(f"animating {Path(c['photo']).name} failed: {err}")
                 c["length"] = 0.0
                 continue
             out.append({"name": f"photo {Path(c['photo']).name}", "path": str(mov), "start": c["src"], "end": c["src"] + secs, "dur": secs, "w": W, "h": H,
-                        "fps": 30.0, "audio": False, "broll": True, "photo": True, "tc": 0.0})
+                        "fps": rate, "audio": False, "broll": True, "photo": True, "tc": 0.0})
         cutaways[:] = [c for c in cutaways if c["length"] > 0.3]
         return out
 
@@ -3089,16 +3582,87 @@ class LocalRunner:
             out = [tuple(i) for i in intervals]
         return TI.without(out, spans) if spans else out
 
-    def direct(self, group: dict, intervals, ai: LocalAI, words: list[dict], brief: str, st: State) -> list[dict]:
+    def direct(self, group: dict, intervals, ai: LocalAI, words: list[dict], brief: str, st: State,
+               hold: tuple[float, float, float] | None = None, wide_share: float | None = None, profile: str | None = None) -> list[dict]:
         """The director's angle choices for the kept stretches of the shoot (cached for the same cut, so a re-render doesn't change them)."""
         stretches = [(max(0.0, a), min(b, group["dur"])) for a, b in intervals if a < group["dur"] and min(b, group["dur"]) - max(0.0, a) > 0.2]
-        key = hashlib.sha1(json.dumps([[round(a, 1), round(b, 1)] for a, b in stretches] + [a["id"] for a in group["angles"]]).encode()).hexdigest()
+        key = hashlib.sha1(json.dumps([[round(a, 1), round(b, 1)] for a, b in stretches] + [a["id"] for a in group["angles"]]
+                                      + ([list(hold)] if hold and tuple(hold) != (MC.MIN_HOLD, 9.0, 12.0) else [])
+                                      + ([wide_share, profile] if wide_share or profile else []) + ["v2"]).encode()).hexdigest()   # (the style's hold numbers matter only when they are not the usual)
         c = st.get("cuts.json", {})
         if c.get("key") == key:
             return c["cuts"]
-        cuts = MC.choose_angles(ai, group, stretches, brief, words)
+        ratios, wide = self.angle_ratios(group, st)                          # which angle shows the speaker (footage facts); the wide is always allowed
+        points = SW.switch_points(words or [], ratios or None, wide)
+        cuts = MC.choose_angles(ai, group, stretches, brief, words, hold=hold, points=points, wide_share=wide_share)
+        if profile in ("interview_clip", "longform_talk"):                    # a listener's reaction during a pause (two speakers, two angles)
+            try:
+                cuts = SW.insert_reactions(cuts, self.reaction_cuts(group, cuts, words or [], wide, st, float(hold[0]) if hold else MC.MIN_HOLD))
+            except Exception as e:  # noqa: BLE001 - a reaction cut is a nicety, never a reason to fail a render
+                log.debug(f"reaction cuts skipped: {e}")
         st.put("cuts.json", {"key": key, "cuts": cuts})
         return cuts
+
+    def angle_ratios(self, group: dict, st: State) -> tuple[dict[str, float], set[str]]:
+        """({angle id: share of samples in which the speaker's face is on that angle}, the wide angles) from the footage facts. An angle with no
+        measurement is left out (so it is allowed everywhere); a wide shot (the largest face is small) is always allowed."""
+        ratios: dict[str, float] = {}
+        wide: set[str] = set()
+        for a in group.get("angles") or []:
+            rs: list[float] = []
+            sizes: list[float] = []
+            for f in a.get("files") or []:
+                try:
+                    rec = FT.load_cached(st.dir / "facts", Path(f["path"]))
+                except Exception:  # noqa: BLE001
+                    rec = None
+                fc = (rec or {}).get("faces") or {}
+                if isinstance(fc.get("on_camera_speaker_ratio"), (int, float)):
+                    rs.append(float(fc["on_camera_speaker_ratio"]))
+                if isinstance(fc.get("largest_ratio_median"), (int, float)):
+                    sizes.append(float(fc["largest_ratio_median"]))
+            if rs:
+                ratios[a["id"]] = sum(rs) / len(rs)
+            if sizes and FT.shot_size_from_ratio(sum(sizes) / len(sizes)) in ("wide", None):
+                wide.add(a["id"])
+        return ratios, wide
+
+    def reaction_cuts(self, group: dict, cuts: list[dict], words: list[dict], wide: set[str], st: State, min_hold: float) -> list[dict]:
+        """Short cuts to the listener (WP7 step 5): only with exactly two close angles and two speakers in the words. The listener's face movement
+        (the footage facts' face samples) must stand out during a pause of the speaker."""
+        who = {w.get("who") for w in words if isinstance(w, dict) and w.get("who")}
+        close = [a["id"] for a in group.get("angles") or [] if a["id"] not in wide]
+        if len(who) != 2 or len(close) != 2:
+            return []
+        reactions: list[dict] = []
+        for listener in close:
+            energy: list[tuple[float, float]] = []
+            for c in MC.angle_files(group, listener):
+                try:
+                    rec = FT.load_cached(st.dir / "facts", Path(c["path"]))
+                except Exception:  # noqa: BLE001
+                    rec = None
+                ser = (rec or {}).get("series") or {}
+                ts, xs, hs = ser.get("t") or [], ser.get("face_cx") or [], ser.get("face_h") or []
+                for i in range(1, min(len(ts), len(xs), len(hs))):
+                    if hs[i] and hs[i - 1]:
+                        energy.append((c["t0"] + float(ts[i]), abs(xs[i] - xs[i - 1]) + abs(hs[i] - hs[i - 1])))
+            speaker = next((c["angle"] for c in cuts if c["angle"] != listener), None)
+            if energy and speaker:
+                reactions += SW.reaction_cuts(words, energy, listener, speaker, min_hold=min_hold, last_switch=-99.0)
+        return reactions
+
+    def movement_master(self, group: dict | None, st: State) -> list[float]:
+        """Master seconds where a person on a camera moved (the speaker walked, the camera re-aimed): good moments to switch angle (WP7 step 6)."""
+        out: list[float] = []
+        for a in (group or {}).get("angles") or []:
+            for c in a.get("files") or []:
+                try:
+                    rec = FT.load_cached(st.dir / "facts", Path(c["path"]))
+                except Exception:  # noqa: BLE001
+                    rec = None
+                out += [c["t0"] + t for t in COV.movement_points((rec or {}).get("series"), 0.0, float(c.get("dur") or 0.0))]
+        return sorted(set(round(x, 2) for x in out))
 
     def verify(self, path: Path, expected: float, reference: Path | None = None) -> None:
         """The finished video must be whole before anyone sees it: picture and sound the same length, the length we planned, and no
@@ -3108,9 +3672,31 @@ class LocalRunner:
         if problems:
             raise RuntimeError("the finished video failed its check, so it was NOT saved into your folder: " + "; ".join(problems))
 
+    def check_decode(self, v: dict, d: float, rate, i, at: float | None) -> None:
+        """A piece whose picture comes from the end of a file the header of which promises more than the data holds: the cut clones the last frame to
+        fill the piece (a hidden freeze). Say so (notes + self.short_decodes, which qa.check reports) when more than 2 frames are missing."""
+        try:
+            path, ss = v.get("path"), float(v.get("ss") or 0)
+            if not path or v.get("nopic") or not Path(str(path)).is_file():
+                return
+            cache = self.__dict__.setdefault("_decode_cache", {})
+            hdr = cache.get(("d", path))
+            if hdr is None:
+                hdr = cache[("d", path)] = ffmpeg.duration(Path(path))
+            if ss + d < hdr - 3.0:                                           # nowhere near the end of its file
+                return
+            real = cache.get(("r", path))
+            if real is None:
+                real = cache[("r", path)] = ffmpeg.readable_seconds(path)
+            frames = int(round(((ss + d) - real) * float(rate)))
+            if frames > 2:
+                self.__dict__.setdefault("short_decodes", []).append({"piece": i, "at": at, "frames": frames, "file": Path(str(path)).name})
+        except Exception as e:  # noqa: BLE001 - a check is never a reason to lose a render
+            log.debug(f"decode check failed: {e}")
+
     def assemble(self, files: list[dict], intervals, cutaways, group, cuts, st: State, progress, outro: dict | None = None,
                  punch: bool = False, even: bool = True, style: str | None = None, tmode: str = "none",
-                 hook_at_start: bool = False) -> tuple[Path, float, list[dict]]:
+                 hook_at_start: bool = False, punch_at: list[float] | None = None, punch_zoom=None) -> tuple[Path, float, list[dict]]:
         """Cut ONLY the kept stretches out of the original files and join them: a small rough cut, however big the footage is.
         tmode "auto": transitions where the cut calls for one (transitions.py): dissolves are made here, the fades at the ends in polish.run;
         what was decided is kept in self.last_transitions for the Final Cut project.
@@ -3148,12 +3734,20 @@ class LocalRunner:
             self.save_grades(st)
         if even:                                                              # noisy, far-away speech cleaned (voiceclean.py), MP4 only
             parts = self.clean_voices(parts, st)
-        if punch and self.cfg.get("clipper.ai_videos.punch_ins", True):          # only for kinds of video that are meant to feel energetic (PROFILES)
-            parts = punch_ins(parts, float(self.cfg.get("clipper.ai_videos.punch_in_zoom", 1.12)))
+        if (punch or punch_at) and self.cfg.get("clipper.ai_videos.punch_ins", True):   # an energetic kind of video (PROFILES) punches every other jump cut; any video punches the cuts the cover planner chose
+            portrait = bool(parts) and parts[0]["v"].get("h", 0) > parts[0]["v"].get("w", 1)
+            parts = punch_ins(parts, COV.punch_size(punch_zoom if punch_zoom else self.cfg.get("clipper.ai_videos.punch_in_zoom", None), portrait),
+                              faces=self.face_lookup(st), only_at=None if punch else punch_at)
         for k, p in enumerate(parts):                                         # a tiny fade wherever the sound jumps to another place (no click)
             prv, nxt = (parts[k - 1] if k else None), (parts[k + 1] if k + 1 < len(parts) else None)
             p["fade_in"] = not (prv and joined(prv, p))
             p["fade_out"] = not (nxt and joined(p, nxt))
+        _t = 0.0
+        self.audio_cut_times = []                                             # where two pieces of sound meet in the video (the click check looks there)
+        for p in parts:
+            if p["fade_in"] and _t > 0.05:
+                self.audio_cut_times.append(round(_t, 3))
+            _t += float(p["d"])
         try:                                                                  # where a transition belongs (never a reason to fail a render)
             events = TR.plan(parts, rate, style=style or "story", mode=tmode, hook_at_start=hook_at_start, durs=durs, outro=bool(outro))
         except Exception as e:  # noqa: BLE001
@@ -3167,6 +3761,12 @@ class LocalRunner:
         shutil.rmtree(seg_dir, ignore_errors=True)
         seg_dir.mkdir()
         rs = f"{rate.numerator}/{rate.denominator}"
+        from . import renderq                                                  # (what the pieces are encoded as, and the hardware decode: renderq.py)
+        vargs = renderq.intermediate_args(W, H, sum(int(q["n"]) for q in cut_parts) / float(rate), renderq.free_bytes(seg_dir),
+                                          mode=str(self.cfg.get("clipper.render.intermediate", "auto")))
+        src_w = {f["path"]: f.get("w") for f in files if f.get("path")}
+        hw_on = [bool(self.cfg.get("clipper.render.hw_decode", True))]         # (one failure switches the whole job to software decode)
+        self.short_decodes = []
         norm = f"fps={rs},scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
         fill = f"fps={rs},scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,format=yuv420p"
         masks = layout_masks(seg_dir, W, H) if any(p["v"].get("layout") == "pip" for p in parts) else None
@@ -3185,32 +3785,49 @@ class LocalRunner:
             d = float(Fraction(n) / rate)
             samples = int(round(Fraction(n * 48000) / rate))
             v, a = p["v"], p["a"]
-            ff = 0.008
+            ff = 0.003                                                      # (3 ms: long enough to remove a click, too short to hear)
             fades = (f",afade=t=in:st=0:d={ff}" if p.get("fade_in") else "") + (f",afade=t=out:st={max(0.0, d - ff):.3f}:d={ff}" if p.get("fade_out") and d > 0.1 else "")
             gain = f"volume={p['gain']}dB," if p.get("gain") else ""             # (level_gains: the same speech level everywhere)
             tail = f"{gain}aresample=48000,aformat=channel_layouts=stereo,apad,atrim=end_sample={samples},asetpts=PTS-STARTPTS{fades}[a]"
             if a:                                                           # input 1: the sound (a clean recording, or the camera's own)
                 if a.get("clean_path"):                                     # (the cleaned copy of this recording: the MP4 only)
                     a = {**a, "path": a["clean_path"], "ss": a["clean_ss"]}
+                if p.get("fade_in") and a["ss"] > 0.01 and self.cfg.get("clipper.ai_videos.zero_cross_cuts", True):      # a piece that starts a new sound: on a zero crossing
+                    try:
+                        a = {**a, "ss": TI.zero_cross(a["path"], float(a["ss"]), 0.002)}
+                    except Exception:  # noqa: BLE001 - the planned start stays
+                        pass
                 pre = max(0.0, -a["ss"])
                 sound = ["-ss", f"{max(0.0, a['ss']):.6f}", "-t", f"{max(0.1, d - pre + 0.2):.3f}", "-i", a["path"]]
                 af = "[1:a:0]" + (f"adelay={int(pre * 1000)}|{int(pre * 1000)}," if pre > 0 else "") + tail
             else:
                 sound = ["-f", "lavfi", "-t", f"{d + 0.2:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
                 af = "[1:a]" + tail
+            extra_in: list[str] = []
+            mixes = [m for m in (p.get("a_mix") or []) if m.get("len", 0) > 0.02] if not (v.get("layout") and v.get("cut")) else []
+            if mixes and af.endswith("[a]"):                                # a B-roll shot's own sound the person asked for: under the voice (J / L cuts)
+                bm = []
+                for k_, m_ in enumerate(mixes):
+                    extra_in += ["-ss", f"{max(0.0, float(m_['ss'])):.3f}", "-t", f"{float(m_['len']) + 0.2:.3f}", "-i", m_["path"]]
+                    dl = int(max(0.0, float(m_["delay"])) * 1000)
+                    ml = float(m_["len"])
+                    xf = f",afade=t=in:st=0:d=0.003,afade=t=out:st={max(0.0, ml - 0.003):.3f}:d=0.003" if ml > 0.02 else ""        # (3 ms at the edges of a shot's own sound: no click)
+                    bm.append(f"[{2 + k_}:a:0]aresample=48000,aformat=channel_layouts=stereo,volume={float(m_['gain_db']):.1f}dB{xf},adelay={dl}|{dl}[bm{k_}]")
+                af = (af[:-3] + "[a0]" + ";" + ";".join(bm) + ";[a0]" + "".join(f"[bm{k_}]" for k_ in range(len(mixes)))
+                      + f"amix=inputs={1 + len(mixes)}:duration=first:normalize=0[a]")
 
-            def picture(src: dict, chain: str, careful: bool) -> list[str]:
+            def picture(src: dict, chain: str, careful: bool, hw: bool = False) -> list[str]:
                 """input 0 + the whole filter graph. careful: seek to 10 s before and trim to the frame (slower, but works where a
                 fast seek doesn't); the seek always applies to the PICTURE input."""
                 back = min(10.0, src["ss"]) if careful else 0.0
                 head = f"trim=start={back:.3f},setpts=PTS-STARTPTS," if careful else ""
-                zoom = (f",scale=trunc({W}*{p['zoom']}/2)*2:trunc({H}*{p['zoom']}/2)*2,crop={W}:{H}" if p.get("zoom") and not src.get("cut") else "")
+                zoom = ("," + COV.zoom_filter(W, H, p["zoom"], tuple(p["zoom_xy"]) if p.get("zoom_xy") else None)) if p.get("zoom") and not src.get("cut") else ""
                 lut = LC.vf_prefix(src["path"], self.cfg)               # log footage (S-Log3...) -> normal colour in the MP4 (not in Final Cut)
                 vf = f"[0:v:0]{lut}{head}{chain}{zoom},tpad=stop_mode=clone:stop_duration=2,trim=end_frame={n},setpts=PTS-STARTPTS[v]"
-                return ["-ss", f"{src['ss'] - back:.3f}", "-t", f"{d + back + 0.5:.3f}", "-i", src["path"], *sound,
+                return [*(renderq.hw_decode_args(src_w.get(src["path"]), W) if hw else []),
+                        "-ss", f"{src['ss'] - back:.3f}", "-t", f"{d + back + 0.5:.3f}", "-i", src["path"], *sound, *extra_in,
                         "-filter_complex", f"{vf};{af}"]
-            enc = ["-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p",
-                   "-c:a", "pcm_s16le", str(out)]
+            enc = ["-map", "[v]", "-map", "[a]", *vargs, "-c:a", "pcm_s16le", str(out)]
             inset = p.get("v0") if v.get("layout") and v.get("cut") else None
             if inset and inset.get("path") and not inset.get("nopic"):         # a layout: the B-roll AND the speaker's own picture
                 try:
@@ -3230,8 +3847,18 @@ class LocalRunner:
                 except Exception as e:  # noqa: BLE001 - the plain B-roll shot is always there to fall back on
                     log.warning(f"a {v.get('layout')} layout failed ({str(e)[:160]}); showing the B-roll full screen there")
             try:
-                ffmpeg.run(["nice", "-n", "15", ffb, "-y", "-v", "error", *picture(v, fill if v["fill"] else norm, False), *enc],
-                           timeout=3600, what="cutting a stretch")
+                use_hw = hw_on[0] and bool(renderq.hw_decode_args(src_w.get(v["path"]), W))
+                try:
+                    ffmpeg.run(["nice", "-n", "15", ffb, "-y", "-v", "error", *picture(v, fill if v["fill"] else norm, False, use_hw), *enc],
+                               timeout=3600, what="cutting a stretch")
+                except ffmpeg.FFmpegError:
+                    if not use_hw:
+                        raise
+                    hw_on[0] = False                                       # this footage can't be decoded by the hardware: every piece from now on uses software
+                    log.warning("hardware decoding failed on this footage; cutting in software")
+                    ffmpeg.run(["nice", "-n", "15", ffb, "-y", "-v", "error", *picture(v, fill if v["fill"] else norm, False, False), *enc],
+                               timeout=3600, what="cutting a stretch (software decode)")
+                self.check_decode(v, d, rate, i, float(sum(int(q["n"]) for q in cut_parts[:i]) / rate) if isinstance(i, int) else None)
             except ffmpeg.FFmpegError as e:
                 log.warning(f"a cut failed ({str(e)[:160]}); retrying with accurate seeking")
                 try:
@@ -3263,14 +3890,19 @@ class LocalRunner:
             g = (f"[0:v][1:v]xfade=transition=fade:duration={dur:.6f}:offset=0,fps={rs},trim=end_frame={n},setpts=PTS-STARTPTS,format=yuv420p[v];"
                  f"{audio},apad,atrim=end_sample={samples},asetpts=PTS-STARTPTS[a]")
             ffmpeg.run(["nice", "-n", "15", ffb, "-y", "-v", "error", "-i", str(fa), "-i", str(fb), "-filter_complex", g, "-map", "[v]", "-map", "[a]",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(out)],
+                        *vargs, "-c:a", "pcm_s16le", str(out)],
                        timeout=3600, what="a transition")
             fa.unlink(missing_ok=True)
             fb.unlink(missing_ok=True)
             return out
         ncut = len(cut_parts) + 2 * sum(1 for q in cut_parts if q.get("xf"))
-        with ThreadPoolExecutor(max_workers=2) as ex:                       # two at a time: your Mac stays usable while it works
+        from . import loadgov
+        with ThreadPoolExecutor(max_workers=loadgov.render_workers(2, 4)) as ex:        # two at a time while you work, more when the Mac is yours to use
             outs = list(ex.map(cut, enumerate(cut_parts)))
+        for sd in self.short_decodes:                                          # (noted here: the notes belong to this thread, the cuts ran in others)
+            NT.note("warn", f"the picture runs {sd['frames']} frames short at {sd['at']:.1f} s: the last frame is held" if sd.get("at") is not None else
+                    f"the picture of a piece runs {sd['frames']} frames short: the last frame is held", start=sd.get("at"),
+                    end=None if sd.get("at") is None else sd["at"] + 0.5, do="Look at it in Final Cut: that file's data ends before its header says; trim the shot or cover it with B-roll.")
         for o in outs:
             try:
                 has_pic = ffmpeg.video_stream(ffmpeg.probe(o)) is not None
@@ -3285,8 +3917,19 @@ class LocalRunner:
         rough = st.dir / f"rough_{int(time.time())}.mov"
         ffmpeg.run([ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(rough)],
                    timeout=3600, what="joining the stretches")
-        shutil.rmtree(seg_dir, ignore_errors=True)
+        self.last_picture_list, self.last_seg_dir = None, seg_dir
+        if cut_parts is parts and not any((q.get("v") or {}).get("layout") for q in parts) and self.cfg.get("clipper.render.single_pass", True):
+            self.last_picture_list = lst                                       # no dissolves, no layouts: polish.run reads the pieces themselves (render() removes them after)
+        else:
+            shutil.rmtree(seg_dir, ignore_errors=True)
         return rough, ffmpeg.duration(rough), parts
+
+    def drop_pieces(self) -> None:
+        """The pieces of the last assemble() (kept for the final render to read), and the list that names them."""
+        d = getattr(self, "last_seg_dir", None)
+        self.last_picture_list = None
+        if d:
+            shutil.rmtree(d, ignore_errors=True)
 
     def end_info(self, ai, folder: Path, plan: dict, brief: str, st: State) -> dict:
         """The end card of an ad: the business name, a short call to action, and which picture in the project is the logo."""
@@ -3313,7 +3956,7 @@ class LocalRunner:
             pics = []
         schema = {"type": "object", "properties": {"business": {"type": "string"}, "tagline": {"type": "string"}, "logo_index": {"type": "integer"}},
                   "required": ["business", "tagline", "logo_index"]}
-        prompt = (f"We are making an advertisement. The creator's notes: {brief[:1200]}\nWhat the ad says: {plan.get('summary', '')}\nTitle: {plan.get('title', '')}\n"
+        prompt = (f"We are making an advertisement. The creator's notes: {SPF.fit_brief(brief, 1200)}\nWhat the ad says: {plan.get('summary', '')}\nTitle: {plan.get('title', '')}\n"
                   + (f"The project has {len(pics)} picture(s), shown in this order: " + ", ".join(g["name"] for g in imgs[:len(pics)]) + ". " if pics else "")
                   + "Give: 'business' = the business's name as it should appear on screen; 'tagline' = the closing call to action, 2 to 5 words "
                     "(for example 'Find Your Perfect Fit' or 'Visit Us Today'); 'logo_index' = the 0-based number of the picture that is the business's "
@@ -3355,15 +3998,19 @@ class LocalRunner:
         if clip.get("srt") and (d / clip["srt"]).exists():
             shutil.copy2(d / clip["srt"], out / f"{title} v{version}.srt")
         fcp = clip.get("fcp")
-        if fcp and (d / "fcp_project.zip").exists():
+        staged = d / "fcp" / fcp["folder"] if fcp and fcp.get("folder") else None
+        if fcp and ((d / "fcp_project.zip").exists() or (staged and staged.is_dir())):
             target = folder / "Final Cut"
             target.mkdir(exist_ok=True)
             here = target / f"{fcp['folder']} v{version}"                    # every version its own folder: a project you already imported keeps its files
-            shutil.rmtree(here, ignore_errors=True)
-            with tempfile.TemporaryDirectory(prefix="fcp-", dir=target) as tmp:
-                with zipfile.ZipFile(d / "fcp_project.zip") as z:
-                    z.extractall(tmp)
-                Path(tmp, fcp["folder"]).replace(here)
+            here = clear_for_copy(here)                                       # (an earlier copy that is read-only is made writable and removed, else a fresh folder name)
+            if staged and staged.is_dir():                                   # (the project folder is copied as it is: no zip, no unzip)
+                shutil.copytree(staged, here, copy_function=shutil.copy2)
+            else:
+                with tempfile.TemporaryDirectory(prefix="fcp-", dir=target) as tmp:
+                    with zipfile.ZipFile(d / "fcp_project.zip") as z:
+                        z.extractall(tmp)
+                    Path(tmp, fcp["folder"]).replace(here)
             xml = here / fcp["fcpxml"]
             if xml.is_file():                                        # point the project at this folder
                 xml.write_text(xml.read_text().replace("file://" + quote(fcp["unpack_to"]), "file://" + quote(str(here.resolve()))))
@@ -3386,7 +4033,10 @@ class LocalRunner:
                 cams = {c["name"]: c["path"] for a in g.get("angles", []) for c in a.get("files", [])}
             except (OSError, ValueError):
                 pass
-            report = QA.check(out / f"{title} v{version}.mp4", plan.get("target_s"), cams)
+            report = QA.check(out / f"{title} v{version}.mp4", plan.get("target_s"), cams, short_decodes=getattr(self, "short_decodes", None),
+                              audio_cuts=getattr(self, "audio_cut_times", None),
+                              max_hold=float(SPF.get(plan_style(plan), "pace.max_hold_s", 12.0)),
+                              profile=SPF.get(plan_style(plan), "profile", None))
             card = next((g for g in plan.get("folder_graphics") or [] if g.get("role") == "end card"), None)
             if card:                                                        # the logo end card is silent by design (no music): not dead audio
                 report["issues"] = [i for i in report["issues"] if not (
@@ -3396,6 +4046,17 @@ class LocalRunner:
             for why in clipgate.problems({"duration": report.get("duration"), "transcript": tail}):
                 if "seconds long" not in why:
                     report["issues"].append({"level": "warn", "what": f"the end of the video: {why}"})
+            try:                                                            # what the frame check found about graphics and captions (polish writes it next to the render)
+                for i in json.loads((d / "placement_check.json").read_text()):
+                    report["issues"].append({"level": "bad" if i.get("level") == "bad" else "warn", "what": i["what"], "start": i.get("start"), "end": i.get("end"),
+                                             "do": i.get("do", ""), "code": i.get("code")})
+            except (OSError, ValueError, KeyError):
+                pass
+            for w_ in ((fcp or {}).get("errors") or []):                      # Final Cut's own DTD (when this Mac has it) refused something
+                report["issues"].append({"level": "bad", "what": f"the Final Cut project does not match Final Cut's file format: {str(w_)[-160:]}",
+                                         "do": "Tell whoever maintains FirstCut; the video itself is fine."})
+            for w_ in ((fcp or {}).get("warnings") or []):                    # what an import would warn about (pre-flight, found without Final Cut)
+                report["issues"].append({"level": "warn", "what": f"the Final Cut project: {w_}", "do": "Check it after importing in Final Cut."})
             issues = report["issues"] + NT.take() + NT.sources(State(folder).get("files.json") or []) + self._log_note(folder)
             (notes / "quality.md").unlink(missing_ok=True)                  # (its old name)
             (notes / "Quality check.md").write_text(NT.quality_md(issues, report, f"{title} v{version}"))
@@ -3459,7 +4120,7 @@ class LocalRunner:
             return []
 
     # -- plain-words changes -----------------------------------------------------------------
-    def revise(self, pid: str, text: str = "", revert: bool = False) -> None:
+    def revise(self, pid: str, text: str = "", revert: bool = False, pace: str = "") -> None:
         proj, folder, st, ai, engine = self._setup(pid)
         job = proj["job"]
         P = lambda status, stage, frac: self._prog(engine, job, status, stage, frac)       # noqa: E731
@@ -3469,7 +4130,15 @@ class LocalRunner:
         plan = st.get("plan.json")
         if not plan:
             raise RuntimeError("make the video first")
-        if plan.get("keep_cut") and not revert:                            # a kept video: a change is about its B-roll, placed again with it
+        if pace in SPF.PACE_NAMES:                                          # "make it faster" changes the style's pace (and the pause between lines), not only the words
+            sty = {**plan_style(plan)}
+            sty["pace"] = {**sty.get("pace", {})}
+            gap = SPF.set_pace(sty, pace, PACES)
+            plan["style_obj"] = sty
+            if gap is not None:
+                plan["gap"] = gap
+            self.store.update(job, options={**self.store.get(job)["options"], "pace": pace})
+        if (plan.get("keep_cut") or plan.get("exact")) and not revert:    # a kept video or an edit list: a change is about its B-roll, placed again with it
             if not st.get("plan_v1.json"):
                 st.put("plan_v1.json", {k: v for k, v in plan.items() if k not in ("pending_render", "pending_note")})
             plan["broll_notes"] = [*plan.get("broll_notes", []), " ".join(str(text or "").split())[:300]]
@@ -3557,6 +4226,21 @@ class LocalRunner:
         elif ops.get("better_hook"):
             plan["hook_text"] = self.hook(ai, plan, sents, "", note=text) or plan.get("hook_text", "")
             did.append(f"new hook: {plan['hook_text']}")
+        if ops.get("pace") in SPF.PACE_NAMES:                                # (a pace asked for in the same message as other changes)
+            sty = {**plan_style(plan)}
+            sty["pace"] = {**sty.get("pace", {})}
+            gap = SPF.set_pace(sty, ops["pace"], PACES)
+            plan["style_obj"] = sty
+            if gap is not None:
+                plan["gap"] = gap
+            did.append(f"{ops['pace']} pace")
+        if (ops.get("constraints_text") or "").strip():                      # a lasting rule: kept with the plan, checked with the others (constraints.py)
+            try:
+                plan, d = CN.revise_constraints(ai, plan, str(ops["constraints_text"]), sents, words, st.get("files.json") or [], drop_sentences)
+                if d:
+                    did.append(d)
+            except Exception as e:  # noqa: BLE001 - the other changes still apply
+                log.warning(f"reading the new rule failed: {e}")
         return plan, (ops.get("summary") or "; ".join(did) or text[:80])
 
     def edit_content(self, plan: dict, sents, ai, instruction: str, max_len: float | None):
@@ -3564,7 +4248,8 @@ class LocalRunner:
         from . import edit as E
         by = {s.idx: s for s in sents}
         cur_ranges = [(it["a"], it["b"]) for it in plan["items"] if it["kind"] == "talk"]
-        win = [s for a, b in cur_ranges for s in sents if a <= s.idx <= b]
+        near = {i for a, b in cur_ranges for i in range(a - CONTEXT_SENTENCES, b + CONTEXT_SENTENCES + 1)}      # (the kept sentences AND 20 either side, so "add back the part about X" can find X)
+        win = [s for s in sents if s.idx in near]
         if not win or len(win) > SENTENCE_LIMIT:
             return plan, "(that edit is too big to apply by typing for a cut this long; use a shorter target length)"
         res = E.plan(ai, win, 0.0, 1e12, cur_ranges, instruction, plan["title"], max_s=max(36000.0, (max_len or 0) * 2))
@@ -3585,7 +4270,7 @@ class LocalRunner:
                     item["step"] = tag
                 talk.append(item)
                 run_a, tag = i, next_tag
-        if any(it.get("step") for it in talk):
+        if any(it.get("step") for it in talk) and not any(c.get("type") == "order" and c.get("hard") for c in plan.get("constraints") or []):    # (an instruction about the order wins over the script's step order)
             talk = [it for _, it in sorted(enumerate(talk), key=lambda pair: (pair[1].get("step", 10_000), pair[0]))]
         visual = [it for it in plan["items"] if it["kind"] == "visual"]
         plan["items"] = merge_items(talk, visual, [(it["a"], it["b"]) for it in plan["items"] if it["kind"] == "talk"], by)
@@ -3772,18 +4457,24 @@ def merge_tiny(intervals, all_words: list[dict] | None = None, min_s: float = 1.
     pause or a filler lies between them - a 0.7 s piece is a flash, not a shot. Never across anyone else's words."""
     iv = [list(x) for x in intervals]
 
-    def quiet(x: float, y: float) -> bool:
-        return y - x <= max_gap and not any(x + 0.02 < float(w["start"]) < y - 0.02 and not FILLER_WORD.match(str(w.get("text", "")).strip())
-                                            for w in (all_words or []))
+    def quiet(x: float, y: float, limit: float = max_gap) -> bool:
+        return y - x <= limit and not any(x + 0.02 < float(w["start"]) < y - 0.02 and not FILLER_WORD.match(str(w.get("text", "")).strip())
+                                          for w in (all_words or []))
+
+    def answer(a: float, b: float) -> bool:
+        """A whole short sentence ("Yes." / "No."): the one-word answer that must not be lost, so it may join across a longer pause."""
+        inside = [w for w in (all_words or []) if a - 0.02 <= float(w["start"]) and float(w["end"]) <= b + 0.05]
+        return bool(inside) and bool(re.search(r"[.!?]['\"”’)]*$", str(inside[-1].get("text", "")).strip()))
     k = 0
     while k < len(iv):
         a, b = iv[k]
         if b - a < min_s and len(iv) > 1:
-            if k > 0 and 0 <= a - iv[k - 1][1] and quiet(iv[k - 1][1], a):
+            lim = max(max_gap, 1.5) if answer(a, b) else max_gap
+            if k > 0 and 0 <= a - iv[k - 1][1] and quiet(iv[k - 1][1], a, lim):
                 iv[k - 1][1] = b
                 iv.pop(k)
                 continue
-            if k + 1 < len(iv) and 0 <= iv[k + 1][0] - b and quiet(b, iv[k + 1][0]):
+            if k + 1 < len(iv) and 0 <= iv[k + 1][0] - b and quiet(b, iv[k + 1][0], lim):
                 iv[k + 1][0] = a
                 iv.pop(k)
                 continue
@@ -3909,7 +4600,7 @@ def cover_spans(cutaways: list[dict], spans_out: list[tuple[float, float]], pool
     little past the span's edges. Cutaways already overlapping a span are trimmed out of it. Returns (cutaways, spans it could not cover)."""
     cutaways = [dict(c) for c in cutaways]
     used = {c["scene"] for c in cutaways} | set(exclude)
-    free = [i for i in sorted(range(len(pool)), key=lambda i: -pool[i]["quality"]) if i not in used]
+    free = [i for i in sorted(range(len(pool)), key=lambda i: -PR.effective_quality(pool[i])) if i not in used]
     missed = []
     for s0, s1 in spans_out:
         a0, a1 = max(0.0, s0 - 0.15), s1 + 0.15
@@ -3969,6 +4660,12 @@ def _room(c: dict, pool: list[dict]) -> tuple[float, float]:
     if not sc:
         return 0.0, 0.0
     return max(0.0, float(c["src"]) - float(sc["start"])), max(0.0, float(sc["end"]) - (float(c["src"]) + float(c["length"])))
+
+
+def plan_style(plan: dict | None) -> dict:
+    """The style object of a saved plan (a plan made before styles existed gets the one its kind implies, which has the numbers it always had)."""
+    p = plan or {}
+    return p.get("style_obj") or SPF.build(str(p.get("style") or "story"))
 
 
 def thin_cutaways(cutaways: list[dict], pace: str = "natural", min_between: float | None = None) -> list[dict]:
@@ -4144,6 +4841,177 @@ def sound_runs(parts: list[dict]) -> list[list[int]]:
     return out
 
 
+# ---------------------------------------------------------------------------------------------------- the B-roll pool, by file
+# A pool scene is stored as (file name, seconds INSIDE that file) next to its virtual seconds on the shared timeline, so a timeline that
+# moves (a folder scanned again, a clip added) can never put a shot where its file has no picture (the "C0020.MP4 at 3.50 s" defect).
+POOL_MIN_S = 0.5                                                              # a scene shorter than this is not a shot
+
+
+def ensure_sids(pool: list[dict]) -> list[dict]:
+    """Every scene gets a stable id ("s0041") once: scenes that have one keep it, the others are numbered on from the highest in use."""
+    top = -1
+    for s in pool:
+        m = re.fullmatch(r"s(\d+)", str(s.get("sid") or ""))
+        if m:
+            top = max(top, int(m.group(1)))
+    out = []
+    for s in pool:
+        if not s.get("sid"):
+            top += 1
+            s = {**s, "sid": f"s{top:04d}"}
+        out.append(s)
+    return out
+
+
+def _pool_file(sc: dict, files: list[dict]) -> dict | None:
+    """The file a pool scene belongs to: by its file name, else by where its virtual seconds fall."""
+    name = sc.get("file")
+    if name:
+        f = next((f for f in files if f.get("name") == name and not f.get("multicam")), None)
+        if f is not None:
+            return f
+        if sc.get("path"):
+            f = next((f for f in files if f.get("path") == sc["path"] and not f.get("multicam")), None)
+            if f is not None:
+                return f
+        return None
+    return next((f for f in files if not f.get("multicam") and not f.get("photo") and f["start"] - 1e-3 <= float(sc.get("start", -1)) < f["end"]), None)
+
+
+def stamp_pool(pool: list[dict], files: list[dict]) -> list[dict]:
+    """The pool with sid, file, fstart and fend on every scene (what is already there is kept; photos are drawn, so they get 0 to their length)."""
+    out = []
+    for sc in pool:
+        sc = dict(sc)
+        if sc.get("photo"):
+            sc.setdefault("fstart", 0.0)
+            sc.setdefault("fend", round(float(sc["end"]) - float(sc["start"]), 3))
+        elif sc.get("fstart") is None or sc.get("fend") is None:
+            f = _pool_file(sc, files)
+            if f is not None:
+                sc.setdefault("file", f["name"])
+                sc["fstart"] = round(max(0.0, float(sc["start"]) - float(f["start"])), 3)
+                sc["fend"] = round(max(sc["fstart"], float(sc["end"]) - float(f["start"])), 3)
+        out.append(sc)
+    return ensure_sids(out)
+
+
+def remap_scene_ids(constraints: list[dict], before: list[dict], after: list[dict]) -> None:
+    """A constraint that points at scenes keeps their ids; the final pool numbers its scenes again, so each id is found again by file and file seconds
+    (an id whose scene is not in the final pool is dropped). Changes the constraints in place."""
+    def key(sc: dict) -> tuple:
+        return (sc.get("file"), round(float(sc.get("fstart") or 0.0), 1))
+    old = {sc.get("sid"): key(sc) for sc in before or [] if sc.get("sid")}
+    new = {key(sc): sc["sid"] for sc in after or [] if sc.get("sid")}
+    for c in constraints or []:
+        anchor = c.get("anchor") if isinstance(c, dict) else None
+        if isinstance(anchor, dict) and anchor.get("scene_ids"):
+            anchor["scene_ids"] = [new[old[i]] for i in anchor["scene_ids"] if i in old and old[i] in new]
+
+
+def resolve_pool(pool: list[dict], files: list[dict]) -> tuple[list[dict], list[str]]:
+    """The pool's virtual seconds worked out again from the files as they are NOW (file seconds are the truth): start = the file's start +
+    fstart, end = at most the file's end less 0.05 s. A scene of a missing file, or with under half a second of picture left, is left out
+    with a plain-words note. Photos, and scenes of an older plan that never had file seconds, pass through unchanged."""
+    out, notes = [], []
+    for sc in pool:
+        if sc.get("photo") or sc.get("fstart") is None or sc.get("fend") is None:
+            out.append(sc)
+            continue
+        f = _pool_file(sc, files)
+        sid, name = sc.get("sid") or "?", sc.get("file") or "?"
+        try:
+            fs, fe = float(sc["fstart"]), float(sc["fend"])
+        except (TypeError, ValueError):
+            fs = fe = float("nan")
+        if not (math.isfinite(fs) and math.isfinite(fe)) or fs < 0 or fe <= fs:                   # (a hand-edited or damaged plan: never play a picture before its file starts)
+            notes.append(f"B-roll scene {sid} in {name} has times that make no sense ({sc.get('fstart')!r}-{sc.get('fend')!r}), left out")
+            continue
+        if f is None:
+            notes.append(f"B-roll scene {sid} in {name} ({fs:.2f}-{fe:.2f} s): that clip is not in this project, left out")
+            continue
+        start = float(f["start"]) + float(sc["fstart"])
+        end = min(float(f["start"]) + float(sc["fend"]), float(f["end"]) - 0.05)
+        if end - start < POOL_MIN_S:
+            notes.append(f"B-roll scene {sid} in {name} ({float(sc['fstart']):.2f}-{float(sc['fend']):.2f} s) is outside the file, left out")
+            continue
+        out.append({**sc, "start": round(start, 3), "end": round(end, 3)})
+    return out, notes
+
+
+def check_pool_inside_files(pool: list[dict], files: list[dict]) -> list[str]:
+    """Plain-words problems with a pool: a scene whose seconds are not inside its file (what resolve_pool prevents; also the planner's check)."""
+    bad = []
+    for sc in pool:
+        if sc.get("photo"):
+            continue
+        f = _pool_file(sc, files)
+        if f is None:
+            bad.append(f"scene {sc.get('sid') or '?'}: its file ({sc.get('file') or 'unknown'}) is not in this project")
+            continue
+        if float(sc["start"]) < float(f["start"]) - 1e-3:
+            bad.append(f"scene {sc.get('sid') or '?'} in {f['name']} starts before its file")
+        elif float(sc["end"]) > float(f["end"]) + 1e-3:
+            bad.append(f"scene {sc.get('sid') or '?'} in {f['name']} runs past the end of its file")
+    return bad
+
+
+def usable_pool(pool: list[dict] | None, files: list[dict], ad: bool = False, rules: dict | None = None) -> tuple[list[dict], list[str]]:
+    """The pool render() offers the cutaway planner, and the shot strip numbers its shots in: not ruled out (`rules`: avoid words, excluded files),
+    good enough to show (quality), then placed by file seconds (resolve_pool). One function, so both count the same shots. Scenes whose picture
+    is the other way round from the timeline's (a portrait shot in a landscape video) come back marked `mismatch`."""
+    full = stamp_pool(list(pool or []), files)                   # (an older plan without ids or file seconds is stamped from where its scenes lie now)
+    if rules:                                                    # (library and stock scenes too: they were added after the plan chose its pool)
+        full = EL.clean_pool(full, rules.get("avoid"), 0.0, rules.get("exclude_files"))
+    ref = next((f for f in files if not f.get("broll") and not f.get("photo") and not f.get("library") and not f.get("stock")), None)
+    if ref and ref.get("w") and ref.get("h"):
+        full = PR.mark_orientation(full, float(ref["w"]) >= float(ref["h"]))
+    def _q(sc: dict) -> float:
+        try:
+            return float(sc.get("quality") if sc.get("quality") is not None else 6.0)
+        except (TypeError, ValueError):
+            return 6.0
+    return resolve_pool([s for s in full if _q(s) >= (6 if ad else 4)], files)
+
+
+def rebind_by_sid(placed: list[dict], pool: list[dict]) -> list[dict]:
+    """A saved placement points at pool shots by number; the pool may have been re-ordered since. A placed shot that carries its sid is found
+    again by it (and dropped when that shot is gone); one without (an older render) keeps its number."""
+    at = {s.get("sid"): i for i, s in enumerate(pool) if s.get("sid")}
+    out = []
+    for c in placed:
+        sid = c.get("sid")
+        if sid is None or c.get("scene") is None:
+            out.append(c)
+        elif sid in at:
+            out.append({**c, "scene": at[sid]})
+    return out
+
+
+def fit_to_footage(cutaways: list[dict], files: list[dict], least: float = 1.0) -> tuple[list[dict], list[str]]:
+    """B-roll shots that would read past the end of their clip (a scene the AI or the catalogue placed where the file has no picture) are cut
+    to what the clip has; one with under `least` seconds left is left out, and the speaker's picture stays there. Returns (the shots, what
+    was done in words). Photos are drawn, not read from a file: they stay."""
+    out, said = [], []
+    for c in cutaways:
+        if c.get("photo"):
+            out.append(c)
+            continue
+        f = next((f for f in files if not f.get("multicam") and f["start"] - 1e-3 <= float(c["src"]) < f["end"] - 1e-3), None)
+        if f is None:
+            said.append(f"a shot at {float(c['at']):.1f} s starts where no clip has a picture: left out")
+            continue
+        room = float(f["end"]) - float(c["src"])
+        if float(c["length"]) <= room + 0.05:
+            out.append(c)
+        elif room >= least:
+            out.append({**c, "length": round(room - 0.02, 2)})
+            said.append(f"{f['name']}: the shot at {float(c['at']):.1f} s ran past the end of its clip ({room:.2f} s left): shortened to fit")
+        else:
+            said.append(f"{f['name']}: the shot at {float(c['at']):.1f} s had only {room:.2f} s of picture left in its clip: left out")
+    return out, said
+
+
 def bad_pictures(parts: list[dict], durs: dict[str, float]) -> list[str]:
     """The last look before anything is cut: a piece whose picture would come from before the start or after the end of its file (a
     camera that wasn't rolling) is refused."""
@@ -4212,7 +5080,7 @@ def mc_parts(group: dict, cuts: list[dict], t0: float, t1: float) -> list[dict]:
     return out
 
 
-LAYOUT_STYLES = ("story", "business", "youtube")   # kinds of video where the speaker's face carries the message (never an ad)
+LAYOUT_STYLES = ("story", "business", "youtube", "seminar", "interview")   # kinds of video where the speaker's face carries the message (never an ad)
 PIP_MIN_S = 6.0                              # a B-roll run this long over speech: now and then the speaker comes back in a window
 SPLIT_MIN_S = 3.0                            # vertical videos: speaker on top, B-roll below
 LAYOUT_EVERY = 3                             # at most one in three of the shots that qualify (sparingly)
@@ -4301,8 +5169,12 @@ def layout_graph(layout: str, W: int, H: int, rs: str, lut_b: str, lut_s: str, n
     raise ValueError(f"no such layout: {layout}")
 
 
-def build_parts(files: list[dict], group: dict | None, cuts: list[dict], intervals, cutaways: list[dict], outro: dict | None = None) -> list[dict]:
-    """The whole program as pieces, in order, each with its picture source and sound source (and what Final Cut needs to know)."""
+def build_parts(files: list[dict], group: dict | None, cuts: list[dict], intervals, cutaways: list[dict], outro: dict | None = None,
+                strict: bool = True) -> list[dict]:
+    """The whole program as pieces, in order, each with its picture source and sound source (and what Final Cut needs to know).
+    strict: a B-roll shot whose clip ends too soon is shortened to the picture the clip has (when a second or more is left), else left out
+    with a note at its time; never the speaker shown under a shot that claims to be B-roll. strict=False keeps the speaker silently (the
+    joined-upload path)."""
     def file_at(t: float) -> dict:
         play = lambda f: not f.get("photo") or f.get("mphoto")             # noqa: E731 (a montage's photos are shots of their own)
         return next((f for f in files if f["start"] <= t < f["end"] + 1e-6 and play(f)), next(f for f in reversed(files) if play(f)))
@@ -4327,7 +5199,8 @@ def build_parts(files: list[dict], group: dict | None, cuts: list[dict], interva
                     else:
                         aud = None
                     item = {"kind": "clip", "path": f["path"], "start": loc, "w": f["w"], "h": f["h"], "fps": f["fps"],
-                            "audio": bool(f["audio"]), "file_dur": f["dur"], "tc": f.get("tc", 0.0), "tc_df": f.get("tc_df", False)}
+                            "audio": bool(f["audio"]), "file_dur": f["dur"], "tc": f.get("tc", 0.0), "tc_df": f.get("tc_df", False),
+                            **{k: f[k] for k in ("ar", "ach", "cs") if f.get(k)}}
                     if clean:                                                       # Final Cut hears the same recording the video uses
                         item["aud"] = {"path": clean["audio"], "start": aud["ss"], "tc": float(clean.get("tc") or 0.0),
                                        "dur": clean.get("dur"), "ch": clean.get("ch")}
@@ -4343,7 +5216,21 @@ def build_parts(files: list[dict], group: dict | None, cuts: list[dict], interva
         c0, c1 = c["at"], min(total, c["at"] + c["length"])
         bf = next((f for f in files if not f.get("multicam") and f["start"] - 1e-3 <= c["src"] < f["end"]), None)
         if bf is None or c1 - c0 < 0.3:
+            if bf is None and strict and c1 - c0 >= 0.3:
+                NT.note("warn", f"a B-roll shot was dropped at {c0:.1f} s: its clip ended", start=c0, end=c1,
+                        do="Nothing: the speaker stays there. Put other B-roll there in Final Cut if you want some.")
             continue
+        if strict:
+            room = float(bf["dur"]) - 0.05 - (float(c["src"]) - float(bf["start"]))       # the picture the clip still has from where the shot starts
+            if c1 - c0 > room + 1e-3:
+                if room >= 1.0:
+                    NT.note("info", f"a B-roll shot at {c0:.1f} s was shortened to {room:.1f} s: its clip ended", start=c0, end=c0 + room,
+                            do="Nothing: the rest of that stretch shows the speaker.")
+                    c1 = c0 + room
+                else:
+                    NT.note("warn", f"a B-roll shot was dropped at {c0:.1f} s: its clip ended", start=c0, end=c1,
+                            do="Nothing: the speaker stays there. Put other B-roll there in Final Cut if you want some.")
+                    continue
         nxt = []
         for p in parts:
             p0, p1 = p["out"], p["out"] + p["d"]
@@ -4361,12 +5248,17 @@ def build_parts(files: list[dict], group: dict | None, cuts: list[dict], interva
                 if p1 > c1:
                     nxt.append(_slice(p, c1 - p0, p1 - c1))
                 continue
-            mid["v"] = {"path": bf["path"], "ss": ss, "fill": True, "cut": True, **({"layout": c["layout"]} if c.get("layout") else {})}
+            mid["v"] = {"path": bf["path"], "ss": ss, "fill": True, "cut": True, **({"layout": c["layout"]} if c.get("layout") else {}),
+                        **{k: c[k] for k in ("noun", "score", "why", "what", "speed") if c.get(k) is not None},           # (what Final Cut's notes and keywords say about the shot)
+                        **({"nat_db": float((c.get("a_mix") or {}).get("gain_db", -20.0))} if c.get("a_mix") and not c.get("layout") else {})}   # (its own sound plays: at this level)
+            if c.get("a_mix") and not c.get("layout"):                      # (only when the person asked for the shot's own sound: brollsound.py)
+                mid["a_mix_c"] = {**c["a_mix"], "ss": ss, "first": abs(m0 - c0) < 1e-6, "last": abs(m1 - c1) < 1e-6}
             nxt.append(mid)
             if p1 > c1:
                 nxt.append(_slice(p, c1 - p0, p1 - c1))
         parts = nxt
     parts.sort(key=lambda p: p["out"])
+    BS.apply_jl(parts)
     if outro:                                                               # the closing shot: picture only, the music carries it
         end = parts[-1]["out"] + parts[-1]["d"] if parts else 0.0
         parts.append({"d": outro["d"], "out": end, "v": {"path": outro["path"], "ss": outro["ss"], "fill": True, "cut": True}, "a": None,
@@ -4416,10 +5308,43 @@ def dedupe_intervals(intervals, margin: float = 0.05, min_len: float = 0.5) -> l
     return out
 
 
-def no_repeats(items: list[dict], sents: list[M.Sentence]) -> list[dict]:
-    """The same line said twice (a retake, or the hook used again later) stays only where it is heard first: a whole passage that repeats
-    one heard before is dropped, and inside a longer passage a single sentence (5+ words) that repeats an earlier one is cut out."""
+def dedupe_takes(items: list[dict], sents: list[M.Sentence], words: list[dict] | None = None, policy: str = "best",
+                 alt: list[dict] | None = None, groups_out: list[dict] | None = None, grades: dict | None = None,
+                 meant: set[int] | None = None) -> list[dict]:
+    """Takes of one line (takes.py) that the items use more than once: only the best take stays (or the last / first when the style says so);
+    a deliberate repeat ("let me say that again", a refrain) is never reduced. The takes that were not kept are listed in `alt`
+    ([{"group", "a", "b"}], for the Final Cut export and the review page); `groups_out` receives the groups found."""
+    grps = TK.groups(sents, words or [], None, grades)
+    if groups_out is not None:
+        groups_out.extend({"id": g["id"], "deliberate": g["deliberate"], "takes": [{"a": t["a"], "b": t["b"], "start": t["start"], "end": t["end"]} for t in g["takes"]]}
+                          for g in grps)
+    used = {i for it in items if it["kind"] == "talk" for i in range(it["a"], it["b"] + 1)}
+    drop: set[int] = set()
+    chosen: dict[str, int] = {}
+    for g in grps:
+        if g["deliberate"]:
+            if meant is not None:
+                meant |= {t["a"] for t in g["takes"]}                          # (a repeat the speaker meant: nothing below may take it out either)
+            continue
+        present = [n for n, t in enumerate(g["takes"]) if t["a"] in used]
+        if len(present) < 2:
+            continue
+        sub = {"takes": [g["takes"][n] for n in present]}
+        keep = present[TK.best(sub, policy) if policy in ("first", "last") else max(range(len(present)), key=lambda q: (TK.score(sub["takes"][q], g), q))]
+        chosen[g["id"]] = keep
+        drop |= {g["takes"][n]["a"] for n in present if n != keep}
+    if alt is not None:
+        alt.extend(TK.alternates(grps, chosen))
+    return drop_sentences(items, drop) if drop else items
+
+
+def no_repeats(items: list[dict], sents: list[M.Sentence], words: list[dict] | None = None, policy: str = "best", alt: list[dict] | None = None,
+               groups_out: list[dict] | None = None) -> list[dict]:
+    """The same line said twice (a retake, or the hook used again later) stays once: of several takes of a line the best one stays (dedupe_takes), a
+    whole passage that repeats one heard before is dropped, and inside a longer passage a single sentence (5+ words) that repeats an earlier one is cut out."""
     import difflib
+    meant: set[int] = set()
+    items = dedupe_takes(items, sents, words, policy, alt, groups_out, None, meant)
     by = {s.idx: s for s in sents}
     norm = lambda t: re.sub(r"[^a-z0-9 ]", "", t.lower()).strip()          # noqa: E731
     seen: list[str] = []
@@ -4438,13 +5363,14 @@ def no_repeats(items: list[dict], sents: list[M.Sentence]) -> list[dict]:
             out.append(it)
             continue
         text = norm(" ".join(by[i].text for i in range(it["a"], it["b"] + 1) if i in by))
-        if len(text.split()) >= 4 and any(difflib.SequenceMatcher(None, text, t).ratio() > 0.8 for t in seen):
+        if len(text.split()) >= 4 and any(difflib.SequenceMatcher(None, text, t).ratio() > 0.8 for t in seen) \
+                and not any(i in meant for i in range(it["a"], it["b"] + 1)):
             continue
         seen.append(text)
         run: list[int] = []
         for i in list(range(it["a"], it["b"] + 1)) + [None]:
             line = norm(by[i].text) if i is not None and i in by else ""
-            if i is not None and not (len(line.split()) >= 5 and repeat(line)):
+            if i is not None and (i in meant or not (len(line.split()) >= 5 and repeat(line))):
                 run.append(i)
                 if line:
                     said.append(line)
@@ -4457,8 +5383,9 @@ def no_repeats(items: list[dict], sents: list[M.Sentence]) -> list[dict]:
 
 def keep_moving(cutaways: list[dict], cuts: list[dict], intervals, pool: list[dict], allowed, group: dict | None, out_len: float,
                 exclude: set[int] = frozenset(), limit: float = 12.0, show: float = 3.2, choose=None,
-                boundaries: list[float] | None = None, lenient: bool = True, jumps: list[float] | None = None,
-                share: float = 0.6) -> tuple[list[dict], list[dict]]:
+                boundaries: list[float] | None = None, lenient: bool = False, jumps: list[float] | None = None,
+                share: float = 0.6, devices: dict | None = None, report: list[str] | None = None,
+                protected: list[tuple[float, float]] | None = None, moves: list[float] | None = None) -> tuple[list[dict], list[dict]]:
     """The twelve-second rule: never more than `limit` seconds of the same picture. A gap is broken up by a cutaway to B-roll / a photo, or by
     switching to the other camera (they take turns, so the video moves between all of them)."""
     def to_out(tm: float):
@@ -4479,7 +5406,7 @@ def keep_moving(cutaways: list[dict], cuts: list[dict], intervals, pool: list[di
     cutaways = [dict(c) for c in cutaways]
     cuts = [dict(c) for c in cuts]
     used = {c["scene"] for c in cutaways} | set(exclude)
-    free = [i for i in sorted(range(len(pool)), key=lambda i: -pool[i]["quality"])
+    free = [i for i in sorted(range(len(pool)), key=lambda i: -PR.effective_quality(pool[i]))
             if i not in used and (allowed is None or i in allowed) and pool[i]["end"] - pool[i]["start"] >= 1.5]
 
     # Step boundaries can join distant moments of an interview, and every jump cut inside one shot (a pause or a slip cut out) twitches.
@@ -4494,6 +5421,51 @@ def keep_moving(cutaways: list[dict], cuts: list[dict], intervals, pool: list[di
             continue
         if kind == "jump" and sum(c["length"] for c in cutaways) >= share * out_len:
             break
+        if kind == "jump" and devices is not None:                      # WP7: one device per jump cut, taking turns (covers.py)
+            alt = None
+            if group and cuts:
+                seg = next((x for x in cuts if x["start"] < master_time - 0.05 and master_time < x["end"] - 0.5), None)
+                if seg:
+                    alt = next((a["id"] for a in group["angles"] if a["id"] != seg["angle"]
+                                and MC.cover(MC.angle_files(group, a["id"]), master_time) and MC.cover(MC.angle_files(group, a["id"]), seg["end"] - 0.05)), None)
+            shut = COV.blocked(t - 0.8, t + 1.0, protected or [])
+            tried: set[str] = set()
+            while True:
+                can = {"angle": bool(alt) and "angle" not in tried, "punch": bool(devices.get("punch")) and "punch" not in tried,
+                       "broll": bool(free) and not shut and "broll" not in tried}
+                dev = COV.choose_device(devices.get("last"), can, tuple(devices.get("prefer") or COV.DEVICES))
+                if dev is None:
+                    if report is not None:
+                        report.append(f"a jump cut at {t:.1f} s was left as it is: nothing matched there, so it stays on the speaker")
+                    break
+                if dev == "broll":
+                    pick = choose(t, free) if choose else free[0]
+                    if pick is None:
+                        tried.add("broll")
+                        continue
+                    sc = pool[pick]
+                    at = max(0.0, t - 0.8)
+                    ln = min(show, out_len - at - 0.15, 1e9 if sc.get("photo") else sc["end"] - sc["start"])
+                    if not (ln >= 1.2 and at + ln >= t + 1.0):
+                        tried.add("broll")
+                        continue
+                    free.remove(pick)
+                    cutaways.append({"at": round(at, 2), "length": round(ln, 2), "src": round(sc["start"], 2), "scene": pick, "what": sc["what"],
+                                     "why": "cover the jump cut", "file": sc.get("file"), "photo": sc.get("photo")})
+                    cutaways.sort(key=lambda c: c["at"])
+                elif dev == "angle":
+                    sw = master_time                                       # cut on movement: a speaker who moves (or a camera re-aimed) near the join is the best place to switch
+                    near = [m for m in (moves or []) if abs(m - master_time) <= 1.0 and seg["start"] + 1.5 <= m <= seg["end"] - 1.5]
+                    if near:
+                        sw = min(near, key=lambda m: abs(m - master_time))
+                    cuts.append({"start": sw, "end": seg["end"], "angle": alt})
+                    seg["end"] = sw
+                    cuts.sort(key=lambda x: x["start"])
+                else:
+                    devices.setdefault("punch_at", []).append(round(t, 2))
+                devices["last"] = dev
+                break
+            continue
         pick = (choose(t, free) if choose else free[0]) if free else None
         if pick is None and kind == "jump" and free and lenient:
             pick = free[0]
@@ -4531,7 +5503,7 @@ def keep_moving(cutaways: list[dict], cuts: list[dict], intervals, pool: list[di
                     m.add(o)
             prev = s["angle"]
         return sorted(m)
-    broll_next = True
+    broll_next = False                                                     # (a real camera change first, then B-roll: the speaker's own angle covers best)
     for _ in range(80):
         m = marks()
         gap = next(((x0, x1) for x0, x1 in zip(m, m[1:]) if x1 - x0 > limit + 0.05), None)
@@ -4540,8 +5512,15 @@ def keep_moving(cutaways: list[dict], cuts: list[dict], intervals, pool: list[di
         x0, x1 = gap
         t = x0 + min(4.5, (x1 - x0) - 3.2)
         done = False
-        for mode in (("broll", "cam") if broll_next else ("cam", "broll")):
-            if mode == "cam" and group and cuts:
+        for mode in (("broll", "cam", "punch") if broll_next else ("cam", "punch", "broll")):
+            if mode == "punch":                                            # a punch-in on a join (a jump cut) inside the gap: the picture changes without B-roll
+                if devices is not None and devices.get("punch"):
+                    tp = next((to_out(j) for j in jumps or [] if to_out(j) is not None and x0 + 1.8 <= to_out(j) <= x1 - 1.8
+                               and round(to_out(j), 2) not in devices.get("punch_at", [])), None)
+                    if tp is not None:
+                        devices.setdefault("punch_at", []).append(round(tp, 2))
+                        done = True
+            elif mode == "cam" and group and cuts:
                 tm = to_master(t)
                 seg = next((s for s in cuts if tm is not None and s["start"] <= tm < s["end"]), None)
                 if seg and tm - seg["start"] >= 1.8 and seg["end"] - tm >= 1.8:
@@ -4571,6 +5550,8 @@ def keep_moving(cutaways: list[dict], cuts: list[dict], intervals, pool: list[di
                 broll_next = not broll_next
                 break
         if not done:
+            if report is not None:
+                report.append(f"nothing matched from {x0:.0f} s to {x1:.0f} s: it stays on the speaker ({x1 - x0:.0f} s)")
             break                                                          # nothing left to show (no spare footage, no other camera)
     return cutaways, cuts
 
@@ -4596,6 +5577,24 @@ def joined(a: dict, b: dict) -> bool:
     return bool(x and y and x["path"] == y["path"] and abs(x["ss"] + a["d"] - y["ss"]) < 0.05)
 
 
+def _fcp_meta(info: dict, vs: dict | None) -> dict:
+    """What Final Cut's asset needs from the probe: the sound's sample rate and channels, the picture's colour space (HLG, PQ, Rec. 2020; Rec. 709 is the default)."""
+    out: dict = {}
+    try:
+        au = ffmpeg.audio_stream(info) or {}
+        if au.get("sample_rate"):
+            out["ar"] = int(float(au["sample_rate"]))
+        if au.get("channels"):
+            out["ach"] = int(au["channels"])
+        if vs:
+            cs = FX.colorspace_of(vs)
+            if not cs.startswith("1-1-1"):
+                out["cs"] = cs
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
 def cutaways_of_parts(parts: list[dict], files: list[dict]) -> list[dict]:
     """The B-roll shots Final Cut gets: exactly the ones the render PLAYED (a planned cutaway that the render skipped because the clip ended too soon
     must not be in the project either - it pointed past the end of the media: "an edit with no respective media"), each kept inside its file."""
@@ -4614,7 +5613,9 @@ def cutaways_of_parts(parts: list[dict], files: list[dict]) -> list[dict]:
             continue
         out.append({"at": p["out"], "len": p["d"], "path": bf["path"], "start": v["ss"], "w": bf["w"], "h": bf["h"], "fps": bf["fps"],
                     "tc": bf.get("tc", 0.0), "tc_df": bf.get("tc_df", False), "file_dur": bf.get("dur"),
-                    **({"layout": v["layout"]} if v.get("layout") and (p.get("v0") or {}).get("path") else {})})
+                    **({"layout": v["layout"]} if v.get("layout") and (p.get("v0") or {}).get("path") else {}),
+                    **{k: v[k] for k in ("noun", "score", "why", "what", "speed", "nat_db") if k in v},
+                    **{k: bf[k] for k in ("ar", "ach", "cs") if bf.get(k)}})
     keep = []
     for c in out:
         fd = c.get("file_dur")
@@ -4630,14 +5631,19 @@ STUTTER_WORDS = {"i", "the", "a", "an", "and", "to", "of", "in", "it", "that", "
                  "because", "if", "its", "i'm", "i've", "it's", "that's", "there"}
 
 
-def filler_spans(words: list[dict]) -> list[tuple[float, float]]:
-    """Where the speaker says "um" / "uh" and where a short word is stuttered ("I I", "the the": the first one goes, the second stays)."""
+def filler_spans(words: list[dict], policy: str = "cut", covered: list[tuple[float, float]] | None = None) -> list[tuple[float, float]]:
+    """Where the speaker says "um" / "uh" and where a short word is stuttered ("I I", "the the": the first one goes, the second stays).
+    policy: "cut" (all), "keep_soft" (only a long filler, or one that starts a sentence: a short "um" inside a sentence stays), "keep" (none).
+    covered: stretches a take group already covers (a whole sentence said twice): the retake rule below leaves those to it."""
+    if policy == "keep":
+        return []
     norm = lambda w: re.sub(r"[^a-z']", "", str(w.get("text", "")).lower().replace("\u2019", "'"))          # noqa: E731
     spans = []
     for k, w in enumerate(words):
         t, dur = norm(w), w["end"] - w["start"]
         if t in FILLER_WORDS and 0.08 <= dur <= 1.6:
-            spans.append((w["start"], w["end"]))
+            if policy == "cut" or SPT.soft_filler_ok(words, k, dur):
+                spans.append((w["start"], w["end"]))
         elif t in STUTTER_WORDS and dur < 0.6 and k + 1 < len(words) and norm(words[k + 1]) == t and 0 <= words[k + 1]["start"] - w["end"] < 0.35:
             spans.append((w["start"], words[k + 1]["start"]))
     toks = [norm(w) for w in words]                                                   # a retake: the same few words said twice ("they get turned into content and they get turned into content"): the first try goes
@@ -4654,17 +5660,19 @@ def filler_spans(words: list[dict]) -> list[tuple[float, float]]:
                     hit = j
                     break
             if hit is not None:
-                spans.append((words[k]["start"], words[hit]["start"]))
+                if not any(a <= words[k]["start"] and words[hit]["start"] <= b for a, b in (covered or [])):
+                    spans.append((words[k]["start"], words[hit]["start"]))
                 k = hit - 1
                 break
         k += 1
     return spans
 
 
-def cut_fillers(intervals: list[tuple[float, float]], words: list[dict], margin: float = 0.025, min_piece: float = 0.3) -> list[tuple[float, float]]:
+def cut_fillers(intervals: list[tuple[float, float]], words: list[dict], margin: float = 0.025, min_piece: float = 0.3, policy: str = "cut",
+                covered: list[tuple[float, float]] | None = None) -> list[tuple[float, float]]:
     """The kept stretches without the filler sounds and stutters inside them (what Descript / Gling / TimeBolt do first). A filler is left alone when
     cutting it would strand a sliver (a piece shorter than min_piece) of speech beside it."""
-    spans = [(a + margin, b - margin) for a, b in filler_spans(words) if b - a > 2 * margin]
+    spans = [(a + margin, b - margin) for a, b in filler_spans(words, policy, covered) if b - a > 2 * margin]
     out: list[tuple[float, float]] = []
     for a, b in intervals:
         pieces = [(a, b)]
@@ -4689,22 +5697,41 @@ def cut_fillers(intervals: list[tuple[float, float]], words: list[dict], margin:
     return out
 
 
-def punch_ins(parts: list[dict], zoom: float = 1.12) -> list[dict]:
+def punch_ins(parts: list[dict], zoom: float = 1.12, faces=None, only_at: list[float] | None = None) -> list[dict]:
     """Hide jump cuts the way editors do (Submagic / CapCut call it auto-zoom): when the same camera jumps to a later moment, the picture changes
-    only slightly, and it looks like a mistake. Every second such cut is a slight punch-in (the picture scaled up ~12%, framed on the centre), so
-    the cut reads as a deliberate change of shot. Camera switches and B-roll are already a visible change and are left alone; never two zoomed
-    pieces in a row."""
+    only slightly, and it looks like a mistake. A punch-in (the picture scaled up ~10-12%) makes the cut read as a deliberate change of shot.
+    The picture is framed ON THE FACE (faces(path, t0, t1) -> {cx, cy, h} or None; None frames the middle) with the eyes kept at about a third of the
+    frame's height, and the crop never leaves the picture. Camera switches and B-roll are already a visible change and are left alone; never two
+    zoomed pieces in a row. only_at: program seconds of the joins the cover planner chose to punch (None = every second jump cut)."""
     last_zoomed = False
     for k in range(1, len(parts)):
         prv, p = parts[k - 1], parts[k]
         if p["v"].get("cut") or prv["v"].get("cut") or p["v"]["path"] != prv["v"]["path"] or joined(prv, p):
             last_zoomed = False if (p["v"].get("cut") or p["v"]["path"] != prv["v"]["path"]) else last_zoomed
             continue
-        if last_zoomed or prv.get("zoom"):
+        if only_at is not None:
+            if not any(abs(float(p.get("out", -9)) - t) < 0.25 for t in only_at):
+                continue
+        elif last_zoomed or prv.get("zoom"):
             last_zoomed = False
             continue
+        if prv.get("zoom"):
+            continue
+        centre = None
+        if faces:
+            try:
+                ss = float(p["v"].get("ss", 0.0))
+                face = faces(p["v"]["path"], ss, ss + float(p.get("d") or 0.0))
+                if face:
+                    centre = COV.punch_centre(face, zoom)
+            except Exception:  # noqa: BLE001 - no face information: frame the middle
+                centre = None
         p["zoom"] = zoom
-        p["item"] = {**p["item"], "zoom": zoom}
+        item = {**p["item"], "zoom": zoom}
+        if centre:
+            p["zoom_xy"] = [centre[0], centre[1]]
+            item["zoom_xy"] = [centre[0], centre[1]]
+        p["item"] = item
         last_zoomed = True
     return parts
 
@@ -4853,21 +5880,25 @@ def fcp_items(parts: list[dict]) -> list[dict]:
     for p in parts:
         it = p["item"]
         last = items[-1] if items else None
+        gdb = round(float(p.get("gain") or 0.0), 2)                          # the speech-level gain of this stretch (level_gains): Final Cut gets it as Adjust Volume
+        cleaned = bool((p.get("a") or {}).get("clean_path"))                 # (the MP4 has this voice cleaned; Final Cut has it raw: a note says so)
+        gx = {**({"gain_db": gdb} if gdb else {}), **({"cleaned": True} if cleaned else {})}
         if it["kind"] == "mc":
             if last and last["kind"] == "mc" and last["video"] == it["video"] and last["audio"] == it["audio"] and abs(last["t"] + last["dur"] - it["t"]) < 0.05 \
-                    and last.get("zoom") == it.get("zoom"):
+                    and last.get("zoom") == it.get("zoom") and last.get("gain_db", 0.0) == gdb and last.get("cleaned", False) == cleaned:
                 last["dur"] += p["d"]
             else:
                 items.append({"kind": "mc", "out": pos, "dur": p["d"], "t": it["t"], "video": it["video"], "audio": it["audio"],
-                              **({"zoom": it["zoom"]} if it.get("zoom") else {})})
+                              **({"zoom": it["zoom"]} if it.get("zoom") else {}), **({"zoom_xy": it["zoom_xy"]} if it.get("zoom_xy") else {}), **gx})
         else:
             if last and last["kind"] == "clip" and last["path"] == it["path"] and abs(last["start"] + last["dur"] - it["start"]) < 0.05 \
-                    and last.get("zoom") == it.get("zoom"):
+                    and last.get("zoom") == it.get("zoom") and last.get("gain_db", 0.0) == gdb and last.get("cleaned", False) == cleaned:
                 last["dur"] += p["d"]
             else:
                 items.append({"kind": "clip", "out": pos, "dur": p["d"], "path": it["path"], "start": it["start"], "w": it["w"], "h": it["h"],
                               "fps": it["fps"], "audio": it["audio"], "file_dur": it.get("file_dur"), "tc": it.get("tc", 0.0),
-                              "tc_df": it.get("tc_df", False), **({"aud": it["aud"]} if it.get("aud") else {}), **({"zoom": it["zoom"]} if it.get("zoom") else {})})
+                              "tc_df": it.get("tc_df", False), **({"aud": it["aud"]} if it.get("aud") else {}), **({"zoom": it["zoom"]} if it.get("zoom") else {}),
+                              **({"zoom_xy": it["zoom_xy"]} if it.get("zoom_xy") else {}), **{k: it[k] for k in ("who", "ar", "ach", "cs") if it.get(k)}, **gx})
         pos += p["d"]
     return items
 
@@ -4884,7 +5915,7 @@ NEEDS_MORE = re.compile(r"^(and|but|so|or|because|cause|the|a|an|to|of|for|with|
                         r"very|going|gonna|get|got|um|uh)$", re.I)
 
 
-def finish_sentence(items: list[dict], sents: list[M.Sentence], max_add: int = 4, max_s: float = 25.0) -> list[dict]:
+def finish_sentence(items: list[dict], sents: list[M.Sentence], max_add: int = 4, max_s: float = 25.0, every: bool = False) -> list[dict]:
     """The last thing said must be a finished thought. With punctuation (the speaker's own sentence ends) the last passage runs on until
     a sentence really ends - or, if that is too far, is cut back to the last sentence that did end. Without punctuation (older
     transcripts) a passage is unfinished when the next words follow with no pause (a sentence was split only by length) or it stops on a
@@ -4901,9 +5932,10 @@ def finish_sentence(items: list[dict], sents: list[M.Sentence], max_add: int = 4
     for it in reversed(items):
         if it["kind"] != "talk":
             continue
+        others = {i for o in items if o is not it and o["kind"] == "talk" for i in range(o["a"], o["b"] + 1)} if every else set()
         b, added = it["b"], 0.0
         while (b in by and unfinished(b) and b + 1 in by and by[b + 1].start - by[b].end < 2.0 and b - it["b"] < max_add
-               and added + by[b + 1].end - by[b + 1].start <= max_s):
+               and added + by[b + 1].end - by[b + 1].start <= max_s and b + 1 not in others):          # (every: never into what another item says)
             b += 1
             added += by[b].end - by[b].start
         goes_on = b + 1 in by and by[b + 1].start - by[b].end < 2.0          # (the speaker stopped there: that IS the end of the thought)
@@ -4911,12 +5943,23 @@ def finish_sentence(items: list[dict], sents: list[M.Sentence], max_add: int = 4
             done = [k for k in range(it["a"], it["b"] + 1) if k in by and not unfinished(k)]
             b = done[-1] if done else b
         it["b"] = b
-        break
+        if not every:
+            break
+    return items
+
+
+def skip_continuations(items: list[dict], sents: list[M.Sentence]) -> list[dict]:
+    """An item must not open on a sentence that only carries on from the one before it ("And...", "So...", "But because..."): the start moves on to
+    the next sentence of the item (an item of one sentence is left as it is). The same check moments.complete_endings makes at the end of a clip."""
+    by = {s.idx: s for s in sents}
+    for it in items:
+        while it["kind"] == "talk" and it["a"] < it["b"] and it["a"] in by and M.CONTINUES.match(by[it["a"]].text) and it["a"] - 1 not in {x["b"] for x in items if x is not it and x["kind"] == "talk"}:
+            it["a"] += 1
     return items
 
 
 PROMO_RE = re.compile(r"\b(ad|ads|advert\w*|promo\w*|commercial|upbeat|hype\w*|punchy|fast[- ]?paced|reel|teaser|trailer|sizzle)\b", re.I)
-KINDS = ("ad", "promo", "story", "business", "youtube")
+KINDS = ("ad", "promo", "story", "business", "youtube", "seminar", "interview", "recap")
 # How each kind of video is edited. punch_ins: scale-ups that hide jump cuts (energetic: only YouTube / promo). graphics_per_s: at most one graphic per this
 # many seconds. kinds: which graphics it may have. cut_per_s: how often the picture changes (B-roll). pace: the cut-pause default when you left "Natural".
 PROFILES = {
@@ -4931,6 +5974,13 @@ PROFILES = {
     "ad": {"label": "advertisement", "punch_ins": False, "graphics_per_s": 16, "kinds": ["stat", "quote", "slide", "lower", "entity", "chips", "compare"], "entities_per_s": 10, "cut_per_s": 3.0, "pace": "tight",
            "tone": "short selling points"},
 }
+# (the three kinds the style object knows too: a sermon or lecture, a podcast or interview, an event recap; each edits like a story but for its own few numbers)
+PROFILES["seminar"] = {**PROFILES["story"], "label": "seminar or lecture", "graphics_per_s": 45, "kinds": ["chapter", "statement", "lower", "quote", "fullquote"],
+                       "tone": "calm and clear: the speaker carries it; a title, a chapter card, a reference"}
+PROFILES["interview"] = {**PROFILES["story"], "label": "podcast or interview", "graphics_per_s": 120, "entities_per_s": 120, "kinds": ["lower"],
+                         "tone": "plain: the people carry it; a name once"}
+PROFILES["recap"] = {**PROFILES["story"], "label": "event recap", "graphics_per_s": 90, "kinds": ["lower", "statement"], "cut_per_s": 4.0,
+                     "tone": "warm and quick: the day in pictures"}
 KIND_SCHEMA = {"type": "object", "properties": {"kind": {"type": "string", "enum": list(KINDS)}, "why": {"type": "string"}}, "required": ["kind"]}
 KIND_SYSTEM = (
     "You read a video creator's notes and say what KIND of video they want, because each is edited differently. 'ad' = an advertisement "
@@ -4938,7 +5988,8 @@ KIND_SYSTEM = (
     "teaser or trailer built from fast punchy soundbites, but not selling a business. 'story' = an interview, testimony, vlog, documentary "
     "or talk told in order. 'business' = a calm, professional video for an organisation that is NOT an advertisement: a company or nonprofit overview, "
     "a client testimonial, an explainer, training or an internal update. 'youtube' = a video made for YouTube: a creator's vlog, commentary, tutorial, "
-    "review or talking-head video that should feel energetic. Read the meaning, not keywords: 'don't make this feel like an ad', 'his promotion at work' "
+    "review or talking-head video that should feel energetic. 'seminar' = a sermon, lecture, keynote or talk given to an audience. 'interview' = a podcast "
+    "or interview where two or more people talk. 'recap' = an event recap, aftermovie or highlights with little talking. Read the meaning, not keywords: 'don't make this feel like an ad', 'his promotion at work' "
     "or 'upbeat music under her story' are stories. When unsure, 'story'.")
 
 
@@ -4955,7 +6006,8 @@ def video_kind(ai, notes: str, chosen: str | None = None) -> str:
             return k
     except Exception as e:  # noqa: BLE001 - the keyword guess below
         log.warning(f"telling what kind of video this is failed ({e}); guessing from keywords")
-    return "ad" if AD_RE.search(notes) else ("promo" if PROMO_RE.search(notes) else "story")
+    return ("ad" if AD_RE.search(notes) else "promo" if PROMO_RE.search(notes) else "seminar" if SPF.SERMON_RE.search(notes)
+            else "interview" if SPF.INTERVIEW_RE.search(notes) else "recap" if SPF.RECAP_RE.search(notes) else "story")
 GRAPHIC_RE = re.compile(r"\b(graphics?|callouts?|key points?|lower[- ]?thirds?|on[- ]screen text|text on screen)\b", re.I)
 POINT_SCHEMA = {"type": "object", "properties": {"points": {"type": "array", "items": {"type": "object", "properties": {
     "at": {"type": "number"}, "text": {"type": "string"}}, "required": ["at", "text"]}}}, "required": ["points"]}
@@ -4987,9 +6039,11 @@ def key_points(ai, sents: list[M.Sentence], brief: str, out_len: float) -> list[
 
 
 
-def loudness_pass(path: Path, target: float) -> float | None:
-    """Make the finished video as loud as it should be (a promo is louder than a story). Measured, then one clean gain change with a
-    limiter so nothing clips; the picture is copied untouched. Returns the loudness it measured before."""
+def loudness_pass(path: Path, target: float, stem: Path | None = None) -> float | None:
+    """Make the finished video as loud as it should be (a promo is louder than a story). Measured; within 0.7 dB of the target NOTHING is written
+    (both streams stay as they are). Otherwise one clean gain change with a limiter so nothing clips, the picture copied untouched, and the
+    sound made again from `stem` (the mix before it became AAC) so it is encoded once, not decoded and encoded a second time.
+    Returns the loudness it measured before."""
     import subprocess
     r = subprocess.run([ffmpeg.bin_path("ffmpeg"), "-v", "info", "-i", str(path), "-af", "ebur128=peak=true", "-f", "null", "-"],
                        capture_output=True, text=True, timeout=1800)
@@ -5001,9 +6055,17 @@ def loudness_pass(path: Path, target: float) -> float | None:
     if abs(gain) < 0.7 or measured < -60:
         return measured
     tmp = path.with_name(path.stem + ".norm.mp4")
-    ffmpeg.run([ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-i", str(path), "-c:v", "copy", "-af",
-                f"volume={gain:.2f}dB,alimiter=limit=0.89:level=disabled", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(tmp)],
-               timeout=1800, what="setting the loudness")
+    af = f"volume={gain:.2f}dB,alimiter=limit=0.89:level=disabled"
+    if stem is not None and Path(stem).is_file():                          # the sound again from the mix before AAC (its own level is the one the gain was measured against)
+        from . import polish
+        g2 = polish.gain_to(stem, target)
+        ffmpeg.run([ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-i", str(path), "-i", str(stem), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+                    "-af", f"volume={g2:.2f}dB,alimiter=limit=0.89:level=disabled", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                    "-shortest", "-movflags", "+faststart", str(tmp)], timeout=1800, what="setting the loudness (from the mix)")
+        tmp.replace(path)
+        return measured
+    ffmpeg.run([ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-i", str(path), "-c:v", "copy", "-af", af, "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart", str(tmp)], timeout=1800, what="setting the loudness")
     tmp.replace(path)
     return measured
 
@@ -5054,13 +6116,16 @@ REVISE_SYSTEM = (
     "song, the beat means the NEW song. 'Add a (better) hook that says XYZ' = hook_text is exactly XYZ in their words (fix only "
     "obvious typos); 'a better hook' with no words given = better_hook true and hook_text empty. Anything about what is said or "
     "shown (cut this, move that line to the front, remove the part about X) goes in content_instruction in their own words. "
-    "'summary' = one short sentence listing what you will do.")
+    "'summary' = one short sentence listing what you will do. 'pace' = slow, natural, tight or fast when they ask for a pace ('faster' = tight, "
+    "'make it fast-paced' = fast), else empty. 'constraints_text' = copy, in their own words, any lasting rule about what must or must not be in the "
+    "video (a part to keep, a part to cut, what to open or end with, footage not to use, no B-roll during something), else empty.")
 REVISE_SCHEMA = {"type": "object", "properties": {
     "shorter_pct": {"type": "number"}, "shorter_by_s": {"type": "number"}, "longer_by_s": {"type": "number"},
     "target_total_s": {"type": "number"}, "change_music": {"type": "boolean"}, "music_request": {"type": "string"},
     "beat_sync": {"type": "string", "enum": ["on", "off", "unchanged"]}, "hook_text": {"type": "string"},
     "better_hook": {"type": "boolean"}, "move_to_front_quote": {"type": "string"}, "content_instruction": {"type": "string"},
-    "summary": {"type": "string"}},
+    "summary": {"type": "string"}, "pace": {"type": "string", "enum": ["", "slow", "natural", "tight", "fast"]},
+    "constraints_text": {"type": "string"}},
     "required": ["shorter_pct", "shorter_by_s", "longer_by_s", "target_total_s", "change_music", "music_request", "beat_sync",
                  "hook_text", "better_hook", "move_to_front_quote", "content_instruction", "summary"]}
 

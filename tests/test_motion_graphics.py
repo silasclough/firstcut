@@ -29,7 +29,7 @@ def test_blur_only_while_something_moves():
 
 def test_a_moving_frame_gets_a_soft_trail():
     sc = _lower()
-    plain, blurred = np.asarray(G.frame_at(sc, 0.3))[..., 3], np.asarray(G.frame_blurred(sc, 0.3))[..., 3]   # (sliding in, fully opaque)
+    plain, blurred = np.asarray(G.frame_at(sc, 0.15))[..., 3], np.asarray(G.frame_blurred(sc, 0.15))[..., 3]   # (still sliding in, nearly opaque: the slide-in is 0.3 s now)
     soft = lambda a: int(((a > 8) & (a < 247)).sum())
     assert soft(blurred) > soft(plain) * 1.2                                        # more half-transparent edge pixels: the trail
     assert abs(int((blurred > 8).sum()) - int((plain > 8).sum())) < 0.4 * int((plain > 8).sum())   # same thing, not a smear

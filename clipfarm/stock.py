@@ -285,7 +285,7 @@ def local_name(item: dict) -> str:
 
 # ------------------------------------------------------------------------------------------------ search + rank
 def _tokens(s: str) -> set[str]:
-    from .trends import tokens
+    from .core.words import tokens
     return set(tokens(s))
 
 

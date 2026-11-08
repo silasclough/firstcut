@@ -38,7 +38,7 @@ WHISPER_PER_MIN = 0.006
 # text, and small choices. Everything that decides the EDIT (the story, the best moments, the script, who is the interviewer, where B-roll
 # goes, the camera angles, reading your change requests) stays on the main / careful models.
 CHEAP_TASKS = ("broll_describe", "photo_describe", "video_chapters", "hook_text", "key_points", "video_length", "video_kind", "music_vibe", "ad_end",
-               "broll_pick", "broll_suitable")
+               "broll_pick", "broll_suitable", "style_from_notes", "style_learn", "transcript_topic_span", "scene_match", "clip_rehook", "visual_nouns")
 IMAGE_TOKENS = 1100                          # one 1024x768 frame sheet at high detail on a "mini" model, roughly
 TRIES = 4
 LOCAL_TRIES = 2                  # a local model that gave a bad answer twice gives the same again (each try can take minutes)
@@ -48,8 +48,8 @@ TASK_WORDS = {
     "speaker_roles": "Working out who is speaking", "speaker_check": "Checking who is speaking", "broll_describe": "Looking at your footage",
     "photo_describe": "Looking at your photos", "catalog_describe": "Describing your footage library", "stock_queries": "Finding better stock searches", "broll_plan": "Choosing B-roll", "broll_pick": "Choosing B-roll", "broll_queries": "Choosing B-roll",
     "broll_suitable": "Choosing B-roll", "highlight_candidates": "Finding the best moments", "highlight_assemble": "Putting the story together",
-    "montage_story": "Planning the montage", "video_title": "Naming the video", "video_kind": "Deciding what kind of video this is", "video_length": "Deciding how long it should be", "multicam_director": "Choosing camera angles",
-    "graphics_plan": "Planning the graphics", "gfx_place": "Placing the graphics", "hook_text": "Writing the opening line", "music_vibe": "Choosing the music",
+    "montage_story": "Planning the montage", "video_title": "Naming the video", "video_kind": "Deciding what kind of video this is", "video_length": "Deciding how long it should be", "style_from_notes": "Reading your notes for how to edit it", "style_learn": "Writing the style from what was measured", "multicam_director": "Choosing camera angles",
+    "graphics_plan": "Planning the graphics", "constraints_extract": "Reading your instructions", "transcript_topic_span": "Finding the part you mean", "scene_match": "Finding the footage you mean", "plan_repair": "Fixing the plan against your instructions", "gfx_place": "Placing the graphics", "hook_text": "Writing the opening line", "music_vibe": "Choosing the music",
     "video_title": "Writing the title", "video_chapters": "Writing the chapters", "clip_title": "Writing the titles", "key_points": "Finding the key points", "story_edit": "Shaping the story",
     "edit_style": "Reading how you like it edited", "style_merge": "Remembering how you like it edited", "revise_request": "Reading your changes",
     "sfx_cues": "Choosing sound effects", "visual_pick": "Choosing pictures", "thumb_photo_pick": "Choosing the thumbnail",
@@ -204,7 +204,7 @@ class LocalAI:
         self.script_model = str(cfg.get("clipper.ai_videos.openai.script_model", "gpt-5.4"))
         self.script_effort = str(cfg.get("clipper.ai_videos.openai.script_reasoning_effort", "high"))
         self.anim_effort = str(cfg.get("clipper.ai_videos.openai.anim_reasoning_effort", "medium"))        # drawing an animation does not need the deepest thinking (the render and the picture check catch mistakes)
-        self.smart_tasks = ("speaker_",)
+        self.smart_tasks = ("speaker_", "constraints_")
         self.cheap = str(cfg.get("clipper.ai_videos.openai.cheap_model", "gpt-4.1-nano"))    # the simple steps: describing, short text, small choices
         self.cheap_tasks = tuple(cfg.get("clipper.ai_videos.openai.cheap_tasks", CHEAP_TASKS))
         self.language = str(cfg.get("clipper.language", "en"))
@@ -357,7 +357,7 @@ class LocalAI:
             return self._ollama(task, system, prompt, schema, validate, images)  # (Decisions that come with pictures, like which camera to show,
                                                                                 # go to the editing AI: the local picture model can't make them.)
         last: Exception | None = None
-        script_task = task.startswith("flow_")
+        script_task = task.startswith(("flow_", "plan_repair"))
         model = kw.get("model") or (self.script_model if script_task else self.smart if task.startswith(self.smart_tasks) else self.cheap if task in self.cheap_tasks else self.model)
         if self.claude.available() and self.claude.handles(task):               # the owner's Claude plan first: no per-call billing, and the better writer
             try:
@@ -475,7 +475,7 @@ class LocalAI:
         """FirstCut: the primary account, or the backup while the primary is out of usage (until its reset; then the primary again)."""
         if images and self.vision_local and task in LOOK_TASKS:                 # describing footage: this Mac, when the person chose that
             return self._ollama(task, system, prompt, schema, validate, images)
-        script_task = task.startswith("flow_")
+        script_task = task.startswith(("flow_", "plan_repair"))
         model = kw.get("model") or (self.script_model if script_task else self.smart if task.startswith(self.smart_tasks) else self.cheap if task in self.cheap_tasks else self.model)
         order = [self.primary] + ([self.backup()] if self.backup() else [])
         if self.local_fallback and "local" not in order:                       # "finish on this Mac": the last resort, so nothing stops halfway

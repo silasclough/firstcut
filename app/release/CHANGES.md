@@ -2,6 +2,21 @@
 
 The newest entry is what the update card shows. Keep each line short and in plain words.
 
+## 0.6.0
+- It follows your notes. FirstCut reads what you asked for (include this, leave that out, keep it to 3 minutes, no B-roll while he prays), checks each one against the plan, repairs what is missing, and checks the finished video again. If an instruction could mean two places, it asks you first.
+- A plan card shows what it understood before it renders (turn on "Show me the plan first" under Options): each instruction with the words it came from, the parts in play order, and buttons to leave a part out or use another take.
+- A B-roll shot's own sound never plays unless you ask for it, and sound that grades as poor is flagged with its time.
+- B-roll is chosen by what is said: it appears when the speaker names something you can film, and the speaker stays on screen when nothing fits.
+- Jump cuts are covered by a punch-in, a camera change or B-roll, and multicam switching follows the speaker.
+- Pauses are shortened, not removed, and cuts never land inside a word. Repeated takes keep the best one.
+- Graphics are placed away from faces and captions. Numbers, names, lists, quotes and Bible references become cards, and captions stay on for the whole video and stay readable.
+- One music ducking curve keeps the music under the voice. Cuts are clean, the sound lands at about -14 LUFS, and the peak stays under -1 dB.
+- Final Cut gets a fuller project: roles, markers, notes on each B-roll clip, alternate takes, editable titles, and the same ducking keyframes. It is checked against Final Cut's own format rules, but opening it in Final Cut is still the real test.
+- Learn a style from a link: paste a YouTube video, short or channel (or drop a video file) under "How it edits", and FirstCut writes down how it is cut. Save it as a style, add more videos or your own rules, and use it for short or long form.
+- The transcript editor opens in the video's order, so the first line is at the top. Switch to "All footage" for the full list, and use Find to search.
+- Short clips are graded on hook, flow and value, start just before the first word and end just after the last.
+- Better picture quality: no drop in quality after 90 seconds, and a stuck video encoder is stopped and retried.
+
 ## 0.5.0
 - Recap reels: Short form has a second way in. Give it your finished long video (and a B-roll folder) and it makes 3 vertical reels of about 30 seconds, one for each part of the event. The talk from your video plays underneath, you see the speaker for a moment at the start and once in the middle, and the rest is quick B-roll with captions and music. Shots filmed at 50 or 60 fps play in slow motion at 30 fps (about three in four of them). A logo in the B-roll folder goes in the corner; there are no other graphics. A finished long video has a Make recap reels button.
 - Collections: name a list of shots in Find footage and find it again.

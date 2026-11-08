@@ -54,7 +54,7 @@ def test_a_kept_video_has_all_its_words_in_it():
     assert [k for k, v in enumerate(TE.kept_flags(plan, [], words)) if v] == [3, 4, 5]
 
 
-def test_stop_ends_a_frozen_run_for_good():
+def test_stop_ends_a_frozen_run_for_good(monkeypatch):
     """A run stuck in something that never returns (an AI answer, an encode) is given up on after the grace time: the project reads Stopped,
     the runner is free for the next video, and when the old run ever ends it changes nothing."""
     import time
@@ -65,8 +65,8 @@ def test_stop_ends_a_frozen_run_for_good():
     r._render_children = lambda: []                                   # (nothing to kill in the test)
     release = threading.Event()
     r.frozen = lambda pid: release.wait(30)
-    LP.ST.after_run = lambda *a, **k: None
-    LP.TE.after_run = lambda *a, **k: None
+    monkeypatch.setattr(LP.ST, "after_run", lambda *a, **k: None)         # (undone after the test: a leaked patch made later tests miss these hooks)
+    monkeypatch.setattr(LP.TE, "after_run", lambda *a, **k: None)
     r.start("p1", "frozen")
     for _ in range(50):
         if r.running == "p1":

@@ -335,3 +335,17 @@ class Governor:
 
 def which_tools_missing() -> list[str]:
     return [t for t in ("top", "ioreg", "pmset", "lsappinfo") if not shutil.which(t)]
+
+
+def render_workers(default: int = 2, top: int = 4) -> int:
+    """How many pieces of a render (cut stretches, graphics) to make at once. When the Mac is the person's own right now (they are working, on
+    battery, or something else is busy) it is `default` or fewer; when they are away it is up to `top`, as many as the CPU can spare. Falls back
+    to `default` where the Mac can't be read (not macOS)."""
+    try:
+        s = SystemSampler()
+        n, why = decide(s.sample(), worker_cap(), s.ncpu)
+    except Exception:  # noqa: BLE001 - not macOS, or top/ioreg did not answer
+        return default
+    if why in ("away", "busy"):
+        return max(default, min(top, n))
+    return max(1, min(default, n))

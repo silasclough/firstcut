@@ -375,23 +375,35 @@ def render_reel(engine, job_id: str, index: int, src: Path, has_audio: bool, win
     lufs = float(cfg.get("video.loudness_lufs", -14))
     audio_out = has_audio or track is not None
     limit = max(600.0, length * 12)
-    if audio_out:
-        voice = work / "talk.wav"
-        if has_audio:
-            ffmpeg.run([ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-ss", f"{a:.3f}", "-t", f"{length:.3f}", "-i", str(src), "-vn", "-ac", "2",
-                        "-ar", "48000", "-c:a", "pcm_f32le", str(voice)], timeout=900, what="the talk")
+    sound_err: list[BaseException] = []
+    sound_thread = None
+    if audio_out:                                                        # the sound is made on its own thread while the picture renders
         afile = work / "sound.m4a"
-        PL.make_sound(voice if has_audio else src, [(0.0, length)], False, True, "", has_audio, track.path if track else None, music_ss, length,
-                      MU.levels(cfg, cap_words, length), lufs, work, afile, vcfg, limit, float((cfg.get("clipper.music", {}) or {}).get("min_gap_lu", 16)))
+
+        def mix_sound():
+            try:
+                voice = work / "talk.wav"
+                if has_audio:
+                    ffmpeg.run([ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-ss", f"{a:.3f}", "-t", f"{length:.3f}", "-i", str(src), "-vn", "-ac", "2",
+                                "-ar", "48000", "-c:a", "pcm_f32le", str(voice)], timeout=900, what="the talk")
+                from . import soundmix as SMX
+                sm = SMX.style_music({})                                          # (the same single ducking envelope as the long videos)
+                PL.make_sound(voice if has_audio else src, [(0.0, length)], False, True, "", has_audio, track.path if track else None, music_ss, length,
+                              MU.levels(cfg, cap_words, length, sm), lufs, work, afile, vcfg, limit, float((cfg.get("clipper.music", {}) or {}).get("min_gap_lu", 16)),
+                              sm=sm, words=cap_words)
+            except BaseException as e:  # noqa: BLE001 - raised below, once the picture is made
+                sound_err.append(e)
+        import threading
+        sound_thread = threading.Thread(target=mix_sound, name="recap-sound", daemon=True)
+        sound_thread.start()
     vfile = work / "picture.mp4"
     base = [ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", *inputs, "-/filter_complex", str(work / "graph_v.txt"), "-map", "[vout]", "-an", "-t", f"{length:.3f}"]
-    try:
-        ffmpeg.run_watched([*base, *ffmpeg.video_encode_args(vcfg), str(vfile)], stall_s=90, timeout=limit, what="the picture")
-    except ffmpeg.FFmpegError as e:
-        if ffmpeg.pick_encoder(vcfg) == "libx264":
-            raise
-        log.warning(f"recap: the hardware encoder failed ({str(e)[-160:]}); rendering in software")
-        ffmpeg.run_watched([*base, *ffmpeg.video_encode_args(ffmpeg.software_cfg(vcfg)), str(vfile)], stall_s=90, timeout=limit * 2, what="the picture (software)")
+    ffmpeg.encode_with_fallback(lambda vc: [*base, *ffmpeg.video_encode_args(vc), str(vfile)], vcfg,
+                                stall_s=float(cfg.get("clipper.render.stall_s", ffmpeg.STALL_S)), timeout=limit, what="the picture")
+    if sound_thread is not None:
+        sound_thread.join()
+        if sound_err:
+            raise sound_err[0]
     out, part = d / f"{stem}.mp4", d / f"{stem}.part.mp4"
     mux = [ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-i", str(vfile)] + (["-i", str(afile)] if afile else []) + ["-map", "0:v"] \
         + (["-map", "1:a"] if afile else []) + ["-c", "copy", "-metadata", f"title={title}", "-movflags", "+faststart", str(part)]
@@ -431,7 +443,8 @@ def scenes_of(engine, files: list[Path], d: Path, progress=None) -> tuple[list[d
         have = {}
     router, _where = engine.vision_router()
     out_files: list[dict] = []
-    for n, p in enumerate(files):
+    todo: list[tuple[dict, Path, int]] = []
+    for p in files:
         try:
             info = ffmpeg.probe(p)
             vs = ffmpeg.video_stream(info)
@@ -446,27 +459,39 @@ def scenes_of(engine, files: list[Path], d: Path, progress=None) -> tuple[list[d
             continue
         name = f"{p.parent.name}/{p.name}"
         st = p.stat()
-        out_files.append({"name": name, "path": str(p), "dur": dur, "fps": fps})
+        f = {"name": name, "path": str(p), "dur": dur, "fps": fps}
+        out_files.append(f)
         key = have.get(name)
-        if key and key.get("size") == st.st_size:
-            continue
-        if progress:
-            progress(n / max(1, len(files)), f"Looking at {p.name} ({n + 1} of {len(files)})")
+        if not (key and key.get("size") == st.st_size):
+            todo.append((f, p, st.st_size))
+
+    def look(item):
+        f, p, size = item
         try:
-            n_sheets = BR.sheets_for(dur)
-            sheets = contact_sheets(p, 0.0, dur, max(1.0, dur / (12 * n_sheets)))[:n_sheets]
+            n_sheets = BR.sheets_for(f["dur"])
+            sheets = contact_sheets(p, 0.0, f["dur"], max(1.0, f["dur"] / (12 * n_sheets)))[:n_sheets]
             if not sheets:
-                continue
+                return f, size, []
             times = ", ".join(f"{t:.1f}" for _, ts in sheets for t in ts)
-            res = router.complete_json("broll_describe", BR.SYSTEM, f"File: {name} ({dur:.1f} s long). {len(sheets)} contact sheet(s); frame times in seconds: {times}. "
+            res = router.complete_json("broll_describe", BR.SYSTEM, f"File: {f['name']} ({f['dur']:.1f} s long). {len(sheets)} contact sheet(s); frame times in seconds: {times}. "
                                        "Describe the scenes. Use these times.", BR.SCHEMA, images=[b for b, _ in sheets])
-            sc = BR._valid_scenes(res.data.get("scenes"), 0.0, dur)
+            return f, size, BR._valid_scenes(res.data.get("scenes"), 0.0, f["dur"])
         except Exception as e:  # noqa: BLE001
-            log.warning(f"recap: describing {name} failed: {e}")
-            continue
-        if sc:
-            have[name] = {"size": st.st_size, "scenes": BR.split_long(sc)}
-            cache_p.write_text(json.dumps(have))
+            log.warning(f"recap: describing {f['name']} failed: {e}")
+            return f, size, []
+    # several files at once when an account AI answers; one at a time on this Mac's own picture model
+    workers = 1 if getattr(router, "vision_local", False) else min(4, max(1, len(todo)))
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="recap-look") as ex:
+        for fu in as_completed([ex.submit(look, t) for t in todo]):
+            f, size, sc = fu.result()
+            done += 1
+            if progress:
+                progress(done / max(1, len(todo)), f"Looking at the B-roll ({done} of {len(todo)})")
+            if sc:
+                have[f["name"]] = {"size": size, "scenes": BR.split_long(sc)}
+                cache_p.write_text(json.dumps(have))
     scenes = {f["name"]: (have.get(f["name"]) or {}).get("scenes") or [] for f in out_files}
     return out_files, scenes
 
@@ -488,10 +513,10 @@ def run(engine, job_id: str, d: Path, src: Path, words: list[dict]) -> None:
     ai, _where = engine.router_for_now()
     creative = engine.creative_router()
 
-    engine._progress(job_id, "finding", "Choosing the parts of the talk", 0.15)
-    wins = windows(words, total, ask_windows(creative, words, total, n, target, notes), n, target)
-    if not wins:
-        raise RuntimeError("this video is too short (or has too little speech) to make recap reels from: it needs at least 5 seconds of talk")
+    engine._progress(job_id, "finding", "Choosing the parts of the talk and looking at the B-roll", 0.15)
+    from concurrent.futures import ThreadPoolExecutor
+    pool_ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recap-themes")
+    wanted_f = pool_ex.submit(ask_windows, creative, words, total, n, target, notes)       # (the talk's themes are asked while the B-roll is described)
 
     engine._progress(job_id, "finding", "Looking at the B-roll", 0.2)
     files = broll_files(broll_dir, skip=src)
@@ -502,6 +527,10 @@ def run(engine, job_id: str, d: Path, src: Path, words: list[dict]) -> None:
     if not cands:
         raise RuntimeError("none of the footage could be used as B-roll (it all looked blurry or unusable, or could not be read)")
     logo = find_logo(broll_dir)
+    wins = windows(words, total, wanted_f.result(), n, target)
+    pool_ex.shutdown(wait=False)
+    if not wins:
+        raise RuntimeError("this video is too short (or has too little speech) to make recap reels from: it needs at least 5 seconds of talk")
 
     genres = MU.genres(engine.cfg)
     used_tracks: set[str] = set()

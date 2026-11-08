@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ..core.log import get_logger
 from . import moments as M
+from . import styles_profile as SPF
 
 log = get_logger("clipper.broll")
 BROLL_NAME = re.compile(r"b[\s_-]?roll", re.I)
@@ -33,8 +34,19 @@ SYSTEM = (
     "with its time in seconds. Split the footage into scenes (a continuous stretch showing one thing) and for each say, in "
     "one concrete sentence, what it shows (subject, action, setting) - no guessing about meaning. Rate how usable it is as "
     "b-roll from 1 to 10 (sharp, steady, well lit, interesting = high; blurry, shaky, dark, empty, accidental = low).")
+SYSTEM += (" For each scene also say: shot_size (close, medium_close, medium, wide, extreme_wide or insert for hands and objects), how many people are "
+           "on camera, is_talking_head (true only when someone is clearly speaking to the camera or an interviewer in that scene), any on_screen_text you "
+           "can read, three to six concrete subject_words a camera could film (nouns and actions, no feelings), the mood, and orientation_ok (whether the "
+           "scene works as landscape, portrait or both). Keep subject_words short and concrete; do not list things you cannot see.")
+SCENE_VERSION = 2                    # 1: start, end, what, quality. 2: + shot size, people, talking head, on-screen text, subject words, mood, orientation
+SHOT_SIZES = ("close", "medium_close", "medium", "wide", "extreme_wide", "insert")
+MOODS = ("calm", "busy", "emotional", "neutral")
+ORIENTATIONS = ("landscape", "portrait", "both")
 SCHEMA = {"type": "object", "properties": {"scenes": {"type": "array", "items": {"type": "object", "properties": {
-    "start_s": {"type": "number"}, "end_s": {"type": "number"}, "what": {"type": "string"}, "quality": {"type": "number"}},
+    "start_s": {"type": "number"}, "end_s": {"type": "number"}, "what": {"type": "string"}, "quality": {"type": "number"},
+    "shot_size": {"type": "string", "enum": list(SHOT_SIZES)}, "people_on_camera": {"type": "integer"}, "is_talking_head": {"type": "boolean"},
+    "on_screen_text": {"type": "string"}, "subject_words": {"type": "array", "items": {"type": "string"}},
+    "mood": {"type": "string", "enum": list(MOODS)}, "orientation_ok": {"type": "string", "enum": list(ORIENTATIONS)}},
     "required": ["start_s", "end_s", "what", "quality"]}}}, "required": ["scenes"]}
 
 PLAN_SYSTEM = (
@@ -42,7 +54,7 @@ PLAN_SYSTEM = (
     "picture switches to a B-roll scene that illustrates exactly what they are saying at that moment. Only cut away where a "
     "scene genuinely matches the words (a place, an object, an action that is mentioned), and use B-roll generously: something new "
     "should change on screen at least every 12 seconds, so look for a cutaway about every 15 to 20 seconds, only where it genuinely matches. Scenes marked (still photo) "
-    "are photographs (they will be animated): use every one of them somewhere it fits. Never in the first seconds (the hook stays on "
+    "are photographs (they will be animated): use one only where it shows something being said. Never in the first seconds (the hook stays on "
     "the speaker), never two within a couple of seconds of each other, each scene at most once. Each cutaway is 1.5 to 4.5 seconds.")
 PLAN_SCHEMA = {"type": "object", "properties": {"cutaways": {"type": "array", "items": {"type": "object", "properties": {
     "at": {"type": "number"}, "scene": {"type": "integer"}, "length": {"type": "number"}, "why": {"type": "string"}},
@@ -52,7 +64,7 @@ PLAN_SCHEMA = {"type": "object", "properties": {"cutaways": {"type": "array", "i
 def sheets_for(dur: float) -> int:
     """Contact sheets (12 frames each) to look at for a file this long: a frame about every 5 s up to 8 sheets, never fewer than MAX_SHEETS."""
     import math
-    return max(MAX_SHEETS, min(8, math.ceil(dur / 60.0)))
+    return max(MAX_SHEETS, min(16, math.ceil(dur / 40.0)))          # (a frame about every 3 s of a ten-minute file, every 37 s of a two-hour one)
 
 
 def split_long(scenes: list[dict]) -> list[dict]:
@@ -87,6 +99,90 @@ def visual_files(files: list[dict], words: list[dict]) -> list[int]:
     return out
 
 
+SCENE_DEFAULTS = {"shot_size": "", "people_on_camera": 0, "is_talking_head": False, "on_screen_text": "", "subject_words": [], "mood": "neutral",
+                  "orientation_ok": "both"}
+
+
+def _scene_fields(s: dict) -> dict:
+    """The footage-record-v2 fields of one scene as the model returned them, each checked and defaulted (an old broll.json without them loads the same way)."""
+    out = dict(SCENE_DEFAULTS)
+    size = str(s.get("shot_size") or "").strip().lower().replace(" ", "_").replace("-", "_")
+    out["shot_size"] = size if size in SHOT_SIZES else ""
+    try:
+        out["people_on_camera"] = max(0, min(50, int(s.get("people_on_camera") or 0)))
+    except (TypeError, ValueError):
+        pass
+    out["is_talking_head"] = bool(s.get("is_talking_head")) if isinstance(s.get("is_talking_head"), bool) else False
+    out["on_screen_text"] = " ".join(str(s.get("on_screen_text") or "").split())[:120]
+    words = []
+    for w in s.get("subject_words") or []:
+        w = " ".join(str(w).lower().split())[:30]
+        if w and w not in words:
+            words.append(w)
+    out["subject_words"] = words[:6]
+    mood = str(s.get("mood") or "").strip().lower()
+    out["mood"] = mood if mood in MOODS else "neutral"
+    ori = str(s.get("orientation_ok") or "").strip().lower()
+    out["orientation_ok"] = ori if ori in ORIENTATIONS else "both"
+    return out
+
+
+def with_defaults(scene: dict) -> dict:
+    """A scene from an old cache (start, end, what, quality only) with the new fields filled in; the scene's own values win."""
+    return {**SCENE_DEFAULTS, **scene}
+
+
+def _eq(p: dict) -> float:
+    from .poolrules import effective_quality
+    return effective_quality(p)
+
+
+def scene_line(i, p: dict) -> str:
+    """One pool scene for the cutaway planner: `S12: a man pours coffee [close, static, 3.4 s, q7]` (shot size and camera movement when known)."""
+    bits = [b for b in (p.get("shot_size"), p.get("motion")) if b and b != "unknown"]
+    bits += [f"{p['end'] - p['start']:.1f} s", f"q{p['quality']:.0f}"]
+    if p.get("mismatch"):
+        from .poolrules import shape
+        bits.append(f"[{shape(p) or 'wrong shape'}]")                    # (the other way round from this video's picture: used only when nothing else fits)
+    found = f' (found for: "{p["found_for"]}")' if p.get("found_for") else ""
+    return f"  S{i}: {p['what']}{found} [{', '.join(bits)}]"
+
+
+LONG_PARTS_MAX_CALLS = 3             # extra vision calls per file to describe the parts of its long scenes
+
+
+def refine_long(ai, name: str, scenes: list[dict], sheets_for_range, max_calls: int = LONG_PARTS_MAX_CALLS) -> list[dict]:
+    """A scene longer than SPLIT_OVER becomes ONE sentence copied over many parts ("[part 3 of 9 of one long shot]"). Instead ask the vision model once
+    more per long scene (at most `max_calls` per file, the longest first) to describe it part by part over its own frames. `sheets_for_range(start, end)`
+    -> [(jpeg bytes, [frame times])] (the file's frames for that stretch). A scene whose answer cannot be used keeps its one sentence."""
+    out = list(scenes)
+    longest = sorted((k for k, s in enumerate(out) if s["end"] - s["start"] > SPLIT_OVER and not s.get("photo") and not s.get("part")),
+                     key=lambda k: -(out[k]["end"] - out[k]["start"]))[:max_calls]
+    replaced: dict[int, list[dict]] = {}
+    for k in longest:
+        sc = out[k]
+        try:
+            sheets = sheets_for_range(sc["start"], sc["end"])
+            if not sheets:
+                continue
+            n = min(MAX_PARTS, max(2, round((sc["end"] - sc["start"]) / PART_S)))
+            times = ", ".join(f"{t:.1f}" for _, ts in sheets for t in ts)
+            prompt = (f"File: {name}. This is ONE long shot from {sc['start']:.1f} to {sc['end']:.1f} s (first described as: {sc['what']}). Cut it into {n} parts of "
+                      f"about {(sc['end'] - sc['start']) / n:.0f} s and describe each part on its own: what is different in it. Frame times in seconds: {times}. "
+                      "Use these times.")
+            res = ai.complete_json("broll_describe", SYSTEM, prompt, SCHEMA, images=[b for b, _ in sheets])
+            parts = _valid_scenes(res.data.get("scenes"), sc["start"], sc["end"])
+        except Exception as e:  # noqa: BLE001 - the shared sentence stays
+            log.warning(f"describing the parts of {name} failed: {e}")
+            continue
+        if len(parts) >= 2:
+            replaced[k] = [{**with_defaults(sc), **p, "part": [i + 1, len(parts)]} for i, p in enumerate(parts)]
+    res_list: list[dict] = []
+    for k, s in enumerate(out):
+        res_list.extend(replaced.get(k, [s]))
+    return res_list
+
+
 def _valid_scenes(raw: list[dict], lo: float, hi: float) -> list[dict]:
     out = []
     for s in raw or []:
@@ -97,7 +193,7 @@ def _valid_scenes(raw: list[dict], lo: float, hi: float) -> list[dict]:
             continue
         what = " ".join(str(s.get("what", "")).split())[:200]
         if b - a >= 0.5 and what:
-            out.append({"start": round(a, 2), "end": round(b, 2), "what": what, "quality": q})
+            out.append({"start": round(a, 2), "end": round(b, 2), "what": what, "quality": q, **_scene_fields(s)})
     out.sort(key=lambda s: s["start"])
     return out
 
@@ -202,14 +298,25 @@ AD_PLAN = (" THIS IS AN ADVERTISEMENT: the picture should be mostly B-roll with 
            "to 3 seconds, prefer the best-looking, highest-quality shots, and show the speaker's face only when a line really needs it.")
 
 
+WRONG_SHAPE = ("\n(A scene marked [portrait] or [landscape] is the other way round from this video's picture: it would be cropped hard. "
+               "Choose those only when nothing else shows what is said.)")
+
+
+def plan_system(hold: float = 12.0, per_s: float = 18.0, cmin: float = CUT_MIN, cmax: float = CUT_MAX) -> str:
+    """PLAN_SYSTEM with the numbers of the video's style (the defaults give the text above)."""
+    return (PLAN_SYSTEM.replace("at least every 12 seconds", f"at least every {hold:g} seconds")
+            .replace("about every 15 to 20 seconds", f"about every {round(per_s * 0.85):g} to {round(per_s * 1.1):g} seconds")
+            .replace("Each cutaway is 1.5 to 4.5 seconds.", f"Each cutaway is {cmin:g} to {cmax:g} seconds."))
+
+
 def plan_cutaways(llm, sentences: list[M.Sentence], pool: list[dict], brief: str = "", talk_s: float = 0.0, per_s: float = 18.0,
-                  ad: bool = False) -> list[dict]:
+                  ad: bool = False, cmin: float | None = None, cmax: float | None = None, hold: float | None = None) -> list[dict]:
     """-> [{"at": timeline s, "length": s, "src": source s, "what": ..., "why": ...}] (sorted, non-overlapping). The AI is asked again, once, when it
     places far fewer than the length calls for (a planning call is not repeatable: the same video once got 9 shots and the next try 3)."""
-    out = _plan_once(llm, sentences, pool, brief, talk_s, per_s, ad)
+    out = _plan_once(llm, sentences, pool, brief, talk_s, per_s, ad, cmin=cmin, cmax=cmax, hold=hold)
     cap = max(1, int(talk_s / per_s)) if talk_s else 3
     if len(out) < max(2, cap // 2) and len(pool) > len(out):
-        again = _plan_once(llm, sentences, pool, brief, talk_s, per_s, ad,
+        again = _plan_once(llm, sentences, pool, brief, talk_s, per_s, ad, cmin=cmin, cmax=cmax, hold=hold,
                            more=f"Your last answer placed only {len(out)}: place more, spread over the WHOLE video including the first half.")
         if len(again) > len(out):
             out = again
@@ -217,20 +324,22 @@ def plan_cutaways(llm, sentences: list[M.Sentence], pool: list[dict], brief: str
 
 
 def _plan_once(llm, sentences: list[M.Sentence], pool: list[dict], brief: str = "", talk_s: float = 0.0, per_s: float = 18.0,
-                ad: bool = False, more: str = "") -> list[dict]:
+                ad: bool = False, more: str = "", cmin: float | None = None, cmax: float | None = None, hold: float | None = None) -> list[dict]:
     """-> [{"at": timeline s, "length": s, "src": source s, "what": ..., "why": ...}] (sorted, non-overlapping)."""
     if not sentences or not pool:
         return []
     cap = max(1, int(talk_s / per_s)) if talk_s else 3
-    cmin, cmax, gap = (1.2, 3.2, 0.3) if ad else (CUT_MIN, CUT_MAX, 2.0)
+    cmin0, cmax0, gap = (1.2, 3.2, 0.3) if ad else (CUT_MIN, CUT_MAX, 2.0)
+    cmin, cmax = (cmin0 if cmin is None else float(cmin)), (cmax0 if cmax is None else float(cmax))           # (the video's style says how long a shot is)
     lines = [f"  [{s.start:.1f}-{s.end:.1f}] {s.text}" for s in sentences]
-    scenes = [f"  S{i}: {p['what']} ({p['end'] - p['start']:.1f} s long, quality {p['quality']:.0f}/10)" for i, p in enumerate(pool)]
+    scenes = [scene_line(i, p) for i, p in enumerate(pool)]
     prompt = ((f"The creator's notes: {brief}\n" if brief else "")
               + f"Transcript with timeline seconds:\n" + "\n".join(lines[:400]) + "\n\nAvailable B-roll scenes:\n" + "\n".join(scenes)
+              + (WRONG_SHAPE if any(p.get("mismatch") for p in pool) else "")
               + f"\n\nPlace about {cap} cutaways (at most {cap}; fewer than {max(2, cap // 2)} is too few for this length). 'at' is the timeline second "
               "where the cutaway starts (inside a sentence)." + (f" {more}" if more else ""))
     try:
-        res = llm.complete_json("broll_plan", PLAN_SYSTEM + (AD_PLAN if ad else ""), prompt, PLAN_SCHEMA)
+        res = llm.complete_json("broll_plan", plan_system(12.0 if hold is None else float(hold), per_s, cmin, cmax) + (AD_PLAN if ad else ""), prompt, PLAN_SCHEMA)
     except Exception as e:  # noqa: BLE001 - no cutaways is a fine result
         log.warning(f"planning cutaways failed: {e}")
         return []
@@ -263,7 +372,7 @@ def fill_ad(cutaways: list[dict], sentences: list[M.Sentence], pool: list[dict],
     spans = [(s.start, s.end) for s in sentences]
     used = {c["scene"] for c in cutaways}
     left = sorted((i for i in range(len(pool)) if i not in used and pool[i]["end"] - pool[i]["start"] >= 1.2 and (allowed is None or i in allowed)),
-                  key=lambda i: -pool[i]["quality"])
+                  key=lambda i: -_eq(pool[i]))
     out = sorted(cutaways, key=lambda c: c["at"])
 
     def covered() -> float:
@@ -299,7 +408,7 @@ SUITABLE_SCHEMA = {"type": "object", "properties": {"ok": {"type": "array", "ite
 def ad_suitable(llm, pool: list[dict], brief: str) -> set[int]:
     """Which scenes belong in THIS business's ad (its shop, products, staff, customers being helped) - not unrelated scenery."""
     lines = [f"  S{i}: {p['what']}" for i, p in enumerate(pool)]
-    prompt = ((f"The ad's brief: {brief[:1500]}\n" if brief else "") + "Scenes:\n" + "\n".join(lines[:300])
+    prompt = ((f"The ad's brief: {SPF.fit_brief(brief, 1500)}\n" if brief else "") + "Scenes:\n" + "\n".join(lines[:300])
               + "\n\nReturn the numbers of the scenes that clearly show this business, its products, its people or its customers being helped. "
                 "Leave out scenery, strangers, and anything that could be from any other video.")
     try:
@@ -319,7 +428,7 @@ def pick_for(llm, spoken: str, pool: list[dict], free: list[int], brief: str = "
     cands = free[:40]
     if not spoken.strip() or not cands:
         return None
-    prompt = ((f"The creator's notes: {brief[:600]}\n" if brief else "") + f"What the speaker is saying right now: \"{spoken[:500]}\"\n\nScenes:\n"
+    prompt = ((f"The creator's notes: {SPF.fit_brief(brief, 600)}\n" if brief else "") + f"What the speaker is saying right now: \"{spoken[:500]}\"\n\nScenes:\n"
               + "\n".join(f"  S{i}: {pool[i]['what']}" for i in cands)
               + "\n\nReturn the number of the ONE scene that genuinely matches or illustrates what is being said (a place, a person, an object or "
                 "feeling that is mentioned). If none really fits, return -1. Never force a match.")

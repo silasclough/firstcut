@@ -133,6 +133,12 @@ def test_slivers_of_talk_join_their_neighbour_but_never_across_someone_else():
     assert LP.merge_tiny([(0.0, 10.0), (10.4, 11.1), (20.0, 30.0)], other) == [(0.0, 10.0), (10.4, 11.1), (20.0, 30.0)]
 
 
+def test_a_one_word_answer_is_never_dropped_as_a_sliver():
+    words = [{"text": "agree?", "start": 9.0, "end": 9.9}, {"text": "Yes.", "start": 11.1, "end": 11.4}, {"text": "Because", "start": 20.0, "end": 20.4}]
+    out = LP.merge_tiny([(0.0, 10.0), (11.0, 11.5), (19.9, 30.0)], words)
+    assert any(a <= 11.1 and b >= 11.4 for a, b in out) and len(out) == 2                    # "Yes." joined its neighbour across 1 s (it is a whole sentence)
+
+
 def test_the_last_look_runs_broll_on_over_a_flash():
     spk = lambda ss, d: {"d": d, "v": {"path": "/f/cam.mp4", "ss": ss, "fill": False}, "a": {"path": "/f/cam.mp4", "ss": ss}}   # noqa: E731
     br = lambda ss, d: {"d": d, "v": {"path": "/f/b.mp4", "ss": ss, "fill": True, "cut": True}, "a": {"path": "/f/cam.mp4", "ss": 0}}   # noqa: E731

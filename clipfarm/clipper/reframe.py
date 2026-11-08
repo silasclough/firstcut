@@ -310,9 +310,23 @@ def x_expression(path: list[tuple[float, float]], src_w: int, crop_w: int, remap
     xs = [p for p in xs if p[0] is not None]
     if not xs:
         return str((src_w - crop_w) // 2)
+    ease = min(0.27, 8 / 30.0)                                       # a small move (under 10 % of the frame) glides over 8 frames; a big one is a cut and stays a jump
+    n = len(xs)
     expr = str(xs[-1][1])
-    for (t_next, _), (_, x) in zip(reversed(xs[1:]), reversed(xs[:-1])):
-        expr = f"if(lt(t,{t_next:.3f}),{x},{expr})"
+    for i in range(n - 1, 0, -1):                                    # from the last keyframe back: expr is what is valid from keyframe i on
+        t_i, x_i = xs[i]
+        x_prev = xs[i - 1][1]
+        nxt = xs[i + 1][0] if i + 1 < n else None
+        dd = ease if 0 < abs(x_i - x_prev) < 0.10 * src_w else 0.0
+        if nxt is not None:
+            dd = min(dd, max(0.0, nxt - t_i))
+        tail = expr                                                  # (already "x_i until the next keyframe, then ...")
+        if dd > 0.02:
+            u = f"clip((t-{t_i:.3f})/{dd:.3f},0,1)"
+            ramp = f"{x_prev}+({x_i}-{x_prev})*{u}*{u}*(3-2*{u})"
+            expr = f"if(lt(t,{t_i:.3f}),{x_prev},if(lt(t,{t_i + dd:.3f}),{ramp},{tail}))"
+        else:
+            expr = f"if(lt(t,{t_i:.3f}),{x_prev},{tail})"
     return expr
 
 

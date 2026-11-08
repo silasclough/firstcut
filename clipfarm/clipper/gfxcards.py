@@ -26,7 +26,7 @@ from ..core.log import get_logger
 
 log = get_logger("clipper.gfxcards")
 FPS = 30
-ENTER, EXIT = 0.45, 0.35
+ENTER, EXIT = 0.3, 0.23                  # 9 frames in (ease-out, no overshoot), 7 frames out: a card is there, it does not bounce (WP10)
 
 SYSTEM_SF = "/System/Library/Fonts/SFCompact.ttf"            # on every Mac (a variable font): the same look where the Display cuts aren't installed
 FONT_FILES = {
@@ -150,6 +150,11 @@ class Look:
             self.palette = PALETTE
 
     avoid: list = []                                  # head zones to keep clear, in pixels of this frame: (x0, y0, x1, y1)
+    timed: list = []                                  # the same people WITH TIME (placement zones, pixels, seconds from the card's start): a presenter who walks only blocks where they are
+    safe: dict | None = None                          # the platform safe box {"x0", "y0", "x1", "y1"} in pixels: a card is placed inside it when it can be
+    caption_top: float | None = None                  # the top edge (pixels) of the caption box: a lower third sits above it
+    chooser = None                                    # placement.make_placer's function, scaled to this frame: ranks a scene's own anchors by what is under them
+    seconds: float = 0.0
 
     def px(self, n: float) -> int:
         return max(1, int(round(n * self.u)))
@@ -167,8 +172,29 @@ class Look:
     def place(self, w: int, h: int, prefer: list[tuple[int, int]], y_max: float = 1.0) -> tuple[int, int] | None:
         """The first preferred top-left position where a w x h card is clear of every face; else the clear spot nearest to the first choice (a scan of the
         frame, not below y_max of the height). None: there is no room for it without covering someone."""
-        for x, y in prefer:
+        if self.chooser is not None and prefer:                       # content-aware: the anchor with the least under it (faces, captions, busy picture)
+            try:
+                got = self.chooser(w, h, prefer)
+            except Exception:  # noqa: BLE001 - never a reason to lose a card
+                got = None
+            if got is not None:
+                return int(got[0]), int(got[1])
+
+        def ok(x: float, y: float) -> bool:
             if self.clear(x, y, w, h):
+                return True
+            if self.timed and self.seconds > 0 and 0 <= x and 0 <= y and x + w <= self.W and y + h <= self.H:        # someone passes through: a spot they are in for a short part of the card's time will do
+                from . import placement as PL
+                rect = (x, y, w, h)
+                return PL.hard_hit(rect, self.timed, 0.0, self.seconds) <= 0.12 and PL.covered(rect, self.timed, 0.0, self.seconds) <= 0.15
+            return False
+
+        if self.safe and prefer:                                  # (a spot inside the platform's safe box is better than one under its buttons)
+            for x, y in prefer:
+                if ok(x, y) and x >= self.safe["x0"] - 2 and y >= self.safe["y0"] - 2 and x + w <= self.safe["x1"] + 2 and y + h <= self.safe["y1"] + 2:
+                    return int(x), int(y)
+        for x, y in prefer:
+            if ok(x, y):
                 return int(x), int(y)
         if not self.avoid:
             return None if not prefer else (int(prefer[0][0]), int(prefer[0][1]))
@@ -350,31 +376,36 @@ def lower_panel_at(look: Look, text_w: int, text_h: int) -> tuple[int, int, int,
     """The default panel (x, y, w, h) of a lower third with a text block this big: bottom left, above the captions."""
     pw, ph = text_w + look.px(76), text_h + look.px(44)
     lx = int(look.W * (0.06 if not look.portrait else 0.07))
-    ly = int(look.H * (1 - (0.22 if not look.portrait else 0.33))) - ph
+    bottom = look.H * (1 - (0.22 if not look.portrait else 0.33))                     # (the old spot: bottom 22 % landscape / 33 % portrait)
+    if look.caption_top is not None:                                                   # with captions on: just above them, never over them
+        bottom = min(bottom, look.caption_top - 0.04 * look.H)                        # (a clear gap: the clearance check adds its own padding around the caption zone)
+    if look.safe:                                                                      # and inside the platform's safe box
+        bottom = min(bottom, look.safe["y1"])
+        lx = max(lx, look.safe["x0"])
+    ly = int(bottom) - ph
     return lx, ly, pw, ph
 
 
-def scene_lower(look: Look, spec: dict, seconds: float, kind: str = "lower", wf: float = 1.0) -> Scene | None:
+def scene_lower(look: Look, spec: dict, seconds: float, kind: str = "lower", wf: float = 1.0, sub_max: int = 60, sub_lines: int = 2) -> Scene | None:
     """Bottom-left: a name + role, the title card (the hook) or a key point."""
     sc = Scene(look, seconds)
     hook = kind == "hook"
-    sub = " ".join(str(spec.get("role") or "").split())[:60]
+    sub = " ".join(str(spec.get("role") or "").split())[:sub_max]
     mt = lower_metrics(look, spec, kind, wf)
     main, size, f1, lines = mt["main"], mt["size"], mt["f1"], mt["lines"]
     max_w = int(look.W * (0.84 if look.portrait else 0.52) * wf)
     t1 = text_layer(lines, f1, look.fg, line_h=1.12, shadow=2)
     parts = [t1]
     if sub:
-        t2 = text_layer(_wrap(sub, font("regular", int(size * 0.62)), max_w - look.px(80), 2), font("regular", int(size * 0.62)), look.sub, line_h=1.2, shadow=1)
+        t2 = text_layer(_wrap(sub, font("regular", int(size * 0.62)), max_w - look.px(80), sub_lines), font("regular", int(size * 0.62)), look.sub, line_h=1.2, shadow=1)
         parts.append(t2)
     gap = look.px(10)
     tw = max(p.width for p in parts)
     th = sum(p.height for p in parts) + gap * (len(parts) - 1)
     pw, ph = tw + look.px(76), th + look.px(44)
     body, m = panel(pw, ph, min(ph // 2, look.px(36)), look)
-    lx = int(look.W * (0.06 if not look.portrait else 0.07))
-    ly = int(look.H * (1 - (0.22 if not look.portrait else 0.33))) - ph
-    top = int(look.H * 0.08)
+    lx, ly, _pw0, _ph0 = lower_panel_at(look, pw - look.px(76), ph - look.px(44))                  # (bottom-left, just above the captions when they are on, inside the safe box)
+    top = int(look.H * 0.08) if not look.safe else int(look.safe["y0"] + 0.01 * look.H)
     pos = look.place(pw, ph, [(lx, ly), (look.W - pw - lx, ly), (lx, top), (look.W - pw - lx, top)])      # bottom-left, else the first spot no face is in
     if pos is None:
         return None
@@ -2088,8 +2119,17 @@ def scene_line(look: Look, spec: dict, seconds: float, wf: float = 1.0) -> Scene
     return _fullscreen(look, spec, seconds, draw)
 
 
+def scene_reference(look: Look, spec: dict, seconds: float, wf: float = 1.0) -> Scene | None:
+    """A scripture (or other) reference: the reference on the first line, the passage below it in the quieter ink when it is read aloud. The lower third's geometry,
+    so it sits where a lower third sits (above the captions, inside the safe box)."""
+    ref = " ".join(str(spec.get("ref") or spec.get("name") or "").split())
+    if not ref:
+        return None
+    return scene_lower(look, {"name": ref, "role": " ".join(str(spec.get("passage") or "").split())}, seconds, "lower", wf, sub_max=170, sub_lines=3)
+
+
 SCENES = {"hook": lambda l, s, sec, wf=1.0: scene_lower(l, s, sec, "hook", wf), "point": lambda l, s, sec, wf=1.0: scene_lower(l, s, sec, "point", wf),
-          "lower": lambda l, s, sec, wf=1.0: scene_lower(l, s, sec, "lower", wf), "stat": scene_stat, "quote": scene_quote, "slide": scene_slide, "chart": scene_chart, "entity": scene_entity, "hub": scene_hub,
+          "lower": lambda l, s, sec, wf=1.0: scene_lower(l, s, sec, "lower", wf), "reference": scene_reference, "stat": scene_stat, "quote": scene_quote, "slide": scene_slide, "chart": scene_chart, "entity": scene_entity, "hub": scene_hub,
           "chips": scene_chips, "compare": scene_compare, "timeline": scene_timeline, "statement": scene_statement,
           "fullslide": scene_fullslide, "bigstat": scene_bigstat, "chapter": scene_chapter, "fullquote": scene_fullquote,
           "search": scene_search, "twocol": scene_twocol, "ledger": scene_ledger, "recap": scene_recap,
@@ -2134,7 +2174,7 @@ def frame_at(sc: Scene, t: float) -> Image.Image:
     look = sc.look
     canvas = Image.new("RGBA", (look.W, look.H), (0, 0, 0, 0))
     secs = sc.seconds
-    q = 0.0 if sc.custom else ease_in((t - (secs - EXIT)) / EXIT)                    # 0 while it is on screen, 1 when it has gone
+    q = 0.0 if sc.custom else ease_in((t - (secs - EXIT)) / (EXIT - 0.04))          # 0 while it is on screen, 1 when it has gone (a few frames before the last one)
     if t >= secs or secs - t <= 0.001:
         return canvas
 
@@ -2145,10 +2185,10 @@ def frame_at(sc: Scene, t: float) -> Image.Image:
         crop = img.crop((sx, sy, min(img.width, look.W - x), min(img.height, look.H - y)))
         canvas.alpha_composite(crop, (x + sx, y + sy))
     for L in sc.layers:
-        raw = (t - L["at"]) / L["dur"]
+        raw = (t - L["at"]) / min(L["dur"], ENTER + 0.05)
         if raw <= 0:
             continue
-        p = ease_back(raw) if L["pop"] < 1.0 or L["sx"] else ease_out(raw)           # a pop overshoots; a plain reveal just settles
+        p = ease_out(raw)                                                            # a reveal settles; nothing overshoots
         alpha = min(1.0, ease_out(raw * 1.6)) * (1.0 - q)
         k = L["pop"] + (1.0 - L["pop"]) * p
         img = _scaled(_alpha_mul(L["img"], alpha), k * (1.0 - 0.06 * q))
@@ -2214,8 +2254,20 @@ def frame_blurred(sc: Scene, t: float, fps: float = FPS, sub: int = BLUR_SUB) ->
     return out
 
 
-def render(cfg, spec: dict, W: int, H: int, out: Path, theme: str | None = None, timeout: float = 600.0, avoid: list | None = None) -> dict | None:
-    """Render one card to `out` (a transparent .mov). -> {"file", "glass"} with the glass rectangles in W x H pixels, or None on failure."""
+def static_window(sc: Scene, seconds: float) -> tuple[float, float] | None:
+    """(from, to) seconds in which nothing on the card moves (every layer has arrived, the exit has not begun), or None when something always does
+    (a counter, a chart, a full-screen card's own transition). Those frames are all the same picture: render() draws one and repeats it."""
+    if sc.custom or sc.draw_fns or not sc.layers:
+        return None
+    t0 = max(float(L["at"]) + float(L["dur"]) for L in sc.layers) + 0.05
+    t1 = float(seconds) - EXIT - 0.02
+    return (t0, t1) if t1 - t0 >= 0.3 else None
+
+
+def render(cfg, spec: dict, W: int, H: int, out: Path, theme: str | None = None, timeout: float = 600.0, avoid: list | None = None,
+           fps: float | None = None, timed: list | None = None, caption_top: float | None = None, safe: bool = False, placer=None) -> dict | None:
+    """Render one card to `out` (a transparent .mov). -> {"file", "glass"} with the glass rectangles in W x H pixels, or None on failure.
+    fps: the timeline's frame rate (default 30), so the final render does not re-time the card; the still stretch of a card is drawn once."""
     kind = spec.get("kind")
     fn = SCENES.get(kind)
     if fn is None:
@@ -2226,12 +2278,24 @@ def render(cfg, spec: dict, W: int, H: int, out: Path, theme: str | None = None,
     try:
         look = Look(theme, cw, ch)
         look.avoid = [(a * cw, b * ch, c * cw, d * ch) for a, b, c, d in (avoid or [])]               # zones come as 0..1 of the frame
+        k = cw / float(W)                                                                              # (the composing size is near 1080: scale pixel inputs to it)
+        look.timed = [{**z, "box": tuple(v * k for v in z["box"])} for z in (timed or [])]
+        look.seconds = seconds
+        look.caption_top = None if caption_top is None else float(caption_top) * k
+        if safe:
+            from . import placement as PL
+            look.safe = PL.safe_box(cw, ch)
+        if placer is not None:
+            look.chooser = lambda w, h, prefer: (lambda r: None if r is None else (r[0] * k, r[1] * k))(placer(w / k, h / k, [(x / k, y / k) for x, y in prefer]))
         sc = build_scene(kind, look, spec, seconds)
         if sc is None:
             log.info(f"graphic {kind} dropped: no place for it that leaves every face clear")
             return None
-        n = max(2, int(round(seconds * FPS)))
-        cmd = [ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{cw}x{ch}", "-r", str(FPS), "-i", "-",
+        rate = float(fps or FPS)
+        from fractions import Fraction
+        fr = Fraction(rate).limit_denominator(1001)                    # (23.976 is 24000/1001 exactly)
+        n = max(2, int(round(seconds * rate)))
+        cmd = [ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{cw}x{ch}", "-r", f"{fr.numerator}/{fr.denominator}", "-i", "-",
                "-vf", f"scale={W}:{H}:flags=lanczos,format=argb", "-c:v", "qtrle", "-pix_fmt", "argb", str(out)]
         p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         blur = True
@@ -2239,8 +2303,18 @@ def render(cfg, spec: dict, W: int, H: int, out: Path, theme: str | None = None,
             blur = bool(cfg.get("clipper.ai_videos.motion_blur", True)) if cfg is not None and hasattr(cfg, "get") else True
         except Exception:  # noqa: BLE001
             pass
+        win = static_window(sc, seconds)
+        held, drawn = None, 0
         for i in range(n):
-            p.stdin.write((frame_blurred(sc, i / FPS) if blur else frame_at(sc, i / FPS)).tobytes())
+            t = i / rate
+            if win and win[0] <= t < win[1] and held is not None:
+                p.stdin.write(held)                                    # the still stretch: the same picture again
+                continue
+            data = (frame_blurred(sc, t, rate) if blur else frame_at(sc, t)).tobytes()
+            drawn += 1
+            if win and win[0] <= t < win[1]:
+                held = data
+            p.stdin.write(data)
         p.stdin.close()
         err = p.stderr.read().decode(errors="ignore")
         if p.wait(timeout=timeout) != 0 or not out.exists():
@@ -2250,5 +2324,5 @@ def render(cfg, spec: dict, W: int, H: int, out: Path, theme: str | None = None,
         log.warning(f"graphic {kind} failed: {e}")
         return None
     k = W / cw
-    return {"file": out, "panel": tuple(int(v * k) for v in sc.panel) if sc.panel else None, "glass": [{"x": int(g["x"] * k), "y": int(g["y"] * k), "w": int(g["w"] * k), "h": int(g["h"] * k), "r": int(g["r"] * k), "dim": g["dim"], "tone": g.get("tone", "dark"), "t0": g.get("t0", 0.0)}
+    return {"frames": n, "drawn": drawn, "fps": rate, "file": out, "panel": tuple(int(v * k) for v in sc.panel) if sc.panel else None, "glass": [{"x": int(g["x"] * k), "y": int(g["y"] * k), "w": int(g["w"] * k), "h": int(g["h"] * k), "r": int(g["r"] * k), "dim": g["dim"], "tone": g.get("tone", "dark"), "t0": g.get("t0", 0.0)}
                                    for g in sc.glass]}

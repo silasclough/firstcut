@@ -366,3 +366,54 @@ def test_folder_graphics_logo_end_card_lower_third_while_they_talk_alpha_title_a
     assert not FX.validate(xml)
     titles = [t.get("name") for t in root.iter("title")]
     assert "Hook title" not in titles                                                 # your title replaced the made-up one
+
+
+def test_stock_scene_length_is_the_downloaded_length(tmp_path, monkeypatch):
+    """WP1: the site says 12 s, the downloaded file has 2.5 s. The shot is placed after the real length is known, so it never reaches past the
+    end of the file (it used to be placed against the site's number and fail or freeze)."""
+    import re
+    vid, pic = tmp_path / "stock_src.mp4", tmp_path / "stock_src.jpg"
+    _talk(vid, 3, size="1280x720", color="green")                                  # (2.5 s of picture is the closest ffmpeg will make; 3 s here)
+    _noise_photo(pic, (1200, 800))
+    web = FakeStockWeb(vid, pic)
+    monkeypatch.setattr(SK.requests, "get", web.get)
+    monkeypatch.setenv("PIXABAY_API_KEY", "pb-key")
+    monkeypatch.setenv("PEXELS_API_KEY", "px-key")
+    real = ffmpeg.duration(vid)
+
+    class AI(_FakeAI):
+        def complete_json(self, task, system, prompt, schema, validate=None, images=None, **kw):
+            if task == "broll_queries":
+                return _Res({"passages": [{"n": 1, "covered": False, "looks": ["students studying in a library"]}]})
+            if task == "broll_plan":
+                out = [{"at": 4.0, "scene": int(i), "length": 4.0, "why": "library"} for i, what in re.findall(r"^\s+S(\d+): (.*)$", prompt, re.M)
+                       if "(stock footage)" in what]
+                return _Res({"cutaways": out})
+            if task == "broll_pick":
+                return _Res({"scene": -1})
+            return super().complete_json(task, system, prompt, schema, validate=validate, images=images, **kw)
+    LP, cfg, store, projects = _setup(tmp_path, monkeypatch, AI())
+    folder = tmp_path / "Open day"
+    folder.mkdir()
+    _talk(folder / "talk.mov", 25)
+    said = ("Our students study together every evening. The library stays open late. Everyone finds a quiet corner to read. "
+            "After class we walk across town. It is the best part of the day.").split()
+    words = [{"text": w, "start": 0.4 + i * 0.6, "end": 0.4 + i * 0.6 + 0.4} for i, w in enumerate(said)]
+    monkeypatch.setattr(LP.LocalRunner, "_openai_words", lambda self, f, ai: words)
+    runner = LP.LocalRunner(cfg, store, projects)
+    proj = projects.create_local(str(folder), "Open day", "", {"transcriber": "openai"}, {"clips": 0})
+    projects.prepare_local(proj["id"], {"stock": True, "graphics": "", "music": ""})
+    runner.make(proj["id"], {})
+    job = store.get(proj["job"])
+    assert job["status"] == "done", job
+    sj = json.loads((folder / ".aivideo" / "stock.json").read_text())
+    assert sj["files"] and sj["files"][0]["dur"] > real + 3                       # (what the site said, rounded up)
+    scene = sj["scenes"][sj["files"][0]["name"]][0]
+    assert scene["file"] == sj["files"][0]["name"] and scene["fstart"] == pytest.approx(0.2) and scene["fend"] <= real - 0.05 + 1e-6    # rewritten to the real length
+    meta = json.loads((tmp_path / "jobs" / proj["job"] / "plan.json").read_text())
+    stock_file = sj["files"][0]
+    placed = [c for c in meta["cutaways"] if stock_file["start"] - 0.01 <= c["src"] < stock_file["start"] + 30]
+    assert placed and all(c["length"] <= real - 0.2 + 1e-6 for c in placed), placed   # never past the file's last picture
+    saved = json.loads((folder / ".aivideo" / "plan.json").read_text())             # every pool scene names its file and its seconds in it, and has an id
+    assert saved["pool"] and all(s.get("sid") and s.get("file") and s.get("fstart") is not None and s.get("fend") is not None for s in saved["pool"]), saved["pool"]
+    assert len({s["sid"] for s in saved["pool"]}) == len(saved["pool"])

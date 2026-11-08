@@ -27,6 +27,8 @@ from ..core.captions import clean_words, coerce_words, group_words, render_capti
 from ..core.log import get_logger
 from . import fcpxml as FX
 from . import music as MU
+from . import renderq as RQ
+from . import soundmix as SMX
 from .library import safe
 
 log = get_logger("clipper.polish")
@@ -102,7 +104,27 @@ def fresh_title(ai, words: list[dict]) -> str | None:
     return t if len(t.split()) >= 2 else None
 
 
-def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[float, float]] | None = None, mc: dict | None = None) -> dict:
+def delivery_vcfg(cfg, vcfg: dict, W: int, H: int, kind: str = "") -> dict:
+    """The encode settings of the delivered picture and sound: a bitrate from the frame size (never from the length: the old rule dropped to 4 Mbit/s
+    and crf 24 past 90 s), crf 18 in software, 256k sound for an advert."""
+    mbit = ffmpeg.delivery_bitrate_mbit(W, H, float(cfg.get("clipper.render.bitrate_mbit_per_1080p", 10) or 10))
+    out = {**vcfg, "videotoolbox_bitrate": f"{mbit:.1f}M", "videotoolbox_maxrate": f"{mbit * 1.5:.1f}M", "x264_crf": 18}
+    if kind in ("promo", "ad"):
+        out["audio_bitrate"] = "256k"
+    return out
+
+
+def _gfxplan_full():
+    from . import gfxplan
+    return gfxplan.FULL
+
+
+CAPTIONS_HIDDEN_UNDER = {"statement", "kinetic", "fullquote"}          # full-screen cards that show the words themselves: no second set of words under them
+COLOR_TAGS = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]     # (the delivered MP4 says what its colours are: players do not guess)
+
+
+def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[float, float]] | None = None, mc: dict | None = None,
+        picture_list: Path | None = None) -> dict:
     from .engine import CAPTION_STYLES, PACES, remap_words
     cfg, store = engine.cfg, engine.store
     d = store.dir(job_id)
@@ -205,10 +227,7 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
     if landscape:
         ccfg["max_words"], ccfg["max_chars"] = max(int(ccfg.get("max_words", 3)), 4), max(int(ccfg.get("max_chars", 18)), 26)
     vcfg = {**(cfg.get("video", {}) or {}), "width": W, "height": H, "fps": float(fps)}
-    vcfg["videotoolbox_bitrate"] = f"{max(4, round(8 * W * H / (1080 * 1920)))}M"
-    if out_len > 90:                                          # long videos: 4 Mbit/s keeps them small enough to upload (a 4-min one was 278 MB)
-        vcfg["videotoolbox_bitrate"] = "4M"
-        vcfg["x264_crf"] = 24
+    vcfg = delivery_vcfg(cfg, vcfg, W, H, str(opts.get("kind") or ""))
     work = d / "polish_work"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir()
@@ -216,17 +235,39 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
     if style != "none" and len(cap_words) >= 1:
         engine._progress(job_id, "rendering", "Making captions", 0.55)
         caps = render_captions(cap_words, out_len, work, ccfg, vcfg)
+    cap_top = cap_bot = None                                  # where the caption TEXT sits (the box is taller): graphics are placed around it
+    cap_bands: list[tuple[float, float, int]] = []            # the caption box's top edge in every stretch (it moves to the top of the frame in a shot with a low face)
+    if caps:
+        from . import placement as PL
+        half = 1.35 * float(ccfg["font_size"])
+        mid = caps["y"] + float(ccfg["box_height"]) / 2
+        cap_top, cap_bot = mid - half, mid + half
+        cap_bands = [(0.0, float(out_len), int(caps["y"]))]
+        if cfg.get("clipper.captions.avoid_faces", True) and cfg.get("clipper.ai_videos.graphics_avoid_faces", True) and Path(src).is_file() and out_len <= 600 \
+                and (Path(engine.models_dir) / "face_detection_yunet_2023mar.onnx").exists():           # (the captions never trigger the model download by themselves)
+            try:
+                from . import facezones
+                fz = facezones.timed_zones(Path(src), 0.0, out_len, engine.models_dir, W, H)
+                if fz:
+                    marks = sorted({0.0, float(out_len), *[float(c["at"]) for c in cutaways], *[float(c["at"]) + float(c["length"]) for c in cutaways]})
+                    shots = [(a, b) for a, b in zip(marks, marks[1:]) if b - a > 0.05]
+                    cut_spans = [(float(c["at"]), float(c["at"]) + float(c["length"])) for c in cutaways]
+                    fz = [z for z in fz if not any(a <= z["t0"] < b for a, b in cut_spans)]                 # (a B-roll shot has no face on it)
+                    cap_bands = PL.caption_band(shots, fz, W, H, float(ccfg["center_y"]), int(ccfg["box_height"]))
+            except Exception as e:  # noqa: BLE001 - captions stay where they were
+                log.warning(f"{job_id}: caption placement failed: {e}")
 
     gfx = None                                                # the animated graphics, rendered 2 at a time
     pts: list[tuple[dict, Path]] = []
     glass_items: list[dict] = []                              # where each graphic has glass (the picture behind it is blurred)
     cards_done: list[dict] = []                               # the planned graphics that rendered: Final Cut gets these as clips
+    placement_zones: list[dict] = []                          # where people were under each graphic (with time, in output seconds): the frame check reads them
     title_clips: dict = {}                                    # hook / key point -> the panel it was drawn in: its editable Final Cut title is placed there
     bug = None                                                # the corner logo, when one is asked for
     if not opts.get("no_overlays"):
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        from . import graphics
+        from . import gfxplan as _gfxplan, graphics
         specs = []                                            # (kind, text, seconds, file, extra, the thing it belongs to)
         if opts.get("graphics") in ("title", "all") and title and not opts.get("folder_title"):     # (a title graphic of your own replaces it)
             specs.append(("title", str(opts.get("hook_text") or title), 3.2, work / "title.mov", {"theme": opts.get("gfx_theme")}, "hook"))
@@ -250,15 +291,42 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
                     from . import facezones
                     at = float(who["at"]) if isinstance(who, dict) else 0.0
                     zones = facezones.zones(src, at, secs, engine.models_dir, W / H)
+                ex = dict(extra or {})
                 if kind != "end" and caps:
-                    zones = [*zones, (0.0, max(0.0, caps["y"] / H - 0.01), 1.0, 1.0)]                      # never over the captions
+                    zones = [*zones, (0.0, max(0.0, cap_top / H - 0.01), 1.0, min(1.0, cap_bot / H + 0.01))]   # never over the caption words themselves (not the whole bottom of the frame)
+                    ex["caption_top"] = float(cap_top)
+                if kind != "end" and cfg.get("clipper.ai_videos.graphics_avoid_faces", True) and cfg.get("clipper.graphics.timed_zones", True):
+                    try:
+                        from . import facezones
+                        at_ = float(who["at"]) if isinstance(who, dict) else 0.0
+                        ex["timed"] = facezones.timed_zones(src, at_, secs, engine.models_dir, W, H)
+                        placement_zones.extend({**z, "t0": z["t0"] + at_, "t1": z["t1"] + at_} for z in ex["timed"])          # (for the frame check afterwards)
+                    except Exception:  # noqa: BLE001
+                        pass
+                if kind != "end" and cfg.get("clipper.graphics.safe_zones", True):
+                    ex["safe"] = True
+                if kind not in ("end", "folder") and ex.get("timed") is not None and Path(src).is_file() and cfg.get("clipper.graphics.content_aware", True):
+                    try:                                       # the card's own anchors are ranked by what is under them in every shot it is up in
+                        from . import placement as PL
+                        at2 = float(who["at"]) if isinstance(who, dict) else 0.0
+                        zs = [{**z, "t0": z["t0"] + at2, "t1": z["t1"] + at2} for z in ex["timed"]] + PL.ui_zones(W, H, PL.safe_box(W, H))
+                        if caps:
+                            zs.append(PL.caption_zone((cap_top, cap_bot), at2, at2 + secs))
+                        marks = sorted({at2, at2 + secs, *[float(c["at"]) for c in cutaways], *[float(c["at"]) + float(c["length"]) for c in cutaways]})
+                        shots2 = [(a, b) for a, b in zip(marks, marks[1:]) if at2 - 1e-6 <= a and b <= at2 + secs + 1e-6 and b - a > 0.05]
+                        scene_kind = (who.get("kind") if isinstance(who, dict) else None) or ("hook" if kind == "title" else "point")
+                        ex["placer"] = PL.make_placer(str(scene_kind), at2, float(secs), shots2, zs, PL.frame_grabber(src), W, H, PL.safe_box(W, H), cap_top if caps else None)
+                    except Exception as e:  # noqa: BLE001 - the card keeps its own placement
+                        log.warning(f"{job_id}: content-aware placement skipped: {e}")
+                extra = ex
                 if kind != "end":
                     log.info(f"graphic {kind} at {float(who['at']) if isinstance(who, dict) else 0:.1f}s: keep clear of {[tuple(round(v, 2) for v in z) for z in zones]}")
                 if kind == "folder":
                     from . import foldergfx
                     return foldergfx.layer(extra["item"], secs, W, H, float(fps), f, zones), []
-                return render_card(cfg, kind, text, secs, f, extra, W, H, (extra or {}).get("spec"), zones)
-            with ThreadPoolExecutor(max_workers=2) as ex:
+                return render_card(cfg, kind, text, secs, f, extra, W, H, (extra or {}).get("spec"), zones, float(fps))
+            from . import loadgov
+            with ThreadPoolExecutor(max_workers=loadgov.render_workers(2, 3)) as ex:
                 futs = {ex.submit(card_job, kind, text, secs, f, extra, who): (kind, who, f, secs)
                         for kind, text, secs, f, extra, who in specs}
                 for fu in as_completed(futs):
@@ -280,7 +348,9 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
                             title_clips[round(float(who["at"]), 2)] = {"rect": _rect_of(rects)}
                             cards_done.append({"at": float(who["at"]), "len": float(secs), "src": Path(mov), "kind": "point", "style": "point"})
                         if kind in ("card", "folder"):
-                            cards_done.append({"at": float(who["at"]), "len": float(secs), "src": Path(mov), "kind": who.get("kind"), "style": who.get("style")})
+                            cards_done.append({"at": float(who["at"]), "len": float(secs), "src": Path(mov), "kind": who.get("kind"), "style": who.get("style"),
+                                               "rect": _card_rect(rects), "full": who.get("kind") in _gfxplan.FULL, "panel": bool(rects),     # (a card with glass / a panel is read on that, not on the picture)
+                                               "spec": who if isinstance(who, dict) and kind == "card" else None})       # (its words: the editable Final Cut title)
         bug = opts.get("logo_bug")                            # your logo small in a corner (only when your notes ask for it)
         if bug and bug.get("logo") and Path(bug["logo"]).is_file() and float(bug.get("len") or 0) > 1.0:
             try:
@@ -294,6 +364,16 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
                 bug = None
         else:
             bug = None
+
+    if cards_done and not opts.get("no_overlays"):             # the frame-level look at what was placed (written next to the video: Quality check.md reads it)
+        try:
+            from . import placement as PL
+            from .qa import frame_check
+            cap_rect = [{"t0": 0.0, "t1": float(out_len), "rect": (0.0, float(cap_top), float(W), float(cap_bot - cap_top))}] if caps else []
+            issues = frame_check([c for c in cards_done if c.get("rect") or c.get("full")], cap_rect, placement_zones, PL.safe_box(W, H), W, H, captions_on_top=True)
+            (d / "placement_check.json").write_text(json.dumps(issues))
+        except Exception as e:  # noqa: BLE001 - a check is never a reason to lose a video
+            log.warning(f"{job_id}: placement check failed: {e}")
 
     # 3. music from what is said
     track, vibe = None, {}
@@ -327,6 +407,8 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
     inputs = ["-i", str(src)]
     reordered = any(intervals[i][1] > intervals[i + 1][0] + 0.01 for i in range(len(intervals) - 1))
     whole = len(intervals) == 1 and intervals[0][0] <= 0.05 and abs(intervals[0][1] - total) <= 0.6
+    if picture_list and Path(picture_list).is_file() and not cutaways and whole and not reordered:      # the pieces of the cut themselves (no second copy of the picture is needed)
+        inputs = ["-f", "concat", "-safe", "0", "-i", str(picture_list)]
     if reordered:                                             # parts out of source order: cut each out and join them in the new order
         g = []
         for i, (a, b) in enumerate(intervals):
@@ -361,11 +443,6 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
                 lines, cur = glass_filters(cur, gk, float(gi["at"]), float(gi["len"]), r, mi, W, H, float(fps))
                 g += lines
                 gk += 1
-    if caps:
-        inputs += ["-f", "concat", "-safe", "0", "-i", str(caps["ffconcat"])]
-        ci = inputs.count("-i") - 1
-        g.append(f"[{ci}:v]format=rgba[cap];[{cur}][cap]overlay=0:{caps['y']}:format=auto:eof_action=repeat,format=yuv420p[wc]")
-        cur = "wc"
     items = ([(0.0, 3.2, gfx)] if gfx else []) + [(float(c["at"]), float(c["len"]), mov) for c, mov in pts]
     ov_file = overlay_track(items, out_len, W, H, float(fps), work / "overlay.mov") if items else None
     if ov_file:                                               # ONE transparent track holding every graphic at its moment
@@ -373,6 +450,35 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
         gi = inputs.count("-i") - 1
         g.append(f"[{gi}:v]format=rgba[ov];[{cur}][ov]overlay=0:0:format=auto:eof_action=pass,format=yuv420p[wt]")
         cur = "wt"
+    if caps:                                                  # captions go ON TOP of the graphics (so a full-screen card does not hide what is said), except under a card that shows the words itself
+        inputs += ["-f", "concat", "-safe", "0", "-i", str(caps["ffconcat"])]
+        ci = inputs.count("-i") - 1
+        hidden = [(float(c["at"]), float(c["at"]) + float(c["len"])) for c, _mov in pts if isinstance(c, dict) and (c.get("spec") or c).get("kind") in CAPTIONS_HIDDEN_UNDER]
+        hide = "".join(f"*not(between(t,{a:.3f},{b:.3f}))" for a, b in hidden)
+        bands = cap_bands or [(0.0, float(out_len), int(caps["y"]))]
+        kept_at, cursor_ = set(), 0.0                         # (overlay_track drops a graphic that starts while another is still up: no plate for one that is not shown)
+        for at_, ln_, _p in sorted((a, d, p) for a, d, p in items if p and Path(p).exists()):
+            if at_ >= cursor_ - 0.02:
+                kept_at.add(round(at_, 3))
+                cursor_ = at_ + ln_
+        plates = [(float(c["at"]), float(c["at"]) + float(c["len"])) for c, _mov in pts if isinstance(c, dict) and (c.get("spec") or c).get("kind") in _gfxplan_full()
+                  and (c.get("spec") or c).get("kind") not in CAPTIONS_HIDDEN_UNDER and round(float(c["at"]), 3) in kept_at]
+        for k, (a, b) in enumerate(plates):                   # words over a full-screen card (a light page, a busy chart) get a dark plate of their own: readable on any of them
+            by = next((int(y) for x0, x1, y in bands if x0 <= a < x1), int(caps["y"]))              # (where the captions are at that moment)
+            g.append(f"[{cur}]drawbox=x=0:y={by}:w={W}:h={int(ccfg['box_height'])}:color=black@0.40:t=fill:enable='between(t,{a:.3f},{b:.3f})'[pl{k}]")
+            cur = f"pl{k}"
+        if len(bands) == 1:
+            en = f":enable='1{hide}'" if hide else ""
+            g.append(f"[{ci}:v]format=rgba[cap];[{cur}][cap]overlay=0:{bands[0][2]}:format=auto:eof_action=repeat{en},format=yuv420p[wc]")
+        else:
+            outs = "".join(f"[cs{k}]" for k in range(len(bands)))
+            g.append(f"[{ci}:v]format=rgba,split={len(bands)}{outs}")
+            for k, (a, b, y) in enumerate(bands):
+                last = k == len(bands) - 1
+                tail = ",format=yuv420p[wc]" if last else f"[cb{k}]"
+                src_in = cur if k == 0 else f"cb{k - 1}"
+                g.append(f"[{src_in}][cs{k}]overlay=0:{y}:format=auto:eof_action=repeat:enable='between(t,{a:.3f},{b:.3f}){hide}'{tail}")
+        cur = "wc"
     if not opts.get("no_overlays") and bug and bug.get("frame"):            # the corner logo: one still picture, shown from after your title to the end card
         b0, b1 = float(bug["at"]), float(bug["at"]) + float(bug["len"])
         inputs += ["-loop", "1", "-framerate", f"{float(fps):.3f}", "-t", f"{out_len:.3f}", "-i", bug["frame"]]
@@ -383,31 +489,53 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
         if fe.get("kind") in ("fade_in", "fade_out") and float(fe.get("dur") or 0) > 0:
             g.append(f"[{cur}]fade=t={'in' if fe['kind'] == 'fade_in' else 'out'}:st={float(fe['at']):.4f}:d={float(fe['dur']):.4f},format=yuv420p[fd{fk}]")
             cur = f"fd{fk}"
+    probe_src = Path(src)
+    if not probe_src.is_file() and picture_list and Path(picture_list).is_file():                   # (the first piece of the concat list says how the picture is tagged)
+        first = re.search(r"^file '(.+?)'", Path(picture_list).read_text(errors="replace"), re.M)
+        probe_src = Path(first.group(1)) if first else probe_src
+    colour_stage = RQ.colour_filter(probe_src)
     lufs = float(opts.get("loudness_lufs") or cfg.get("video.loudness_lufs", -14))     # (an ad / promo asks for louder)
+    g.append(f"[{cur}]{colour_stage},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv,format=yuv420p[tagged]")      # (the encoders ignore the -color_* options: the frames carry the tags)
+    cur = "tagged"
     (work / "graph_v.txt").write_text(";\n".join(g))
     out, part = d / "clip_01.mp4", d / "clip_01.part.mp4"
     audio_out = has_audio or bool(track)
     t0 = time.monotonic()
     limit = max(900.0, out_len * 8)
     vfile, afile = work / "picture.mp4", work / "sound.m4a"
-    if audio_out:                                             # the SOUND is made on its own (its own ffmpeg runs), the PICTURE on its own, then joined
+    sound_style = SMX.style_music(opts)                       # the style's sound numbers (voice -16, bed 20 LU under speech ...)
+    duck_env: list = []                                       # the ducking envelope the MP4 used: Final Cut gets the same points
+    sound_err: list[BaseException] = []
+    sound_thread = None
+    if audio_out:                                             # the SOUND is made on its own (its own ffmpeg runs), the PICTURE on its own, then joined; they overlap
         engine._progress(job_id, "rendering", "Mixing the sound", 0.6)
         sfx_file = None
         if cfg.get("clipper.sfx.enabled", True):                  # a whoosh as each full-screen card arrives and leaves
             from . import gfxplan, sfx
-            sfx_file = sfx.track([c for c in cards_done if c.get("kind") in gfxplan.FULL], out_len, work / "sfx.wav")
-        make_sound(src, intervals, reordered, whole, expr, has_audio, music_src, music_ss, out_len, MU.levels(cfg, cap_words, out_len),
-                   lufs, work, afile, vcfg, limit, float((cfg.get("clipper.music", {}) or {}).get("min_gap_lu", 16)), sfx=sfx_file)
+            sfx_file = sfx.track([c for c in cards_done if c.get("kind") in gfxplan.FULL], out_len, work / "sfx.wav",
+                                 policy=((opts.get("style_obj") or {}).get("sfx") if isinstance(opts.get("style_obj"), dict) else None))
+
+        def mix_sound():
+            try:
+                make_sound(src, intervals, reordered, whole, expr, has_audio, music_src, music_ss, out_len, MU.levels(cfg, cap_words, out_len, sound_style),
+                           lufs, work, afile, vcfg, limit, float((cfg.get("clipper.music", {}) or {}).get("min_gap_lu", 16)), sfx=sfx_file,
+                           sm=sound_style, words=cap_words, env_out=duck_env)
+            except BaseException as e:  # noqa: BLE001 - raised again below, where the picture is
+                sound_err.append(e)
+        import threading as _th
+        sound_thread = _th.Thread(target=mix_sound, name="polish-sound", daemon=True)
+        sound_thread.start()
     vbase = [ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", *inputs, "-/filter_complex", str(work / "graph_v.txt"), "-map", f"[{cur}]", "-an",
              "-t", f"{out_len:.3f}"]
-    try:
-        ffmpeg.run_watched([*vbase, *ffmpeg.video_encode_args(vcfg), str(vfile)], stall_s=90, timeout=limit, what="the picture")   # a healthy render runs faster than real time
-    except ffmpeg.FFmpegError as e:
-        if ffmpeg.pick_encoder(vcfg) == "libx264":
-            raise
-        log.warning(f"the hardware encoder failed ({str(e)[-160:]}); rendering the picture in software")      # busy, or no GUI session
-        ffmpeg.run_watched([*vbase, *ffmpeg.video_encode_args(ffmpeg.software_cfg(vcfg)), str(vfile)], stall_s=90, timeout=limit * 2,
-                           what="the picture (software)")
+    from . import notes as _NT
+    ffmpeg.encode_with_fallback(lambda vc: [*vbase, *ffmpeg.video_encode_args(vc), *COLOR_TAGS, str(vfile)], vcfg,
+                                stall_s=float(cfg.get("clipper.render.stall_s", ffmpeg.STALL_S)), timeout=limit, what="the picture",
+                                on_note=lambda t: _NT.note("warn", t.capitalize(), do="Nothing: the picture was made in software. It only took longer."))   # (a healthy render runs faster than real time)
+    if sound_thread is not None:
+        engine._progress(job_id, "rendering", "Finishing the sound", 0.9)
+        sound_thread.join()
+        if sound_err:
+            raise sound_err[0]
     mux = [ffmpeg.bin_path("ffmpeg"), "-y", "-v", "error", "-i", str(vfile)] + (["-i", str(afile)] if audio_out else []) + \
           ["-map", "0:v"] + (["-map", "1:a"] if audio_out else []) + ["-c", "copy", "-metadata", f"title={title}", "-movflags", "+faststart", str(part)]
     ffmpeg.run(mux, timeout=300.0, what="joining picture and sound")
@@ -430,11 +558,15 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
     fcp_meta = None
     if opts.get("fcp"):
         engine._progress(job_id, "rendering", "Building the Final Cut Pro project", 0.95)
+        if duck_env and track:                                    # the MP4's own envelope, on top of the gain that brings the song to the bed's level
+            duck = SMX.final_cut_points(duck_env, SMX.music_base_db(track.path, SMX.bed_reference_lufs(sound_style)))
+        else:
+            duck = MU.duck_points(cap_words, out_len, -14.0 if len(cap_words) / max(1, out_len) >= 0.6 else -8.0,
+                                  -24.0 if len(cap_words) / max(1, out_len) >= 0.6 else -16.0)
         fcp_meta = write_bundle(cfg, d, title, src, info, fps, W, H, intervals, groups, track,
-                                MU.duck_points(cap_words, out_len, -14.0 if len(cap_words) / max(1, out_len) >= 0.6 else -8.0,
-                                               -24.0 if len(cap_words) / max(1, out_len) >= 0.6 else -16.0),
-                                music_start if track else 0.0, ccfg, cutaways=cutaways, mc=mc, titles=fcp_titles(opts, title, title_clips), music_xf=music_xf,
-                                overlays=cards_done, subs=subs)
+                                duck,
+                                music_start if track else 0.0, ccfg, cutaways=cutaways, mc=mc, titles=fcp_titles(opts, title, title_clips, cards_done), music_xf=music_xf,
+                                overlays=cards_done, subs=subs, extras=(mc or {}).get("extras"))
     clip = {"index": 1, "file": out.name, "thumb": "clip_01.jpg", "srt": "clip_01.srt" if caps else None,
             "title": title, "hook": "", "caption": (d / "clip_01.txt").read_text().strip(), "score": None,
             "reason": story_plan.summary if story_plan else "whole video",
@@ -447,6 +579,8 @@ def run(engine, job_id: str, src: Path, words: list[dict], override: list[tuple[
             "music": ({"title": track.title, "artist": track.artist, "license": track.license, "mood": vibe.get("mood"),
                        "genre": vibe.get("genre"), "why": vibe.get("why"), "file": track.path.name} if track else None),
             "rendered_at": int(time.time()), "render_s": round(time.monotonic() - t0, 1)}
+    if (work / "mix_final.wav").is_file():
+        clip["sound_stem"] = str((work / "mix_final.wav").relative_to(d))        # the mix before AAC: loudness_pass re-encodes from it, never from the AAC
     store.set_clip(job_id, clip)
     return clip
 
@@ -469,13 +603,16 @@ def gain_to(path, target: float) -> float:
 
 
 def make_sound(src: Path, intervals, reordered: bool, whole: bool, expr: str, has_audio: bool, music_src, music_ss: float, out_len: float,
-               music_lufs: float, lufs: float, work: Path, afile: Path, vcfg: dict, limit: float, min_gap_lu: float = 16.0, sfx: Path | None = None) -> None:
+               music_lufs: float, lufs: float, work: Path, afile: Path, vcfg: dict, limit: float, min_gap_lu: float = 16.0, sfx: Path | None = None,
+               sm: dict | None = None, words: list[dict] | None = None, env_out: list | None = None) -> None:
     """The finished video's sound, made in measured steps - no dynamic normaliser (it pumped the level up and down over a long video):
       1. the voice: the kept stretches of the source, brought to -16 LUFS by ONE fixed gain (measured first)
       2. the music bed under it, if any: levelled, faded in and out, ducked while someone speaks, then checked to really sit at least
          `min_gap_lu` under the voice (measured, not assumed)
       3. the mix brought to `lufs` by one fixed gain, with a peak limiter for the few peaks. A broken sample (NaN / infinity, which one
-         filter can produce) is silenced first - one such sample used to make the encoder stop the whole render."""
+         filter can produce) is silenced first - one such sample used to make the encoder stop the whole render.
+    With `sm` (the style's sound numbers, soundmix.style_music) and `words` the music is ducked by ONE envelope (soundmix.envelope) that is also
+    written to `env_out`, so the Final Cut project gets the same curve; without them the old compressor is used."""
     ffb = ffmpeg.bin_path("ffmpeg")
 
     def run(cmd: list, what: str) -> None:
@@ -493,19 +630,44 @@ def make_sound(src: Path, intervals, reordered: bool, whole: bool, expr: str, ha
                f"aresample=48000,afade=t=in:st=0:d=0.8,afade=t=out:st={max(0.0, out_len - 1.5):.3f}:d=1.5")
         raw = work / "sound_raw.wav"
         if voice is not None:
-            sv, sm = work / "stem_voice.wav", work / "stem_music.wav"
-            vg = gain_to(voice, -16.0)
-            graph = (f"[0:a]volume={vg:.2f}dB,asplit=2[vstem][sc];[1:a]{bed}[mus];"
-                     "[mus][sc]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=400:makeup=1[mstem]")
-            run([ffb, "-y", "-v", "error", "-i", str(voice), "-ss", f"{music_ss:.3f}", "-i", str(music_src), "-filter_complex", graph,
-                 "-map", "[vstem]", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(sv),
-                 "-map", "[mstem]", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(sm)], "the voice and the music")
-            gap = MU.meter_gap(sv, sm)                        # how far under the voice the music really sits (LU), measured not assumed
-            adj = min(0.0, gap - (min_gap_lu + 2.0)) if gap is not None else 0.0
-            log.info(f"music sits {gap if gap is None else round(gap, 1)} LU under the voice; adjusting by {adj:.1f} dB")
-            run([ffb, "-y", "-v", "error", "-i", str(sv), "-i", str(sm), "-filter_complex",
-                 f"[1:a]volume={adj:.2f}dB[m];[0:a][m]amix=inputs=2:duration=first:normalize=0[mix]", "-map", "[mix]",
-                 "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(raw)], "mixing the voice and the music")
+            sv, smu = work / "stem_voice.wav", work / "stem_music.wav"
+            env_pts = None
+            if sm is not None and words is not None:                  # ONE envelope for the MP4 and for Final Cut (soundmix.py)
+                try:
+                    env_pts = SMX.envelope(voice, out_len, sm, words)
+                    env_wav = SMX.write_envelope_wav(env_pts, out_len, work / "duck_env.wav")
+                except Exception as e:  # noqa: BLE001 - the old compressor still makes the video
+                    log.warning(f"the ducking envelope failed ({str(e)[:160]}); using the compressor")
+                    env_pts = None
+            if env_pts is not None:
+                if env_out is not None:
+                    env_out[:] = env_pts
+                bed = bed.replace(f"loudnorm=I={music_lufs}:", f"loudnorm=I={SMX.bed_reference_lufs(sm)}:")
+                vg = gain_to(voice, sm["voice_lufs"])
+                graph = (f"[0:a]volume={vg:.2f}dB[vstem];[1:a]{bed}[mus];"
+                         "[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[env];"
+                         "[mus]aformat=sample_fmts=fltp:channel_layouts=stereo[mus2];[mus2][env]amultiply[mstem]")
+                run([ffb, "-y", "-v", "error", "-i", str(voice), "-ss", f"{music_ss:.3f}", "-i", str(music_src), "-i", str(env_wav), "-filter_complex", graph,
+                     "-map", "[vstem]", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(sv),
+                     "-map", "[mstem]", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(smu)], "the voice and the music")
+                gap = MU.meter_gap(sv, smu)                       # a check only: the envelope sets the separation
+                log.info(f"music sits {gap if gap is None else round(gap, 1)} LU under the voice (the style asks for about {abs(sm['bed_under_speech_lu']):.0f})")
+                run([ffb, "-y", "-v", "error", "-i", str(sv), "-i", str(smu), "-filter_complex",
+                     "[0:a][1:a]amix=inputs=2:duration=first:normalize=0[mix]", "-map", "[mix]",
+                     "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(raw)], "mixing the voice and the music")
+            else:
+                vg = gain_to(voice, -16.0)
+                graph = (f"[0:a]volume={vg:.2f}dB,asplit=2[vstem][sc];[1:a]{bed}[mus];"
+                         "[mus][sc]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=400:makeup=1[mstem]")
+                run([ffb, "-y", "-v", "error", "-i", str(voice), "-ss", f"{music_ss:.3f}", "-i", str(music_src), "-filter_complex", graph,
+                     "-map", "[vstem]", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(sv),
+                     "-map", "[mstem]", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(smu)], "the voice and the music")
+                gap = MU.meter_gap(sv, smu)                       # how far under the voice the music really sits (LU), measured not assumed
+                adj = min(0.0, gap - (min_gap_lu + 2.0)) if gap is not None else 0.0
+                log.info(f"music sits {gap if gap is None else round(gap, 1)} LU under the voice; adjusting by {adj:.1f} dB")
+                run([ffb, "-y", "-v", "error", "-i", str(sv), "-i", str(smu), "-filter_complex",
+                     f"[1:a]volume={adj:.2f}dB[m];[0:a][m]amix=inputs=2:duration=first:normalize=0[mix]", "-map", "[mix]",
+                     "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(raw)], "mixing the voice and the music")
         else:
             run([ffb, "-y", "-v", "error", "-ss", f"{music_ss:.3f}", "-i", str(music_src), "-filter_complex", f"[0:a]{bed}[mus]",
                  "-map", "[mus]", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(raw)], "the music")
@@ -513,11 +675,38 @@ def make_sound(src: Path, intervals, reordered: bool, whole: bool, expr: str, ha
     chain = f"{SANITIZE},volume={gain:.2f}dB,alimiter=limit={10 ** (-1.5 / 20):.4f}:attack=5:release=50:level=disabled,{SANITIZE}"
     if sfx is not None and Path(sfx).exists():                    # the whooshes of the full-screen cards go on top of the finished mix (quiet: they sit under the voice)
         run([ffb, "-y", "-v", "error", "-i", str(raw), "-i", str(sfx), "-filter_complex",
-             f"[0:a]{chain}[m];[1:a]aresample=48000,aformat=channel_layouts=stereo[s];[m][s]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.89:level=disabled[o]",
-             "-map", "[o]", "-t", f"{out_len:.3f}", *ffmpeg.audio_encode_args(vcfg), str(afile)], "the sound")
+             f"[0:a]{chain}[m];[1:a]aresample=48000,aformat=channel_layouts=stereo[s];[m][s]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.84:level=disabled[o]",
+             "-map", "[o]", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(afile.with_name("mix_final.wav"))], "the sound")     # (the mix before it becomes AAC)
+        _finish_sound(ffb, afile, out_len, vcfg, run)
         return
-    run([ffb, "-y", "-v", "error", "-i", str(raw), "-af", chain,
-         "-t", f"{out_len:.3f}", *ffmpeg.audio_encode_args(vcfg), str(afile)], "the sound")
+    run([ffb, "-y", "-v", "error", "-i", str(raw), "-filter_complex", f"[0:a]{chain}[o]",
+         "-map", "[o]", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(afile.with_name("mix_final.wav"))], "the sound")
+    _finish_sound(ffb, afile, out_len, vcfg, run)
+
+
+TRUE_PEAK_MAX, TRUE_PEAK_LAND = -1.0, -1.2      # dBTP: above the first, the mix is lowered to the second (the limiter is a SAMPLE-peak limiter: true peaks get through it, and AAC adds a little more)
+
+
+def _finish_sound(ffb: str, afile: Path, out_len: float, vcfg: dict, run) -> None:
+    """mix_final.wav -> the AAC: first measure the TRUE peak; if it is above -1.0 dBTP lower the whole mix once so it lands at -1.2 (platforms re-encode and clip above -1),
+    rewrite mix_final.wav with that gain, then encode."""
+    from . import qa
+    wav = afile.with_name("mix_final.wav")
+    trim = 0.0
+    try:
+        _l, tp, _h = qa.loud_and_peaks(wav)
+        if tp is not None and tp > TRUE_PEAK_MAX:
+            trim = TRUE_PEAK_LAND - tp
+            log.info(f"true peak {tp:.1f} dBTP: lowering the mix by {abs(trim):.1f} dB")
+    except Exception as e:  # noqa: BLE001 - a measurement never stops the render
+        log.debug(f"true-peak check failed: {e}")
+    src = wav
+    if trim < 0:
+        src = wav.with_name("mix_trim.wav")
+        run([ffb, "-y", "-v", "error", "-i", str(wav), "-af", f"volume={trim:.2f}dB", "-t", f"{out_len:.3f}", "-c:a", "pcm_f32le", str(src)], "the sound level")
+        src.replace(wav)
+        src = wav
+    run([ffb, "-y", "-v", "error", "-i", str(src), "-t", f"{out_len:.3f}", *ffmpeg.audio_encode_args(vcfg), str(afile)], "the sound")
 
 
 def _rect_of(rects) -> tuple | None:
@@ -531,8 +720,21 @@ class _PanelRects(list):
     panel: dict | None = None
 
 
+def _card_rect(rects) -> tuple | None:
+    """Where a rendered graphic sits: its lower-third panel, else the box around its glass rectangles (None for a card with no glass)."""
+    p = getattr(rects, "panel", None)
+    if p:
+        return (p["x"], p["y"], p["w"], p["h"])
+    rs = [r for r in (rects or []) if isinstance(r, dict) and r.get("w") and r.get("h")]
+    if not rs:
+        return None
+    x0, y0 = min(r["x"] for r in rs), min(r["y"] for r in rs)
+    x1, y1 = max(r["x"] + r["w"] for r in rs), max(r["y"] + r["h"] for r in rs)
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
 def render_card(cfg, kind: str, text: str, secs: float, f: Path, extra: dict | None, W: int, H: int, spec: dict | None = None,
-                avoid: list | None = None) -> tuple[Path | None, list]:
+                avoid: list | None = None, fps: float | None = None) -> tuple[Path | None, list]:
     """One animated graphic -> (a transparent .mov, the glass rectangles to blur behind it). The native renderer (gfxcards: no browser, any machine)
     draws everything but the ad's end card; Hyperframes (if installed) is the fallback and still makes the end card."""
     from . import gfxcards, graphics
@@ -541,7 +743,9 @@ def render_card(cfg, kind: str, text: str, secs: float, f: Path, extra: dict | N
         return render_animation(cfg, spec, secs, f, W, H, theme), []
     if kind != "end" and cfg.get("clipper.ai_videos.graphics_engine", "native") == "native":
         sp = {**(spec or {"kind": "hook" if kind == "title" else "point", "text": text}), "len": secs}
-        r = gfxcards.render(cfg, sp, W, H, f, theme, avoid=avoid)
+        ex = extra or {}
+        r = gfxcards.render(cfg, sp, W, H, f, theme, avoid=avoid, fps=fps, timed=ex.get("timed"), caption_top=ex.get("caption_top"), safe=bool(ex.get("safe")),
+                            placer=ex.get("placer"))
         if r:
             glass = r["glass"]
             if r.get("panel"):                                    # (where a lower third really sits: Final Cut's editable title goes there)
@@ -660,7 +864,28 @@ def overlay_track(items: list[tuple[float, float, Path]], total: float, W: int, 
     return out
 
 
-def fcp_titles(opts: dict, title: str, clips: dict | None = None) -> list[dict]:
+CARD_NAMES = {"quote": "Quote", "fullquote": "Quote", "statement": "Statement", "chapter": "Chapter title", "reference": "Scripture reference",
+              "stat": "Stat", "bigstat": "Stat", "lower": "Lower third", "chips": "Key words"}
+
+
+def fcp_card_titles(cards: list[dict] | None, theme: str | None = None) -> list[dict]:
+    """Every text-only graphic card (quote, statement, chapter, scripture reference, plain stat, lower third, chips) as an editable Basic Title,
+    switched off beside the card clip that has the exact look (turn it on, and the clip off, to change the words). Charts, tiles, ledgers and
+    timelines are not made of plain words: they stay clips."""
+    from . import fcpextras as XT
+    out: list[dict] = []
+    for c in cards or []:
+        spec = c.get("spec") if isinstance(c, dict) else None
+        kind = (spec or {}).get("kind") or c.get("kind") if isinstance(c, dict) else None
+        text = XT.card_text(str(kind or ""), spec) if spec else None
+        if not text:
+            continue
+        out.append({"at": float(c["at"]), "len": float(c["len"]), "text": text, "kind": "point", "theme": theme, "rect": c.get("rect"), "off": True,
+                    "name": CARD_NAMES.get(str(kind), "Graphic")})
+    return out
+
+
+def fcp_titles(opts: dict, title: str, clips: dict | None = None, cards: list[dict] | None = None) -> list[dict]:
     """The graphics of the finished video as Final Cut titles (so they can be edited there): hook card, key points, end card.
     `clips`: the ones that were also rendered as a clip (their exact look goes to Final Cut as that clip: the editable title is then switched
     off, and placed on the panel the renderer drew)."""
@@ -678,15 +903,17 @@ def fcp_titles(opts: dict, title: str, clips: dict | None = None) -> list[dict]:
     e = opts.get("endcard")
     if e and e.get("text"):
         out.append({"at": float(e["at"]), "len": float(e["len"]), "text": str(e["text"]), "kind": "end"})
+    out.extend(fcp_card_titles(cards, theme))
     return out
 
 
 def write_bundle(cfg, d: Path, title: str, src: Path, info: dict, fps: Fraction, W: int, H: int,
                  intervals, groups, track, duck, music_start: float, ccfg: dict, dest_root: Path | None = None,
                  cutaways: list | None = None, mc: dict | None = None, titles: list | None = None, music_xf: float = 0.0,
-                 overlays: list | None = None, subs: list | None = None) -> dict:
-    """Write the FCP project folder into the job (fcp/) and zip it; dest_root = where it will live for the
-    paths inside (default clipper.fcp_unpack_dir, i.e. where you unzip it on your Mac)."""
+                 overlays: list | None = None, subs: list | None = None, extras: dict | None = None) -> dict:
+    """Write the FCP project folder into the job (fcp/); dest_root = where it will live for the paths inside (default clipper.fcp_unpack_dir).
+    The folder is zipped only for the Clipper's upload flow (clipper.app other than "studio"): FirstCut copies the folder itself.
+    extras: markers, project_note, alt_takes, source_clips (see fcpxml.build_project)."""
     name = safe(title, 60)
     bundle = d / "fcp" / name
     shutil.rmtree(d / "fcp", ignore_errors=True)
@@ -714,30 +941,64 @@ def write_bundle(cfg, d: Path, title: str, src: Path, info: dict, fps: Fraction,
             if o.get("src") and Path(o["src"]).exists():
                 shutil.copy2(o["src"], bundle / "Graphics" / f"graphic_{k + 1:02d}.mov")
                 ovs.append({"at": o["at"], "len": o["len"], "name": f"graphic_{k + 1:02d}.mov"})
+    root = Path(dest_root) if dest_root else Path(cfg.get("clipper.fcp_unpack_dir", "~/Movies/Clipper")).expanduser()
+    if mc:                                                  # the baked photo clips live in the working folder (.aivideo): copy them into the project, or "remove working files" breaks it
+        mc = _relocate_working_media(mc, bundle, root / name)
     if groups or subs:
         (bundle / "Captions").mkdir()
         if groups and (d / "clip_01.srt").exists():
             shutil.copy2(d / "clip_01.srt", bundle / "Captions" / f"{name}.srt")
         else:                                                           # (captions off in the video: Final Cut still gets them)
             (bundle / "Captions" / f"{name}.srt").write_text(FX.srt(subs))
-    root = Path(dest_root) if dest_root else Path(cfg.get("clipper.fcp_unpack_dir", "~/Movies/Clipper")).expanduser()
     meta = write_fcpxml(bundle, name, root / name, info, fps, W, H, intervals, groups, track, duck, music_start, ccfg,
-                        media.name if media else None, music_file.name if music_file else None, cutaways, mc, titles, music_xf, ovs, subs=subs)
-    zpath = d / "fcp_project.zip"
-    with zipfile.ZipFile(zpath, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as z:
-        for f in sorted(bundle.rglob("*")):
-            if f.is_file():
-                z.write(f, f.relative_to(bundle.parent).as_posix())
-    meta["zip"] = zpath.name
+                        media.name if media else None, music_file.name if music_file else None, cutaways, mc, titles, music_xf, ovs, subs=subs,
+                        extras=extras, sync_clip=bool(cfg.get("clipper.fcp_sync_clip", False)), version=str(cfg.get("clipper.fcpxml_version") or "") or None)
+    (d / "fcp_project.zip").unlink(missing_ok=True)
+    if cfg.get("clipper.app") != "studio":                  # (the Clipper's upload flow wants one file; FirstCut copies the folder: no zip, no unzip)
+        zpath = d / "fcp_project.zip"
+        with zipfile.ZipFile(zpath, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as z:
+            for f in sorted(bundle.rglob("*")):
+                if f.is_file():
+                    z.write(f, f.relative_to(bundle.parent).as_posix())
+        meta["zip"] = zpath.name
     meta["unpack_to"] = str(root / name)
     return meta
+
+
+def _relocate_working_media(mc: dict, bundle: Path, lives_at: Path) -> dict:
+    """Copies of the clips that live in a project's working folder (.aivideo/...: baked photo clips) go into the bundle's Media/, and the items and
+    cutaways point at them there: removing the working files (Storage) can no longer break a delivered Final Cut project."""
+    moved: dict[str, str] = {}
+
+    def fix(path):
+        if not path or "/.aivideo/" not in str(path):
+            return path
+        if path not in moved:
+            src = Path(path)
+            if not src.is_file():
+                return path
+            dest_dir = bundle / "Media"
+            dest_dir.mkdir(exist_ok=True)
+            dest = dest_dir / src.name
+            n = 2
+            while dest.exists() and dest.stat().st_size != src.stat().st_size:
+                dest = dest_dir / f"{src.stem} ({n}){src.suffix}"
+                n += 1
+            if not dest.exists():
+                shutil.copy2(src, dest)
+            moved[path] = str(lives_at / "Media" / dest.name)
+        return moved[path]
+    return {**mc, "items": [{**i, "path": fix(i.get("path"))} if i.get("path") else i for i in mc.get("items") or []],
+            "cutaways": [{**c, "path": fix(c.get("path"))} if c.get("path") else c for c in mc.get("cutaways") or []]}
 
 
 def write_fcpxml(bundle: Path, name: str, lives_at: Path, info: dict, fps: Fraction, W: int, H: int, intervals,
                  groups, track, duck, music_start: float, ccfg: dict, media_name: str | None, music_name: str | None,
                  cutaways: list | None = None, mc: dict | None = None, titles: list | None = None, music_xf: float = 0.0,
-                 ovs: list | None = None, subs: list | None = None) -> dict:
+                 ovs: list | None = None, subs: list | None = None, extras: dict | None = None, sync_clip: bool = False,
+                 version: str | None = None) -> dict:
     vs = ffmpeg.video_stream(info) or {}
+    extras = {k: v for k, v in (extras or {}).items() if k in ("markers", "project_note", "alt_takes", "source_clips")}
     au = ffmpeg.audio_stream(info) or {}
     src_media = None if mc else FX.Media(str(lives_at / "Media" / media_name), float(info.get("format", {}).get("duration") or 0),
                                          has_audio=bool(au), width=W, height=H, fps=_fps(vs),
@@ -750,21 +1011,27 @@ def write_fcpxml(bundle: Path, name: str, lives_at: Path, info: dict, fps: Fract
                             y=-(float(ccfg.get("center_y", 0.72)) - 0.5))
     overlays = [{"at": o["at"], "len": o["len"], "path": str(lives_at / "Graphics" / o["name"]), "w": W, "h": H, "fps": float(fps)} for o in (ovs or [])]
     if mc:
-        xml = FX.build_multicam(name, W, H, fps, mc["group"], mc["items"], captions=groups, music=bed, style=style, cutaways=mc.get("cutaways"),
-                                titles=titles, overlays=overlays, subs=subs, transitions=mc.get("transitions"))
+        xml = FX.build_project(name, W, H, fps, mc["group"], mc["items"], captions=groups, music=bed, style=style, cutaways=mc.get("cutaways"),
+                               titles=titles, overlays=overlays, subs=subs, transitions=mc.get("transitions"), sync_clip=sync_clip, version=version, **extras)
         n_clips = len(mc["items"])
     else:
         xml = FX.build(name, src_media, intervals, W, H, fps, captions=groups, music=bed, style=style,
-                       cutaways=[(c["at"], c["src"], c["length"]) for c in (cutaways or [])], titles=titles, overlays=overlays, subs=subs)
+                       cutaways=[(c["at"], c["src"], c["length"]) for c in (cutaways or [])], titles=titles, overlays=overlays, subs=subs,
+                       sync_clip=sync_clip, version=version, **extras)
         n_clips = len(intervals)
     path = bundle / f"{name}.fcpxml"
     path.write_text(xml)
-    errors = FX.validate(path)
+    errors = FX.validate(path)                                  # (Final Cut's own DTD, when this Mac has it)
+    from . import fcpextras as XT
+    warnings = XT.preflight(xml, files_on_disk=True)            # (what an import would warn about: off-grid times, dangling refs, missing files: runs everywhere)
     if errors:
         log.warning(f"FCPXML validation: {errors[:3]}")
+    if warnings:
+        log.warning(f"FCPXML pre-flight: {warnings[:3]}")
     return {"folder": bundle.name, "fcpxml": path.name, "clips": n_clips, "captions": len(groups), "subs": len(FX.caption_spans(subs)),
             "multicam": bool(mc and mc.get("group")),
-            "music": bool(bed), "valid": not errors, "errors": errors[:5]}
+            "music": bool(bed), "valid": not errors, "errors": errors[:5], "warnings": warnings[:8],
+            "checked": "dtd" if (not errors and FX.has_dtd()) else ("not checked: no Final Cut here" if not errors else "dtd")}
 
 
 def archive_bundle(cfg, store, job_id: str) -> None:

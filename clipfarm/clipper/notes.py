@@ -52,6 +52,12 @@ def take() -> list[dict]:
         return _found.pop(threading.get_ident(), [])
 
 
+def peek() -> list[dict]:
+    """The findings so far, without taking them (the Final Cut project's markers are made while the render is still going)."""
+    with _lock:
+        return [dict(x) for x in _found.get(threading.get_ident(), [])]
+
+
 # ------------------------------------------------------------------------------------------------ chapters
 def clock(t: float) -> str:
     t = int(max(0.0, t))

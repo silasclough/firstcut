@@ -31,7 +31,7 @@ def test_fcpxml_is_valid_for_final_cut(tmp_path):
     p = tmp_path / "p.fcpxml"
     p.write_text(xml)
     assert "file:///Volumes/X/My%20Project/Media/source.mp4" in xml and 'lane="-1"' in xml
-    assert xml.count("<asset-clip ref=\"r3\"") == 2 and xml.count('name="Caption"') == 2
+    assert xml.count("<asset-clip ref=\"a1\"") == 2 and xml.count('name="Caption"') == 2
     if not FX.DTD_DIR.exists():
         pytest.skip("Final Cut Pro not installed here - DTD check skipped")
     assert FX.validate(p) == []
@@ -76,7 +76,7 @@ def test_polish_end_to_end_with_music_and_fcp(tmp_path):
     assert any(n.startswith(f"{folder}/Music/") and n.endswith(".mp3") for n in names)
     assert any(n.endswith("LICENSE.txt") for n in names)
     xml = (d / "fcp" / folder / f"{folder}.fcpxml").read_text()
-    assert str(tmp_path / "Unpacked").replace(" ", "%20") in xml and xml.count('ref="r3"') == 2
+    assert str(tmp_path / "Unpacked").replace(" ", "%20") in xml and xml.count('ref="a1"') == 2
     if FX.DTD_DIR.exists():
         assert clip["fcp"]["valid"], clip["fcp"]["errors"]
 

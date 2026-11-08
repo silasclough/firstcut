@@ -633,4 +633,4 @@ def test_a_stat_panel_pops_up_on_the_word_that_says_the_number():
     sents = [M.Sentence(0, 10.0, t, text)]
     v = GP.validate({"kind": "stat", "at": 10.2, "value": "47%", "label": "of viewers leave early"}, text, sents, 60.0, 3.2, words)
     said = next(w["start"] for w in words if w["text"] == "47")
-    assert v and abs(v["at"] - (said - 0.25)) < 0.02                                         # (not at the start of the sentence, 5 s too early)
+    assert v and abs(v["at"] - (said - 0.125)) < 0.02 and v["at"] <= said                    # (three frames before the word, never after it; not at the start of the sentence, 5 s too early)
